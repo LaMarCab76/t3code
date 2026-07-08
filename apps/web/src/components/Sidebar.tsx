@@ -1,17 +1,20 @@
 import {
   ArchiveIcon,
   ArrowUpDownIcon,
+  BotIcon,
   ChevronRightIcon,
   CloudIcon,
   ContainerIcon,
   FolderPlusIcon,
   Globe2Icon,
   LoaderIcon,
+  PlusIcon,
   SearchIcon,
   SettingsIcon,
   SquarePenIcon,
   TerminalIcon,
   TriangleAlertIcon,
+  UserRoundIcon,
 } from "lucide-react";
 import {
   ChangeRequestStatusIcon,
@@ -44,6 +47,7 @@ import { CSS } from "@dnd-kit/utilities";
 import {
   type ContextMenuItem,
   DEFAULT_SERVER_SETTINGS,
+  type AppToolAccessPolicy,
   ProjectId,
   type ScopedThreadRef,
   type ResolvedKeybindingsConfig,
@@ -83,6 +87,7 @@ import {
   useProject,
   useProjects,
   useServerConfigs,
+  useThreadActivities,
   useThreadShells,
   useThreadShellsForProjectRefs,
 } from "../state/entities";
@@ -206,7 +211,11 @@ import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useIsMobile } from "~/hooks/useMediaQuery";
 import { CommandDialogTrigger } from "./ui/command";
 import { useClientSettings, useUpdateClientSettings } from "~/hooks/useSettings";
-import { primaryServerConfigAtom, primaryServerKeybindingsAtom } from "../state/server";
+import {
+  primaryServerConfigAtom,
+  primaryServerKeybindingsAtom,
+  primaryServerProvidersAtom,
+} from "../state/server";
 import {
   derivePhysicalProjectKey,
   deriveProjectGroupingOverrideKey,
@@ -221,6 +230,18 @@ import {
   type SidebarProjectSnapshot,
 } from "../sidebarProjectGrouping";
 import { SidebarProviderUpdatePill } from "./sidebar/SidebarProviderUpdatePill";
+import {
+  assignProjectKeysToProfilePatch,
+  createProfilePatch,
+  filterProjectsForActiveProfile,
+  filterThreadsForActiveProfile,
+  getActiveProfile,
+  getActiveProfileId,
+  getAppProfiles,
+} from "../profiles";
+import { buildToolAccessCatalog } from "../toolAccess";
+import { ToolAccessPolicyControl } from "./settings/ToolAccessPolicyControl";
+import { deriveSidebarSubchats, type SidebarSubchatStatus } from "../sidebarSubchats";
 const SIDEBAR_SORT_LABELS: Record<SidebarProjectSortOrder, string> = {
   updated_at: "Last user message",
   created_at: "Created at",
@@ -317,6 +338,28 @@ function buildThreadJumpLabelMap(input: {
   return mapping.size > 0 ? mapping : EMPTY_THREAD_JUMP_LABELS;
 }
 
+function subchatStatusClassName(status: SidebarSubchatStatus): string {
+  switch (status) {
+    case "completed":
+      return "bg-emerald-500";
+    case "failed":
+      return "bg-destructive";
+    case "running":
+      return "bg-sky-500 animate-pulse";
+  }
+}
+
+function subchatStatusLabel(status: SidebarSubchatStatus): string {
+  switch (status) {
+    case "completed":
+      return "Completed";
+    case "failed":
+      return "Failed";
+    case "running":
+      return "Running";
+  }
+}
+
 interface SidebarThreadRowProps {
   thread: SidebarThreadSummary;
   projectCwd: string | null;
@@ -383,6 +426,11 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
   } = props;
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
   const threadKey = scopedThreadKey(threadRef);
+  const threadActivities = useThreadActivities(isActive ? threadRef : null);
+  const subchats = useMemo(
+    () => (isActive ? deriveSidebarSubchats(threadActivities) : []),
+    [isActive, threadActivities],
+  );
   const lastVisitedAt = useUiStateStore((state) => state.threadLastVisitedAtById[threadKey]);
   const isSelected = useThreadSelectionStore((state) => state.selectedThreadKeys.has(threadKey));
   const runningTerminalIds = useThreadRunningTerminalIds({
@@ -881,6 +929,34 @@ export const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThr
           </div>
         </div>
       </SidebarMenuSubButton>
+      {subchats.length > 0 ? (
+        <div
+          className="ml-5 mt-0.5 grid gap-0.5 border-l border-border/60 pl-2"
+          data-testid={`thread-subchats-${thread.id}`}
+        >
+          {subchats.slice(-4).map((subchat) => (
+            <div
+              key={subchat.id}
+              className="flex h-5 min-w-0 items-center gap-1.5 rounded-sm px-1 text-[10px] text-muted-foreground/80"
+              title={subchat.detail ?? subchat.label}
+            >
+              <BotIcon className="size-3 shrink-0 text-muted-foreground/60" aria-hidden />
+              <span
+                className={`size-1.5 shrink-0 rounded-full ${subchatStatusClassName(
+                  subchat.status,
+                )}`}
+                aria-label={subchatStatusLabel(subchat.status)}
+              />
+              <span className="min-w-0 flex-1 truncate">{subchat.label}</span>
+              {subchat.receiverThreadIds.length > 0 ? (
+                <span className="shrink-0 font-mono text-[9px] text-muted-foreground/50">
+                  {subchat.receiverThreadIds.length}
+                </span>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
     </SidebarMenuSubItem>
   );
 });
@@ -1110,6 +1186,8 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   );
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const serverConfigs = useServerConfigs();
+  const providerStatuses = useAtomValue(primaryServerProvidersAtom);
+  const toolCatalog = useMemo(() => buildToolAccessCatalog(providerStatuses), [providerStatuses]);
   const deleteProject = useAtomCommand(projectEnvironment.delete, {
     reportFailure: false,
   });
@@ -1120,6 +1198,8 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     reportFailure: false,
   });
   const updateSettings = useUpdateClientSettings();
+  const clientSettings = useClientSettings();
+  const profiles = getAppProfiles(clientSettings);
   const sidebarThreadPreviewCount = useClientSettings<SidebarThreadPreviewCount>(
     (settings) => settings.sidebarThreadPreviewCount,
   );
@@ -1216,6 +1296,8 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
   const [projectGroupingSelection, setProjectGroupingSelection] = useState<
     SidebarProjectGroupingMode | "inherit"
   >("inherit");
+  const [projectToolAccessTarget, setProjectToolAccessTarget] =
+    useState<SidebarProjectGroupMember | null>(null);
   const renamingCommittedRef = useRef(false);
   const renamingInputRef = useRef<HTMLInputElement | null>(null);
   const confirmArchiveButtonRefs = useRef(new Map<string, HTMLButtonElement>());
@@ -1434,6 +1516,10 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     [projectGroupingSettings.sidebarProjectGroupingOverrides],
   );
 
+  const openProjectToolAccessDialog = useCallback((member: SidebarProjectGroupMember) => {
+    setProjectToolAccessTarget(member);
+  }, []);
+
   const removeProject = useCallback(
     async (member: SidebarProjectGroupMember, options: { force?: boolean } = {}) => {
       const memberProjectRef = scopeProjectRef(member.environmentId, member.id);
@@ -1596,7 +1682,7 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
 
         const actionHandlers = new Map<string, () => Promise<void> | void>();
         const makeLeaf = (
-          action: "rename" | "grouping" | "copy-path" | "delete",
+          action: "rename" | "grouping" | "tools" | "copy-path" | "delete",
           member: SidebarProjectGroupMember,
           options?: {
             destructive?: boolean;
@@ -1611,6 +1697,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
                 return;
               case "grouping":
                 openProjectGroupingDialog(member);
+                return;
+              case "tools":
+                openProjectToolAccessDialog(member);
                 return;
               case "copy-path":
                 copyPathToClipboard(member.workspaceRoot, { path: member.workspaceRoot });
@@ -1628,8 +1717,29 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           };
         };
 
+        const moveToProfileItem: ContextMenuItem<string> = {
+          id: "profile:submenu",
+          label: "Move to profile...",
+          children: profiles.map((profile) => {
+            const id = `profile:${profile.id}`;
+            actionHandlers.set(id, () => {
+              updateSettings(
+                assignProjectKeysToProfilePatch(
+                  clientSettings,
+                  project.memberProjects.map((member) => member.physicalProjectKey),
+                  profile.id,
+                ),
+              );
+            });
+            return {
+              id,
+              label: profile.name,
+            };
+          }),
+        };
+
         const buildTargetedItem = (
-          action: "rename" | "grouping" | "copy-path" | "delete",
+          action: "rename" | "grouping" | "tools" | "copy-path" | "delete",
           label: string,
           options?: {
             destructive?: boolean;
@@ -1665,6 +1775,8 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           [
             buildTargetedItem("rename", "Rename"),
             buildTargetedItem("grouping", "Group into..."),
+            buildTargetedItem("tools", "Customize tools..."),
+            moveToProfileItem,
             buildTargetedItem("copy-path", "Copy Path"),
             buildTargetedItem("delete", "Remove", {
               destructive: true,
@@ -1686,11 +1798,15 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     [
       copyPathToClipboard,
       handleRemoveProject,
+      clientSettings,
       openProjectGroupingDialog,
       openProjectRenameDialog,
+      openProjectToolAccessDialog,
       project.groupedProjectCount,
       project.memberProjects,
+      profiles,
       suppressProjectClickForContextMenuRef,
+      updateSettings,
     ],
   );
 
@@ -2111,6 +2227,42 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     updateSettings,
   ]);
 
+  const closeProjectToolAccessDialog = useCallback(() => {
+    setProjectToolAccessTarget(null);
+  }, []);
+
+  const updateProjectToolAccessPolicy = useCallback(
+    (policy: AppToolAccessPolicy) => {
+      if (!projectToolAccessTarget) {
+        return;
+      }
+      updateSettings({
+        projectToolAccessPolicies: {
+          ...clientSettings.projectToolAccessPolicies,
+          [projectToolAccessTarget.physicalProjectKey]: policy,
+        },
+      });
+    },
+    [clientSettings.projectToolAccessPolicies, projectToolAccessTarget, updateSettings],
+  );
+
+  const resetProjectToolAccessPolicy = useCallback(() => {
+    if (!projectToolAccessTarget) {
+      return;
+    }
+    const nextPolicies = { ...clientSettings.projectToolAccessPolicies };
+    delete nextPolicies[projectToolAccessTarget.physicalProjectKey];
+    updateSettings({
+      projectToolAccessPolicies: nextPolicies,
+    });
+    closeProjectToolAccessDialog();
+  }, [
+    clientSettings.projectToolAccessPolicies,
+    closeProjectToolAccessDialog,
+    projectToolAccessTarget,
+    updateSettings,
+  ]);
+
   const handleThreadContextMenu = useCallback(
     async (threadRef: ScopedThreadRef, position: { x: number; y: number }) => {
       const api = readLocalApi();
@@ -2459,6 +2611,49 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
           </DialogFooter>
         </DialogPopup>
       </Dialog>
+
+      <Dialog
+        open={projectToolAccessTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            closeProjectToolAccessDialog();
+          }
+        }}
+      >
+        <DialogPopup className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Project tools</DialogTitle>
+            <DialogDescription>
+              {projectToolAccessTarget
+                ? `Configured provider tools for ${projectToolAccessTarget.workspaceRoot}.`
+                : "Configured provider tools for this project."}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogPanel className="space-y-4">
+            <ToolAccessPolicyControl
+              catalog={toolCatalog}
+              scope="project"
+              policy={
+                projectToolAccessTarget
+                  ? clientSettings.projectToolAccessPolicies[
+                      projectToolAccessTarget.physicalProjectKey
+                    ]
+                  : undefined
+              }
+              onChange={updateProjectToolAccessPolicy}
+            />
+          </DialogPanel>
+          <DialogFooter>
+            <Button variant="outline" onClick={closeProjectToolAccessDialog}>
+              Cancel
+            </Button>
+            <Button variant="outline" onClick={resetProjectToolAccessPolicy}>
+              Use inherited tools
+            </Button>
+            <Button onClick={closeProjectToolAccessDialog}>Done</Button>
+          </DialogFooter>
+        </DialogPopup>
+      </Dialog>
     </>
   );
 });
@@ -2801,6 +2996,60 @@ function T3Wordmark() {
   );
 }
 
+const CREATE_PROFILE_SELECT_VALUE = "__create_profile__";
+
+const SidebarProfileSwitcher = memo(function SidebarProfileSwitcher() {
+  const settings = useClientSettings();
+  const updateSettings = useUpdateClientSettings();
+  const profiles = getAppProfiles(settings);
+  const activeProfileId = getActiveProfileId(settings);
+  const activeProfile = getActiveProfile(settings);
+
+  const handleProfileChange = useCallback(
+    (value: string | null) => {
+      if (!value) {
+        return;
+      }
+      if (value === CREATE_PROFILE_SELECT_VALUE) {
+        updateSettings(createProfilePatch(settings));
+        return;
+      }
+      updateSettings({ activeProfileId: value });
+    },
+    [settings, updateSettings],
+  );
+
+  return (
+    <div className="px-1 pb-1">
+      <Select value={activeProfileId} onValueChange={handleProfileChange}>
+        <SelectTrigger
+          size="sm"
+          className="h-8 w-full justify-start gap-2 rounded-md border border-border/60 bg-sidebar-accent/30 px-2 text-left font-mono text-xs text-sidebar-foreground hover:bg-sidebar-accent"
+          aria-label="Active profile"
+        >
+          <UserRoundIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          <SelectValue>
+            <span className="min-w-0 truncate">{activeProfile.name}</span>
+          </SelectValue>
+        </SelectTrigger>
+        <SelectPopup align="start" alignItemWithTrigger={false}>
+          {profiles.map((profile) => (
+            <SelectItem key={profile.id} value={profile.id}>
+              {profile.name}
+            </SelectItem>
+          ))}
+          <SelectItem value={CREATE_PROFILE_SELECT_VALUE}>
+            <span className="inline-flex items-center gap-1.5">
+              <PlusIcon className="size-3.5" />
+              New profile
+            </span>
+          </SelectItem>
+        </SelectPopup>
+      </Select>
+    </div>
+  );
+});
+
 const SidebarChromeFooter = memo(function SidebarChromeFooter() {
   const navigate = useNavigate();
   const { isMobile, setOpenMobile } = useSidebar();
@@ -2813,6 +3062,7 @@ const SidebarChromeFooter = memo(function SidebarChromeFooter() {
 
   return (
     <SidebarFooter className="p-2">
+      <SidebarProfileSwitcher />
       <SidebarProviderUpdatePill />
       <SidebarUpdatePill />
       <SidebarMenu>
@@ -3111,6 +3361,7 @@ export default function Sidebar() {
   const navigate = useNavigate();
   const pathname = useLocation({ select: (loc) => loc.pathname });
   const isOnSettings = pathname.startsWith("/settings");
+  const clientSettings = useClientSettings();
   const sidebarThreadSortOrder = useClientSettings((s) => s.sidebarThreadSortOrder);
   const sidebarProjectSortOrder = useClientSettings((s) => s.sidebarProjectSortOrder);
   const sidebarProjectGroupingMode = useClientSettings((s) => s.sidebarProjectGroupingMode);
@@ -3162,9 +3413,17 @@ export default function Sidebar() {
       ),
     [environments],
   );
+  const visibleProjects = useMemo(
+    () => filterProjectsForActiveProfile(projects, clientSettings),
+    [clientSettings, projects],
+  );
+  const visibleSidebarThreads = useMemo(
+    () => filterThreadsForActiveProfile(sidebarThreads, projects, clientSettings),
+    [clientSettings, projects, sidebarThreads],
+  );
   const orderedProjects = useMemo(() => {
     return orderItemsByPreferredIds({
-      items: projects,
+      items: visibleProjects,
       preferredIds: projectOrder,
       getId: getProjectOrderKey,
       getPreferenceIds: (project) => [
@@ -3172,7 +3431,7 @@ export default function Sidebar() {
         legacyProjectCwdPreferenceKey(project.workspaceRoot),
       ],
     });
-  }, [projectOrder, projects]);
+  }, [projectOrder, visibleProjects]);
 
   // Build a mapping from physical project key → logical project key for
   // cross-environment grouping.  Projects that share a repositoryIdentity
@@ -3217,12 +3476,12 @@ export default function Sidebar() {
   const sidebarThreadByKey = useMemo(
     () =>
       new Map(
-        sidebarThreads.map(
+        visibleSidebarThreads.map(
           (thread) =>
             [scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)), thread] as const,
         ),
       ),
-    [sidebarThreads],
+    [visibleSidebarThreads],
   );
   // Resolve the active route's project key to a logical key so it matches the
   // sidebar's grouped project entries.
@@ -3243,7 +3502,7 @@ export default function Sidebar() {
   // are displayed together.
   const threadsByProjectKey = useMemo(() => {
     const next = new Map<string, SidebarThreadSummary[]>();
-    for (const thread of sidebarThreads) {
+    for (const thread of visibleSidebarThreads) {
       const physicalKey =
         projectPhysicalKeyByScopedRef.get(
           scopedProjectKey(scopeProjectRef(thread.environmentId, thread.projectId)),
@@ -3257,7 +3516,7 @@ export default function Sidebar() {
       }
     }
     return next;
-  }, [sidebarThreads, physicalToLogicalKey, projectPhysicalKeyByScopedRef]);
+  }, [visibleSidebarThreads, physicalToLogicalKey, projectPhysicalKeyByScopedRef]);
   const getCurrentSidebarShortcutContext = useCallback(
     () => ({
       terminalFocus: isTerminalFocused(),
@@ -3366,8 +3625,8 @@ export default function Sidebar() {
   }, []);
 
   const visibleThreads = useMemo(
-    () => sidebarThreads.filter((thread) => thread.archivedAt === null),
-    [sidebarThreads],
+    () => visibleSidebarThreads.filter((thread) => thread.archivedAt === null),
+    [visibleSidebarThreads],
   );
   const sortedProjects = useMemo(() => {
     const sortableProjects = sidebarProjects.map((project) => ({
@@ -3739,7 +3998,7 @@ export default function Sidebar() {
             suppressProjectClickAfterDragRef={suppressProjectClickAfterDragRef}
             suppressProjectClickForContextMenuRef={suppressProjectClickForContextMenuRef}
             attachProjectListAutoAnimateRef={attachProjectListAutoAnimateRef}
-            projectsLength={projects.length}
+            projectsLength={visibleProjects.length}
           />
 
           <SidebarSeparator />

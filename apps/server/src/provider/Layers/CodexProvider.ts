@@ -248,6 +248,16 @@ function parseCodexSkillsListResponse(
     if (shortDescription) {
       parsedSkill.shortDescription = shortDescription;
     }
+    if (skill.dependencies?.tools && skill.dependencies.tools.length > 0) {
+      parsedSkill.toolDependencies = skill.dependencies.tools.map((tool) => ({
+        type: tool.type,
+        value: tool.value,
+        ...(tool.command !== undefined ? { command: tool.command } : {}),
+        ...(tool.description !== undefined ? { description: tool.description } : {}),
+        ...(tool.transport !== undefined ? { transport: tool.transport } : {}),
+        ...(tool.url !== undefined ? { url: tool.url } : {}),
+      }));
+    }
 
     return parsedSkill;
   });

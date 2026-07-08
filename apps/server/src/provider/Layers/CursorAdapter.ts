@@ -224,7 +224,7 @@ function resolveRequestedModeId(input: {
     return undefined;
   }
 
-  if (input.interactionMode === "plan") {
+  if (input.interactionMode === "plan" || input.interactionMode === "plan_and_goal") {
     return findModeByAliases(modeState.availableModes, ACP_PLAN_MODE_ALIASES)?.id;
   }
 

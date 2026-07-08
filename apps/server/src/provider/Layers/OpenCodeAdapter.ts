@@ -1215,7 +1215,11 @@ export function makeOpenCodeAdapter(
       const variant = getModelSelectionStringOptionValue(modelSelection, "variant");
 
       context.activeTurnId = turnId;
-      context.activeAgent = agent ?? (input.interactionMode === "plan" ? "plan" : undefined);
+      context.activeAgent =
+        agent ??
+        (input.interactionMode === "plan" || input.interactionMode === "plan_and_goal"
+          ? "plan"
+          : undefined);
       context.activeVariant = variant;
       yield* updateProviderSession(
         context,

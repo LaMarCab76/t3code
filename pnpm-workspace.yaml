@@ -86,7 +86,10 @@ overrides:
   "@types/node": "catalog:"
   effect: "catalog:"
   expo-modules-jsi: 56.0.10
+  "undici@>=7.0.0 <7.28.0": 7.28.0
+  "undici@>=8.0.0 <8.5.0": 8.7.0
   vite: "catalog:"
+  "xcode>uuid": 11.1.1
   yaml: "catalog:"
 
 packageExtensions:

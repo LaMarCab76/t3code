@@ -27,6 +27,42 @@ describe("ServerProvider", () => {
     expect(parsed.updateState).toBeUndefined();
   });
 
+  it("decodes optional skill tool dependencies", () => {
+    const parsed = decodeServerProvider({
+      instanceId: "codex",
+      driver: "codex",
+      enabled: true,
+      installed: true,
+      version: "1.0.0",
+      status: "ready",
+      auth: {
+        status: "authenticated",
+      },
+      checkedAt: "2026-04-10T00:00:00.000Z",
+      models: [],
+      skills: [
+        {
+          name: "browser",
+          path: "/Users/julius/.codex/skills/browser/SKILL.md",
+          enabled: true,
+          toolDependencies: [
+            {
+              type: "mcp",
+              value: "browser",
+              transport: "stdio",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(parsed.skills[0]?.toolDependencies?.[0]).toMatchObject({
+      type: "mcp",
+      value: "browser",
+      transport: "stdio",
+    });
+  });
+
   it("defaults one-click update support when decoding older advisory snapshots", () => {
     const parsed = decodeServerProvider({
       instanceId: "codex",

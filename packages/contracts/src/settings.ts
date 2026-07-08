@@ -39,7 +39,47 @@ export const SidebarThreadPreviewCount = Schema.Int.check(
 export type SidebarThreadPreviewCount = typeof SidebarThreadPreviewCount.Type;
 export const DEFAULT_SIDEBAR_THREAD_PREVIEW_COUNT: SidebarThreadPreviewCount = 6;
 
+export const DEFAULT_PROFILE_ID = "default";
+
+export const AppProfile = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  accentColor: Schema.optionalKey(TrimmedNonEmptyString),
+});
+export type AppProfile = typeof AppProfile.Type;
+
+export const PlanAndGoalReviewMode = Schema.Literals(["manual_review", "auto"]);
+export type PlanAndGoalReviewMode = typeof PlanAndGoalReviewMode.Type;
+export const DEFAULT_PLAN_AND_GOAL_REVIEW_MODE: PlanAndGoalReviewMode = "manual_review";
+
+export const AppToolAccessPolicyMode = Schema.Literals(["all", "custom", "inherit"]);
+export type AppToolAccessPolicyMode = typeof AppToolAccessPolicyMode.Type;
+
+export const AppToolAccessPolicy = Schema.Struct({
+  mode: AppToolAccessPolicyMode.pipe(Schema.withDecodingDefault(Effect.succeed("all" as const))),
+  enabledToolKeys: Schema.Array(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+});
+export type AppToolAccessPolicy = typeof AppToolAccessPolicy.Type;
+
+export const DEFAULT_APP_TOOL_ACCESS_POLICY: AppToolAccessPolicy = {
+  mode: "all",
+  enabledToolKeys: [],
+};
+
+const DEFAULT_APP_PROFILES: ReadonlyArray<AppProfile> = [
+  {
+    id: DEFAULT_PROFILE_ID,
+    name: "Default",
+  },
+];
+
 export const ClientSettingsSchema = Schema.Struct({
+  activeProfileId: TrimmedNonEmptyString.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_PROFILE_ID)),
+  ),
+  appBackgroundColor: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   confirmThreadDelete: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
@@ -72,6 +112,27 @@ export const ClientSettingsSchema = Schema.Struct({
       modelOrder: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(Effect.succeed([]))),
     }),
   ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  planAndGoalReviewMode: PlanAndGoalReviewMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_PLAN_AND_GOAL_REVIEW_MODE)),
+  ),
+  profiles: Schema.Array(AppProfile).pipe(
+    Schema.withDecodingDefault(Effect.succeed([...DEFAULT_APP_PROFILES])),
+  ),
+  projectProfileAssignments: Schema.Record(TrimmedNonEmptyString, TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+  globalToolAccessPolicy: AppToolAccessPolicy.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_APP_TOOL_ACCESS_POLICY)),
+  ),
+  profileToolAccessPolicies: Schema.Record(TrimmedNonEmptyString, AppToolAccessPolicy).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+  projectToolAccessPolicies: Schema.Record(TrimmedNonEmptyString, AppToolAccessPolicy).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+  providerInstanceProfileAssignments: Schema.Record(ProviderInstanceId, TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
   sidebarProjectGroupingMode: SidebarProjectGroupingMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE)),
   ),
@@ -534,6 +595,8 @@ export const ServerSettingsPatch = Schema.Struct({
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
 export const ClientSettingsPatch = Schema.Struct({
+  activeProfileId: Schema.optionalKey(TrimmedNonEmptyString),
+  appBackgroundColor: Schema.optionalKey(TrimmedString),
   autoOpenPlanSidebar: Schema.optionalKey(Schema.Boolean),
   confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
   confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
@@ -558,6 +621,21 @@ export const ClientSettingsPatch = Schema.Struct({
         ),
       }),
     ),
+  ),
+  planAndGoalReviewMode: Schema.optionalKey(PlanAndGoalReviewMode),
+  profiles: Schema.optionalKey(Schema.Array(AppProfile)),
+  projectProfileAssignments: Schema.optionalKey(
+    Schema.Record(TrimmedNonEmptyString, TrimmedNonEmptyString),
+  ),
+  globalToolAccessPolicy: Schema.optionalKey(AppToolAccessPolicy),
+  profileToolAccessPolicies: Schema.optionalKey(
+    Schema.Record(TrimmedNonEmptyString, AppToolAccessPolicy),
+  ),
+  projectToolAccessPolicies: Schema.optionalKey(
+    Schema.Record(TrimmedNonEmptyString, AppToolAccessPolicy),
+  ),
+  providerInstanceProfileAssignments: Schema.optionalKey(
+    Schema.Record(ProviderInstanceId, TrimmedNonEmptyString),
   ),
   sidebarProjectGroupingMode: Schema.optionalKey(SidebarProjectGroupingMode),
   sidebarProjectGroupingOverrides: Schema.optionalKey(

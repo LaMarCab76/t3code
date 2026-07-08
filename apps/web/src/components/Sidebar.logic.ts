@@ -400,7 +400,7 @@ export function resolveThreadStatusPill(input: {
 
   const hasPlanReadyPrompt =
     !thread.hasPendingUserInput &&
-    thread.interactionMode === "plan" &&
+    (thread.interactionMode === "plan" || thread.interactionMode === "plan_and_goal") &&
     isLatestTurnSettled(thread.latestTurn, thread.session) &&
     thread.hasActionableProposedPlan;
   if (hasPlanReadyPrompt) {
