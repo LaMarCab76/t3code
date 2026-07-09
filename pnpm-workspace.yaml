@@ -86,6 +86,9 @@ overrides:
   "@types/node": "catalog:"
   effect: "catalog:"
   expo-modules-jsi: 56.0.10
+  "form-data@>=4.0.0 <4.0.6": 4.0.6
+  "path-to-regexp@>=4.0.0 <6.3.0": 6.3.0
+  "undici@>=6.0.0 <6.27.0": 6.27.0
   "undici@>=7.0.0 <7.28.0": 7.28.0
   "undici@>=8.0.0 <8.5.0": 8.7.0
   vite: "catalog:"
