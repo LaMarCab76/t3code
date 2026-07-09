@@ -282,10 +282,16 @@ export function NewTaskDraftScreen(props: {
       {
         id: "options-interaction",
         title: "Interaction",
-        subtitle: flow.interactionMode === "plan" ? "Plan" : "Default",
+        subtitle:
+          flow.interactionMode === "plan"
+            ? "Plan"
+            : flow.interactionMode === "plan_and_goal"
+              ? "Plan and goal"
+              : "Default",
         subactions: [
           { id: "options:interaction:default", title: "Default" },
           { id: "options:interaction:plan", title: "Plan" },
+          { id: "options:interaction:plan_and_goal", title: "Plan and goal" },
         ].map((option) => {
           const value = option.id.replace("options:interaction:", "");
           return {

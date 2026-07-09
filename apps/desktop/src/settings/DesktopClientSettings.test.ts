@@ -13,13 +13,22 @@ import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopClientSettings from "./DesktopClientSettings.ts";
 
 const clientSettings: ClientSettings = {
+  activeProfileId: "default",
+  appBackgroundColor: "",
   autoOpenPlanSidebar: false,
   confirmThreadArchive: true,
   confirmThreadDelete: false,
   dismissedProviderUpdateNotificationKeys: [],
   diffIgnoreWhitespace: true,
   favorites: [],
+  globalToolAccessPolicy: { mode: "all", enabledToolKeys: [] },
+  planAndGoalReviewMode: "manual_review",
+  profiles: [{ id: "default", name: "Default" }],
+  profileToolAccessPolicies: {},
+  projectToolAccessPolicies: {},
+  projectProfileAssignments: {},
   providerModelPreferences: {},
+  providerInstanceProfileAssignments: {},
   sidebarProjectGroupingMode: "repository_path",
   sidebarProjectGroupingOverrides: {
     "environment-1:/tmp/project-a": "separate",

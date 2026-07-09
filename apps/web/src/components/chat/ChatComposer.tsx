@@ -97,6 +97,7 @@ import {
   CircleAlertIcon,
   ListTodoIcon,
   PencilRulerIcon,
+  TargetIcon,
   type LucideIcon,
   LockIcon,
   LockOpenIcon,
@@ -114,15 +115,17 @@ import {
 } from "../../providerInstances";
 import { type AppModelOption, getAppModelOptionsForInstance } from "../../modelSelection";
 import type { UnifiedSettings } from "@t3tools/contracts/settings";
-import type { SessionPhase, Thread } from "../../types";
+import type { Project, SessionPhase, Thread } from "../../types";
 import type { PendingUserInputDraftAnswer } from "../../pendingUserInput";
 import type { PendingApproval, PendingUserInput } from "../../session-logic";
+import { filterProviderInstancesForActiveProfile } from "../../profiles";
 import {
   deriveLatestContextWindowSnapshot,
   formatProviderDisplayName,
 } from "../../lib/contextWindow";
 import { formatProviderSkillDisplayName } from "../../providerSkillPresentation";
 import { searchProviderSkills } from "../../providerSkillSearch";
+import { buildToolAccessCatalog, filterProviderSkillsForToolAccess } from "../../toolAccess";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import type { ReviewCommentContext } from "../../reviewCommentContext";
 
@@ -203,10 +206,37 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
 }) {
   const runtimeModeOption = runtimeModeConfig[props.runtimeMode];
   const RuntimeModeIcon = runtimeModeOption.icon;
-  const interactionModeTooltip =
-    props.interactionMode === "plan"
-      ? "Plan mode — click to return to normal build mode"
-      : "Default mode — click to enter plan mode";
+  const interactionModeConfig: Record<
+    ProviderInteractionMode,
+    {
+      readonly label: string;
+      readonly tooltip: string;
+      readonly icon: LucideIcon;
+      readonly activeClassName: string;
+    }
+  > = {
+    default: {
+      label: "Build",
+      tooltip: "Default build mode - click for plan mode",
+      icon: BotIcon,
+      activeClassName: "text-muted-foreground/70 hover:text-foreground/80",
+    },
+    plan: {
+      label: "Plan",
+      tooltip: "Plan mode - click for plan and goal mode",
+      icon: PencilRulerIcon,
+      activeClassName: "bg-blue-500/10 text-blue-400 hover:bg-blue-500/15 hover:text-blue-300",
+    },
+    plan_and_goal: {
+      label: "Goal",
+      tooltip: "Plan and goal mode - click to return to build mode",
+      icon: TargetIcon,
+      activeClassName:
+        "bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/15 hover:text-emerald-300",
+    },
+  };
+  const interactionModeOption = interactionModeConfig[props.interactionMode];
+  const InteractionModeIcon = interactionModeOption.icon;
   const planSidebarTooltip = props.planSidebarOpen
     ? `Hide ${props.planSidebarLabel.toLowerCase()} sidebar`
     : `Show ${props.planSidebarLabel.toLowerCase()} sidebar`;
@@ -221,27 +251,21 @@ const ComposerFooterModeControls = memo(function ComposerFooterModeControls(prop
               variant="ghost"
               className={cn(
                 "shrink-0 whitespace-nowrap px-2 sm:px-3",
-                props.interactionMode === "plan"
-                  ? "bg-blue-500/10 text-blue-400 hover:bg-blue-500/15 hover:text-blue-300"
-                  : "text-muted-foreground/70 hover:text-foreground/80",
+                interactionModeOption.activeClassName,
               )}
               size="sm"
               type="button"
               onClick={props.onToggleInteractionMode}
-              aria-label={interactionModeTooltip}
+              aria-label={interactionModeOption.tooltip}
             />
           }
         >
-          {props.interactionMode === "plan" ? (
-            <PencilRulerIcon className="text-current opacity-100" />
-          ) : (
-            <BotIcon />
-          )}
-          <span className="sr-only sm:not-sr-only">
-            {props.interactionMode === "plan" ? "Plan" : "Build"}
-          </span>
+          <InteractionModeIcon
+            className={props.interactionMode === "default" ? undefined : "text-current opacity-100"}
+          />
+          <span className="sr-only sm:not-sr-only">{interactionModeOption.label}</span>
         </TooltipTrigger>
-        <TooltipPopup side="top">{interactionModeTooltip}</TooltipPopup>
+        <TooltipPopup side="top">{interactionModeOption.tooltip}</TooltipPopup>
       </Tooltip>
     </>
   ) : null;
@@ -439,6 +463,7 @@ export interface ChatComposerProps {
   activeThreadId: ThreadId | null;
   activeThreadEnvironmentId: EnvironmentId | undefined;
   activeThread: Thread | undefined;
+  activeProject: Project | null;
   isServerThread: boolean;
   isLocalDraftThread: boolean;
 
@@ -550,6 +575,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThreadId,
     activeThreadEnvironmentId: _activeThreadEnvironmentId,
     activeThread,
+    activeProject,
     isServerThread: _isServerThread,
     isLocalDraftThread: _isLocalDraftThread,
     phase,
@@ -657,13 +683,12 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // Instance-aware projection of the wire provider list. One entry per
   // configured instance (default built-in + any custom `providerInstances.*`),
   // sorted default-first per driver kind for a stable picker order.
-  const providerInstanceEntries = useMemo<ReadonlyArray<ProviderInstanceEntry>>(
-    () =>
-      sortProviderInstanceEntries(
-        applyProviderInstanceSettings(deriveProviderInstanceEntries(providerStatuses), settings),
-      ),
-    [providerStatuses, settings],
-  );
+  const providerInstanceEntries = useMemo<ReadonlyArray<ProviderInstanceEntry>>(() => {
+    const entries = sortProviderInstanceEntries(
+      applyProviderInstanceSettings(deriveProviderInstanceEntries(providerStatuses), settings),
+    );
+    return filterProviderInstancesForActiveProfile(entries, settings);
+  }, [providerStatuses, settings]);
   const selectedProviderByThreadId = composerDraft.activeProvider ?? null;
   const threadProvider =
     activeThread?.session?.providerInstanceId ??
@@ -780,6 +805,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const selectedProviderStatus = useMemo(
     () => selectedProviderEntry?.snapshot ?? null,
     [selectedProviderEntry],
+  );
+  const toolCatalog = useMemo(() => buildToolAccessCatalog(providerStatuses), [providerStatuses]);
+  const selectedProviderSkills = useMemo(
+    () =>
+      filterProviderSkillsForToolAccess({
+        provider: selectedProviderStatus,
+        catalog: toolCatalog,
+        settings,
+        project: activeProject,
+      }),
+    [activeProject, selectedProviderStatus, settings, toolCatalog],
   );
   const selectedProviderModels = useMemo<ReadonlyArray<ServerProvider["models"][number]>>(
     () => selectedProviderEntry?.models ?? [],
@@ -965,6 +1001,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           description: "Switch this thread into plan mode",
         },
         {
+          id: "slash:plan-goal",
+          type: "slash-command",
+          command: "plan-goal",
+          label: "/plan-goal",
+          description: "Plan first, then implement the accepted plan as a goal",
+        },
+        {
           id: "slash:default",
           type: "slash-command",
           command: "default",
@@ -990,22 +1033,26 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       return searchSlashCommandItems(slashCommandItems, query);
     }
     if (composerTrigger.kind === "skill") {
-      return searchProviderSkills(selectedProviderStatus?.skills ?? [], composerTrigger.query).map(
-        (skill) => ({
-          id: `skill:${selectedProvider}:${skill.name}`,
-          type: "skill" as const,
-          provider: selectedProvider,
-          skill,
-          label: formatProviderSkillDisplayName(skill),
-          description:
-            skill.shortDescription ??
-            skill.description ??
-            (skill.scope ? `${skill.scope} skill` : "Run provider skill"),
-        }),
-      );
+      return searchProviderSkills(selectedProviderSkills, composerTrigger.query).map((skill) => ({
+        id: `skill:${selectedProvider}:${skill.name}`,
+        type: "skill" as const,
+        provider: selectedProvider,
+        skill,
+        label: formatProviderSkillDisplayName(skill),
+        description:
+          skill.shortDescription ??
+          skill.description ??
+          (skill.scope ? `${skill.scope} skill` : "Run provider skill"),
+      }));
     }
     return [];
-  }, [composerTrigger, selectedProvider, selectedProviderStatus, workspaceEntries.entries]);
+  }, [
+    composerTrigger,
+    selectedProvider,
+    selectedProviderSkills,
+    selectedProviderStatus,
+    workspaceEntries.entries,
+  ]);
 
   const composerMenuOpen = Boolean(composerTrigger);
   const composerMenuSearchKey = composerTrigger
@@ -1584,7 +1631,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           }
           return;
         }
-        void handleInteractionModeChange(item.command === "plan" ? "plan" : "default");
+        const nextInteractionMode =
+          item.command === "plan"
+            ? "plan"
+            : item.command === "plan-goal"
+              ? "plan_and_goal"
+              : "default";
+        void handleInteractionModeChange(nextInteractionMode);
         const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
           expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
         });
@@ -2396,7 +2449,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     ? composerTerminalContexts
                     : []
                 }
-                skills={selectedProviderStatus?.skills ?? []}
+                skills={selectedProviderSkills}
                 {...(showMobilePendingAnswerActions ? { className: "max-sm:pb-11" } : {})}
                 onRemoveTerminalContext={removeComposerTerminalContextFromDraft}
                 onChange={onPromptChange}
@@ -2502,7 +2555,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     runtimeMode={runtimeMode}
                     showInteractionModeToggle={composerProviderControls.showInteractionModeToggle}
                     traitsMenuContent={providerTraitsMenuContent}
-                    onToggleInteractionMode={toggleInteractionMode}
+                    onInteractionModeChange={handleInteractionModeChange}
                     onTogglePlanSidebar={togglePlanSidebar}
                     onRuntimeModeChange={handleRuntimeModeChange}
                   />

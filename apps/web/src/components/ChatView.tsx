@@ -95,6 +95,7 @@ import {
 } from "../pendingUserInput";
 import { useUiStateStore } from "../uiStateStore";
 import {
+  buildPlanGoalObjective,
   buildPlanImplementationThreadTitle,
   buildPlanImplementationPrompt,
   resolvePlanFollowUpSubmission,
@@ -1046,6 +1047,7 @@ function ChatViewContent(props: ChatViewProps) {
   );
   const timestampFormat = settings.timestampFormat;
   const autoOpenPlanSidebar = settings.autoOpenPlanSidebar;
+  const planAndGoalReviewMode = settings.planAndGoalReviewMode;
   const navigate = useNavigate();
   const { resolvedTheme } = useTheme();
   // Granular store selectors — avoid subscribing to prompt changes.
@@ -1128,6 +1130,7 @@ function ChatViewContent(props: ChatViewProps) {
   // When set, the thread-change reset effect will open the sidebar instead of closing it.
   // Used by "Implement in a new thread" to carry the sidebar-open intent across navigation.
   const planSidebarOpenOnNextThreadRef = useRef(false);
+  const autoStartedPlanAndGoalIdsRef = useRef(new Set<string>());
   const [terminalFocusRequestId, setTerminalFocusRequestId] = useState(0);
   const [pullRequestDialogState, setPullRequestDialogState] =
     useState<PullRequestDialogState | null>(null);
@@ -1791,10 +1794,12 @@ function ChatViewContent(props: ChatViewProps) {
     () => deriveActivePlanState(threadActivities, activeLatestTurn?.turnId ?? undefined),
     [activeLatestTurn?.turnId, threadActivities],
   );
-  const planSidebarLabel = sidebarProposedPlan || interactionMode === "plan" ? "Plan" : "Tasks";
+  const isPlanningInteractionMode =
+    interactionMode === "plan" || interactionMode === "plan_and_goal";
+  const planSidebarLabel = sidebarProposedPlan || isPlanningInteractionMode ? "Plan" : "Tasks";
   const showPlanFollowUpPrompt =
     pendingUserInputs.length === 0 &&
-    interactionMode === "plan" &&
+    isPlanningInteractionMode &&
     latestTurnSettled &&
     hasActionableProposedPlan(activeProposedPlan);
   const activePendingApproval = pendingApprovals[0] ?? null;
@@ -2744,7 +2749,13 @@ function ChatViewContent(props: ChatViewProps) {
     ],
   );
   const toggleInteractionMode = useCallback(() => {
-    handleInteractionModeChange(interactionMode === "plan" ? "default" : "plan");
+    const nextMode =
+      interactionMode === "default"
+        ? "plan"
+        : interactionMode === "plan"
+          ? "plan_and_goal"
+          : "default";
+    handleInteractionModeChange(nextMode);
   }, [handleInteractionModeChange, interactionMode]);
   const dismissPlanSidebarForCurrentTurn = useCallback(() => {
     planSidebarDismissedForTurnRef.current =
@@ -3922,6 +3933,8 @@ function ChatViewContent(props: ChatViewProps) {
       const followUp = resolvePlanFollowUpSubmission({
         draftText: trimmed,
         planMarkdown: activeProposedPlan.planMarkdown,
+        interactionMode,
+        executionMode: interactionMode === "plan_and_goal" ? "goal" : "implement",
       });
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
@@ -3929,6 +3942,7 @@ function ChatViewContent(props: ChatViewProps) {
       await onSubmitPlanFollowUp({
         text: followUp.text,
         interactionMode: followUp.interactionMode,
+        ...(followUp.goalObjective !== undefined ? { goalObjective: followUp.goalObjective } : {}),
       });
       return;
     }
@@ -3941,7 +3955,9 @@ function ChatViewContent(props: ChatViewProps) {
         ? parseStandaloneComposerSlashCommand(trimmed)
         : null;
     if (standaloneSlashCommand) {
-      handleInteractionModeChange(standaloneSlashCommand);
+      handleInteractionModeChange(
+        standaloneSlashCommand === "plan-goal" ? "plan_and_goal" : standaloneSlashCommand,
+      );
       promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
       composerRef.current?.resetCursorState();
@@ -4419,9 +4435,11 @@ function ChatViewContent(props: ChatViewProps) {
     async ({
       text,
       interactionMode: nextInteractionMode,
+      goalObjective,
     }: {
       text: string;
-      interactionMode: "default" | "plan";
+      interactionMode: ProviderInteractionMode;
+      goalObjective?: string;
     }) => {
       if (
         !activeThread ||
@@ -4531,6 +4549,7 @@ function ChatViewContent(props: ChatViewProps) {
                   },
                 }
               : {}),
+            ...(goalObjective !== undefined ? { goalObjective } : {}),
             createdAt: messageCreatedAt,
           },
         });
@@ -4582,6 +4601,46 @@ function ChatViewContent(props: ChatViewProps) {
       composerRef,
     ],
   );
+
+  useEffect(() => {
+    if (
+      planAndGoalReviewMode !== "auto" ||
+      interactionMode !== "plan_and_goal" ||
+      !showPlanFollowUpPrompt ||
+      !activeThread ||
+      !activeProposedPlan ||
+      isSendBusy ||
+      isConnecting ||
+      sendInFlightRef.current
+    ) {
+      return;
+    }
+    const autoStartKey = `${activeThread.environmentId}:${activeThread.id}:${activeProposedPlan.id}`;
+    if (autoStartedPlanAndGoalIdsRef.current.has(autoStartKey)) {
+      return;
+    }
+    autoStartedPlanAndGoalIdsRef.current.add(autoStartKey);
+    const followUp = resolvePlanFollowUpSubmission({
+      draftText: "",
+      planMarkdown: activeProposedPlan.planMarkdown,
+      interactionMode,
+      executionMode: "goal",
+    });
+    void onSubmitPlanFollowUp({
+      text: followUp.text,
+      interactionMode: followUp.interactionMode,
+      ...(followUp.goalObjective !== undefined ? { goalObjective: followUp.goalObjective } : {}),
+    });
+  }, [
+    activeProposedPlan,
+    activeThread,
+    interactionMode,
+    isConnecting,
+    isSendBusy,
+    onSubmitPlanFollowUp,
+    planAndGoalReviewMode,
+    showPlanFollowUpPrompt,
+  ]);
 
   const onImplementPlanInNewThread = useCallback(async () => {
     if (
@@ -4666,6 +4725,9 @@ function ChatViewContent(props: ChatViewProps) {
             threadId: activeThread.id,
             planId: activeProposedPlan.id,
           },
+          ...(interactionMode === "plan_and_goal"
+            ? { goalObjective: buildPlanGoalObjective(planMarkdown) }
+            : {}),
           createdAt,
         },
       });
@@ -4731,6 +4793,7 @@ function ChatViewContent(props: ChatViewProps) {
     activeEnvironmentUnavailable,
     createThread,
     deleteThread,
+    interactionMode,
     isConnecting,
     isSendBusy,
     isServerThread,
@@ -5151,6 +5214,7 @@ function ChatViewContent(props: ChatViewProps) {
                       activeThreadId={activeThreadId}
                       activeThreadEnvironmentId={activeThread?.environmentId}
                       activeThread={activeThread}
+                      activeProject={activeProject ?? null}
                       isServerThread={isServerThread}
                       isLocalDraftThread={isLocalDraftThread}
                       phase={phase}

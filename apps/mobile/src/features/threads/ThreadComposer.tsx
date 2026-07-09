@@ -369,6 +369,13 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
           description: "Switch to plan mode",
         },
         {
+          id: "cmd:plan-goal",
+          type: "slash-command" as const,
+          command: "plan-goal",
+          label: "/plan-goal",
+          description: "Plan first, then execute as a goal",
+        },
+        {
           id: "cmd:default",
           type: "slash-command" as const,
           command: "default",
@@ -524,7 +531,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
 
       if (
         item.type === "slash-command" &&
-        (item.command === "plan" || item.command === "default")
+        (item.command === "plan" || item.command === "plan-goal" || item.command === "default")
       ) {
         const result = replaceTextRange(
           draftMessage,
@@ -534,7 +541,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
         );
         setComposerSelection({ start: result.cursor, end: result.cursor });
         onChangeDraftMessage(result.text);
-        onUpdateInteractionMode(item.command);
+        onUpdateInteractionMode(item.command === "plan-goal" ? "plan_and_goal" : item.command);
         return;
       }
 

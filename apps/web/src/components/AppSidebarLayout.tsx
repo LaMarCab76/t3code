@@ -3,6 +3,8 @@ import { useEffect, type CSSProperties, type ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
 
 import { isElectron } from "../env";
+import { useClientSettings } from "../hooks/useSettings";
+import { syncBrowserChromeTheme } from "../hooks/useTheme";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import { isMacPlatform } from "../lib/utils";
 import { primaryServerKeybindingsAtom } from "../state/server";
@@ -14,6 +16,16 @@ const THREAD_SIDEBAR_WIDTH_STORAGE_KEY = "chat_thread_sidebar_width";
 const THREAD_SIDEBAR_MIN_WIDTH = 13 * 16;
 const THREAD_MAIN_CONTENT_MIN_WIDTH = 40 * 16;
 const MACOS_TRAFFIC_LIGHTS_LEFT_INSET = "90px";
+
+function normalizeCssColor(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const css = globalThis.CSS;
+  if (typeof css === "undefined" || typeof css.supports !== "function") {
+    return /^#[0-9a-f]{6}$/i.test(trimmed) ? trimmed : null;
+  }
+  return css.supports("color", trimmed) ? trimmed : null;
+}
 
 function SidebarControl() {
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
@@ -55,6 +67,7 @@ function SidebarControl() {
 
 export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
+  const appBackgroundColor = useClientSettings((settings) => settings.appBackgroundColor);
   const macosWindowControlsStyle =
     isElectron && isMacPlatform(navigator.platform)
       ? ({ "--workspace-controls-left": MACOS_TRAFFIC_LIGHTS_LEFT_INSET } as CSSProperties)
@@ -76,6 +89,16 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
       unsubscribe?.();
     };
   }, [navigate]);
+
+  useEffect(() => {
+    const color = normalizeCssColor(appBackgroundColor);
+    if (color) {
+      document.documentElement.style.setProperty("--app-user-background", color);
+    } else {
+      document.documentElement.style.removeProperty("--app-user-background");
+    }
+    syncBrowserChromeTheme();
+  }, [appBackgroundColor]);
 
   return (
     <SidebarProvider className="h-dvh! min-h-0!" defaultOpen style={macosWindowControlsStyle}>

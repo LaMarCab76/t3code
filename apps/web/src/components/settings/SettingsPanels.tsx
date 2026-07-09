@@ -18,7 +18,7 @@ import {
   settlePromise,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
+import { DEFAULT_PROFILE_ID, DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { createModelSelection } from "@t3tools/shared/model";
 import * as Arr from "effect/Array";
 import * as Duration from "effect/Duration";
@@ -49,6 +49,15 @@ import {
   deriveProviderInstanceEntries,
   sortProviderInstanceEntries,
 } from "../../providerInstances";
+import {
+  ALL_PROFILES_PROVIDER_SCOPE,
+  assignProviderInstanceToProfilePatch,
+  getActiveProfile,
+  getAppProfiles,
+  projectProfileKeyFromPath,
+  providerScopeLabel,
+} from "../../profiles";
+import { buildToolAccessCatalog } from "../../toolAccess";
 import { ensureLocalApi, readLocalApi } from "../../localApi";
 import {
   primaryServerObservabilityAtom,
@@ -74,6 +83,7 @@ import {
   type ProviderUpdateCandidate,
 } from "../ProviderUpdateLaunchNotification.logic";
 import { ProviderInstanceCard } from "./ProviderInstanceCard";
+import { ToolAccessPolicyControl } from "./ToolAccessPolicyControl";
 import { DRIVER_OPTIONS, getDriverOption } from "./providerDriverMeta";
 import {
   buildProviderInstanceUpdatePatch,
@@ -108,6 +118,11 @@ const TIMESTAMP_FORMAT_LABELS = {
   locale: "System default",
   "12-hour": "12-hour",
   "24-hour": "24-hour",
+} as const;
+
+const PLAN_AND_GOAL_REVIEW_MODE_LABELS = {
+  manual_review: "Manual Review",
+  auto: "Auto",
 } as const;
 
 const DEFAULT_DRIVER_KIND = ProviderDriverKind.make("codex");
@@ -385,6 +400,9 @@ export function useSettingsRestore(onRestored?: () => void) {
   const changedSettingLabels = useMemo(
     () => [
       ...(theme !== "system" ? ["Theme"] : []),
+      ...(settings.appBackgroundColor !== DEFAULT_UNIFIED_SETTINGS.appBackgroundColor
+        ? ["Background"]
+        : []),
       ...(settings.timestampFormat !== DEFAULT_UNIFIED_SETTINGS.timestampFormat
         ? ["Time format"]
         : []),
@@ -421,13 +439,25 @@ export function useSettingsRestore(onRestored?: () => void) {
       ...(settings.confirmThreadDelete !== DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete
         ? ["Delete confirmation"]
         : []),
+      ...(!Equal.equals(
+        settings.globalToolAccessPolicy,
+        DEFAULT_UNIFIED_SETTINGS.globalToolAccessPolicy,
+      )
+        ? ["All chat tools"]
+        : []),
+      ...(Object.keys(settings.profileToolAccessPolicies).length > 0 ? ["Profile tools"] : []),
+      ...(Object.keys(settings.projectToolAccessPolicies).length > 0 ? ["Project tools"] : []),
       ...(isGitWritingModelDirty ? ["Git writing model"] : []),
     ],
     [
       isGitWritingModelDirty,
+      settings.appBackgroundColor,
       settings.autoOpenPlanSidebar,
       settings.confirmThreadArchive,
       settings.confirmThreadDelete,
+      settings.globalToolAccessPolicy,
+      settings.profileToolAccessPolicies,
+      settings.projectToolAccessPolicies,
       settings.addProjectBaseDirectory,
       settings.defaultThreadEnvMode,
       settings.newWorktreesStartFromOrigin,
@@ -453,6 +483,7 @@ export function useSettingsRestore(onRestored?: () => void) {
 
     setTheme("system");
     updateSettings({
+      appBackgroundColor: DEFAULT_UNIFIED_SETTINGS.appBackgroundColor,
       timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,
       wordWrap: DEFAULT_UNIFIED_SETTINGS.wordWrap,
       diffIgnoreWhitespace: DEFAULT_UNIFIED_SETTINGS.diffIgnoreWhitespace,
@@ -465,6 +496,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       addProjectBaseDirectory: DEFAULT_UNIFIED_SETTINGS.addProjectBaseDirectory,
       confirmThreadArchive: DEFAULT_UNIFIED_SETTINGS.confirmThreadArchive,
       confirmThreadDelete: DEFAULT_UNIFIED_SETTINGS.confirmThreadDelete,
+      globalToolAccessPolicy: DEFAULT_UNIFIED_SETTINGS.globalToolAccessPolicy,
+      profileToolAccessPolicies: DEFAULT_UNIFIED_SETTINGS.profileToolAccessPolicies,
+      projectToolAccessPolicies: DEFAULT_UNIFIED_SETTINGS.projectToolAccessPolicies,
       textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
     });
     onRestored?.();
@@ -482,6 +516,12 @@ export function GeneralSettingsPanel() {
   const updateSettings = useUpdatePrimarySettings();
   const observability = useAtomValue(primaryServerObservabilityAtom);
   const serverProviders = useAtomValue(primaryServerProvidersAtom);
+  const toolCatalog = useMemo(() => buildToolAccessCatalog(serverProviders), [serverProviders]);
+  const activeProfile = getActiveProfile(settings);
+  const appBackgroundColor = settings.appBackgroundColor.trim();
+  const appBackgroundColorInputValue = /^#[0-9a-f]{6}$/i.test(appBackgroundColor)
+    ? appBackgroundColor
+    : "#0b1210";
   const diagnosticsDescription = formatDiagnosticsDescription({
     localTracingEnabled: observability?.localTracingEnabled ?? false,
     otlpTracesEnabled: observability?.otlpTracesEnabled ?? false,
@@ -546,6 +586,42 @@ export function GeneralSettingsPanel() {
                 ))}
               </SelectPopup>
             </Select>
+          }
+        />
+
+        <SettingsRow
+          title="Background"
+          description="Set the app chrome background color."
+          resetAction={
+            settings.appBackgroundColor !== DEFAULT_UNIFIED_SETTINGS.appBackgroundColor ? (
+              <SettingResetButton
+                label="background color"
+                onClick={() =>
+                  updateSettings({
+                    appBackgroundColor: DEFAULT_UNIFIED_SETTINGS.appBackgroundColor,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <div className="flex items-center gap-2">
+              <input
+                type="color"
+                value={appBackgroundColorInputValue}
+                aria-label="App background color"
+                className="h-8 w-11 cursor-pointer rounded-md border border-border bg-background p-1"
+                onChange={(event) => updateSettings({ appBackgroundColor: event.target.value })}
+              />
+              <DraftInput
+                className="w-28 font-mono text-xs"
+                value={settings.appBackgroundColor}
+                onCommit={(next) => updateSettings({ appBackgroundColor: next.trim() })}
+                placeholder="Default"
+                spellCheck={false}
+                aria-label="App background color value"
+              />
+            </div>
           }
         />
 
@@ -718,6 +794,47 @@ export function GeneralSettingsPanel() {
               }
               aria-label="Open the task panel automatically"
             />
+          }
+        />
+
+        <SettingsRow
+          title="Plan and goal"
+          description="Choose whether accepted plan+goal plans wait for review or start automatically."
+          resetAction={
+            settings.planAndGoalReviewMode !== DEFAULT_UNIFIED_SETTINGS.planAndGoalReviewMode ? (
+              <SettingResetButton
+                label="plan and goal review mode"
+                onClick={() =>
+                  updateSettings({
+                    planAndGoalReviewMode: DEFAULT_UNIFIED_SETTINGS.planAndGoalReviewMode,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Select
+              value={settings.planAndGoalReviewMode}
+              onValueChange={(value) => {
+                if (value === "manual_review" || value === "auto") {
+                  updateSettings({ planAndGoalReviewMode: value });
+                }
+              }}
+            >
+              <SelectTrigger className="w-full sm:w-44" aria-label="Plan and goal review mode">
+                <SelectValue>
+                  {PLAN_AND_GOAL_REVIEW_MODE_LABELS[settings.planAndGoalReviewMode]}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem hideIndicator value="manual_review">
+                  {PLAN_AND_GOAL_REVIEW_MODE_LABELS.manual_review}
+                </SelectItem>
+                <SelectItem hideIndicator value="auto">
+                  {PLAN_AND_GOAL_REVIEW_MODE_LABELS.auto}
+                </SelectItem>
+              </SelectPopup>
+            </Select>
           }
         />
 
@@ -952,6 +1069,70 @@ export function GeneralSettingsPanel() {
         />
       </SettingsSection>
 
+      <SettingsSection title="Tools">
+        <SettingsRow
+          title="All chats"
+          description="Default plugins, MCPs, and skills available to every chat."
+          resetAction={
+            settings.globalToolAccessPolicy.mode !==
+              DEFAULT_UNIFIED_SETTINGS.globalToolAccessPolicy.mode ||
+            settings.globalToolAccessPolicy.enabledToolKeys.length > 0 ? (
+              <SettingResetButton
+                label="all chat tools"
+                onClick={() =>
+                  updateSettings({
+                    globalToolAccessPolicy: DEFAULT_UNIFIED_SETTINGS.globalToolAccessPolicy,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <div className="w-full sm:w-[28rem]">
+              <ToolAccessPolicyControl
+                scope="global"
+                catalog={toolCatalog}
+                policy={settings.globalToolAccessPolicy}
+                onChange={(policy) => updateSettings({ globalToolAccessPolicy: policy })}
+              />
+            </div>
+          }
+        />
+        <SettingsRow
+          title={`${activeProfile.name} profile`}
+          description="Profile-level tools used unless a project has its own custom list."
+          resetAction={
+            settings.profileToolAccessPolicies[activeProfile.id] !== undefined ? (
+              <SettingResetButton
+                label="profile tools"
+                onClick={() => {
+                  const next = { ...settings.profileToolAccessPolicies };
+                  delete next[activeProfile.id];
+                  updateSettings({ profileToolAccessPolicies: next });
+                }}
+              />
+            ) : null
+          }
+          control={
+            <div className="w-full sm:w-[28rem]">
+              <ToolAccessPolicyControl
+                scope="profile"
+                catalog={toolCatalog}
+                policy={settings.profileToolAccessPolicies[activeProfile.id]}
+                onChange={(policy) =>
+                  updateSettings({
+                    profileToolAccessPolicies: {
+                      ...settings.profileToolAccessPolicies,
+                      [activeProfile.id]: policy,
+                    },
+                  })
+                }
+              />
+            </div>
+          }
+        />
+      </SettingsSection>
+
       <SettingsSection title="About">
         {isElectron || HOSTED_APP_CHANNEL ? (
           <AboutVersionSection />
@@ -1012,6 +1193,7 @@ export function ProviderSettingsPanel() {
   );
   const textGenerationModelSelection = resolveAppModelSelectionState(settings, serverProviders);
   const textGenInstanceId = textGenerationModelSelection.instanceId;
+  const profiles = getAppProfiles(settings);
   const lastCheckedAt =
     serverProviders.length > 0
       ? serverProviders.reduce(
@@ -1343,13 +1525,52 @@ export function ProviderSettingsPanel() {
             favorite.provider === row.instanceId ? Result.succeed(favorite.model) : Result.failVoid,
           );
           const resetLabel = driverOption?.label ?? String(row.driver);
-          const headerAction =
+          const assignedProfileId =
+            settings.providerInstanceProfileAssignments?.[row.instanceId] ??
+            ALL_PROFILES_PROVIDER_SCOPE;
+          const profileScopeControl = (
+            <Select
+              value={assignedProfileId}
+              onValueChange={(value) => {
+                updateSettings(
+                  assignProviderInstanceToProfilePatch(
+                    settings,
+                    row.instanceId,
+                    value === ALL_PROFILES_PROVIDER_SCOPE ? null : value,
+                  ),
+                );
+              }}
+            >
+              <SelectTrigger
+                size="xs"
+                className="h-6 min-w-0 max-w-32 border-border/70 px-2 text-[11px]"
+                aria-label={`${resetLabel} profile scope`}
+              >
+                <SelectValue>{providerScopeLabel(settings, row.instanceId)}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                <SelectItem value={ALL_PROFILES_PROVIDER_SCOPE}>All profiles</SelectItem>
+                {profiles.map((profile) => (
+                  <SelectItem key={profile.id} value={profile.id}>
+                    {profile.name}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          );
+          const resetAction =
             row.isDefault && row.isDirty ? (
               <SettingResetButton
                 label={`${resetLabel} provider settings`}
                 onClick={() => resetDefaultInstance(row.driver)}
               />
             ) : null;
+          const headerAction = (
+            <div className="flex min-w-0 items-center gap-1.5">
+              {profileScopeControl}
+              {resetAction}
+            </div>
+          );
           return (
             <ProviderInstanceCard
               key={row.instanceId}
@@ -1422,6 +1643,8 @@ export function ProviderSettingsPanel() {
 
 export function ArchivedThreadsPanel() {
   const projects = useProjects();
+  const settings = usePrimarySettings();
+  const activeProfile = getActiveProfile(settings);
   const { unarchiveThread, confirmAndDeleteThread } = useThreadActions();
   const environmentIds = useMemo(
     () => [...new Set(projects.map((project) => project.environmentId))],
@@ -1437,8 +1660,15 @@ export function ArchivedThreadsPanel() {
   const archivedGroups = useMemo(() => {
     const projectsByEnvironmentAndId = new Map(
       archivedSnapshots.flatMap(({ environmentId, snapshot }) =>
-        snapshot.projects.map(
-          (project) =>
+        snapshot.projects.flatMap((project) => {
+          const assignedProfileId =
+            settings.projectProfileAssignments[
+              projectProfileKeyFromPath(environmentId, project.workspaceRoot)
+            ] ?? DEFAULT_PROFILE_ID;
+          if (assignedProfileId !== activeProfile.id) {
+            return [];
+          }
+          return [
             [
               `${environmentId}:${project.id}`,
               {
@@ -1448,14 +1678,19 @@ export function ArchivedThreadsPanel() {
                 cwd: project.workspaceRoot,
               },
             ] as const,
-        ),
+          ];
+        }),
       ),
     );
     const threads = archivedSnapshots.flatMap(({ environmentId, snapshot }) =>
-      snapshot.threads.map((thread) => ({
-        ...thread,
-        environmentId,
-      })),
+      snapshot.threads
+        .map((thread) => ({
+          ...thread,
+          environmentId,
+        }))
+        .filter((thread) =>
+          projectsByEnvironmentAndId.has(`${thread.environmentId}:${thread.projectId}`),
+        ),
     );
 
     const archivedProjects = Array.from(projectsByEnvironmentAndId.values());
@@ -1482,7 +1717,7 @@ export function ArchivedThreadsPanel() {
       }
     }
     return groups;
-  }, [archivedSnapshots]);
+  }, [activeProfile.id, archivedSnapshots, settings.projectProfileAssignments]);
 
   const handleArchivedThreadContextMenu = useCallback(
     async (threadRef: ScopedThreadRef, position: { x: number; y: number }) => {
@@ -1548,20 +1783,20 @@ export function ArchivedThreadsPanel() {
                   ? "Loading archived threads"
                   : archiveError
                     ? "Could not load archived threads"
-                    : "No archived threads"}
+                    : `No archived threads in ${activeProfile.name}`}
               </span>
             }
             description={
               isLoadingArchive
                 ? "Checking connected environments."
-                : (archiveError ?? "Archived threads will appear here.")
+                : (archiveError ?? "Archived threads for this profile will appear here.")
             }
           />
         </SettingsSection>
       ) : (
         archivedGroups.map(({ project, threads: projectThreads }) => (
           <SettingsSection
-            key={project.id}
+            key={`${project.environmentId}:${project.id}`}
             title={project.name}
             icon={<ProjectFavicon environmentId={project.environmentId} cwd={project.cwd} />}
           >

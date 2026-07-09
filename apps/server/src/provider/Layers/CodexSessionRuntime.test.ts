@@ -124,6 +124,25 @@ describe("buildTurnStartParams", () => {
     });
   });
 
+  it("maps plan and goal collaboration to Codex plan mode", () => {
+    const params = Effect.runSync(
+      buildTurnStartParams({
+        threadId: "provider-thread-1",
+        runtimeMode: "full-access",
+        prompt: "Make a plan",
+        model: "gpt-5.3-codex",
+        effort: "medium",
+        interactionMode: "plan_and_goal",
+      }),
+    );
+
+    NodeAssert.equal(params.collaborationMode?.mode, "plan");
+    NodeAssert.equal(
+      params.collaborationMode?.settings.developer_instructions,
+      CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
+    );
+  });
+
   it("includes default collaboration mode and image attachments", () => {
     const params = Effect.runSync(
       buildTurnStartParams({

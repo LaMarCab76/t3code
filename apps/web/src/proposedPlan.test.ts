@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   buildCollapsedProposedPlanPreviewMarkdown,
+  buildPlanGoalObjective,
   buildPlanImplementationThreadTitle,
   buildPlanImplementationPrompt,
   buildProposedPlanMarkdownFilename,
@@ -25,6 +26,12 @@ describe("buildPlanImplementationPrompt", () => {
     expect(buildPlanImplementationPrompt("## Ship it\n\n- step 1\n")).toBe(
       "PLEASE IMPLEMENT THIS PLAN:\n## Ship it\n\n- step 1",
     );
+  });
+});
+
+describe("buildPlanGoalObjective", () => {
+  it("uses the plan markdown as the goal objective", () => {
+    expect(buildPlanGoalObjective("## Ship it\n\n- step 1\n")).toBe("## Ship it\n\n- step 1");
   });
 });
 
@@ -85,6 +92,33 @@ describe("resolvePlanFollowUpSubmission", () => {
     ).toEqual({
       text: "Refine step 2 first",
       interactionMode: "plan",
+    });
+  });
+
+  it("keeps plan and goal mode when the user refines that mode's plan", () => {
+    expect(
+      resolvePlanFollowUpSubmission({
+        draftText: "Add rollback checks",
+        planMarkdown: "## Ship it\n\n- step 1\n",
+        interactionMode: "plan_and_goal",
+      }),
+    ).toEqual({
+      text: "Add rollback checks",
+      interactionMode: "plan_and_goal",
+    });
+  });
+
+  it("returns a goal objective for plan and goal implementation", () => {
+    expect(
+      resolvePlanFollowUpSubmission({
+        draftText: "   ",
+        planMarkdown: "## Ship it\n\n- step 1\n",
+        executionMode: "goal",
+      }),
+    ).toEqual({
+      text: "PLEASE IMPLEMENT THIS PLAN:\n## Ship it\n\n- step 1",
+      interactionMode: "default",
+      goalObjective: "## Ship it\n\n- step 1",
     });
   });
 });

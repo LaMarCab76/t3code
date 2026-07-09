@@ -88,6 +88,18 @@ export const ServerProviderSkill = Schema.Struct({
   enabled: Schema.Boolean,
   displayName: Schema.optional(TrimmedNonEmptyString),
   shortDescription: Schema.optional(TrimmedNonEmptyString),
+  toolDependencies: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        type: TrimmedNonEmptyString,
+        value: TrimmedNonEmptyString,
+        command: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),
+        description: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),
+        transport: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),
+        url: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),
+      }),
+    ),
+  ),
 });
 export type ServerProviderSkill = typeof ServerProviderSkill.Type;
 

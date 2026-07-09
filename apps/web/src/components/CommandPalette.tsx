@@ -49,7 +49,7 @@ import { OpenAddProjectCommandPaletteProvider } from "../commandPaletteContext";
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
-import { useClientSettings } from "../hooks/useSettings";
+import { useClientSettings, useUpdateClientSettings } from "../hooks/useSettings";
 import { readLocalApi } from "../localApi";
 import { desktopLocalBackendId } from "../connection/desktopLocal";
 import { filesystemEnvironment } from "../state/filesystem";
@@ -60,6 +60,13 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { useEnvironments, usePrimaryEnvironment } from "../state/environments";
 import { useProjects, useThreadShells } from "../state/entities";
+import {
+  assignProjectKeysToProfilePatch,
+  filterProjectsForActiveProfile,
+  filterThreadsForActiveProfile,
+  getActiveProfileId,
+  projectProfileKeyFromPath,
+} from "../profiles";
 import {
   startNewThreadInProjectFromContext,
   startNewThreadFromContext,
@@ -84,6 +91,7 @@ import { getLatestThreadForProject } from "../lib/threadSort";
 import { cn, isMacPlatform, isWindowsPlatform, newProjectId } from "../lib/utils";
 import { selectThreadTerminalUiState, useTerminalUiStateStore } from "../terminalUiStateStore";
 import { buildThreadRouteParams, resolveThreadRouteTarget } from "../threadRoutes";
+import type { Project } from "../types";
 import {
   applyWslEnvironmentConfiguration,
   parseWslUncPath,
@@ -129,6 +137,16 @@ import { ComposerHandleContext, useComposerHandleContext } from "../composerHand
 import type { ChatComposerHandle } from "./chat/ChatComposer";
 
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
+
+function renderProjectFavicon(project: Project): ReactNode {
+  return (
+    <ProjectFavicon
+      environmentId={project.environmentId}
+      cwd={project.workspaceRoot}
+      className={ITEM_ICON_CLASS}
+    />
+  );
+}
 
 function getLocalFileManagerName(platform: string): string {
   if (isMacPlatform(platform)) {
@@ -459,6 +477,7 @@ function OpenCommandPaletteDialog(props: {
   const isActionsOnly = deferredQuery.startsWith(">");
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
   const clientSettings = useClientSettings();
+  const updateClientSettings = useUpdateClientSettings();
   const createProject = useAtomCommand(projectEnvironment.create, {
     reportFailure: false,
   });
@@ -475,6 +494,14 @@ function OpenCommandPaletteDialog(props: {
     useHandleNewThread();
   const projects = useProjects();
   const threads = useThreadShells();
+  const visibleProjects = useMemo(
+    () => filterProjectsForActiveProfile(projects, clientSettings),
+    [clientSettings, projects],
+  );
+  const visibleThreads = useMemo(
+    () => filterThreadsForActiveProfile(threads, projects, clientSettings),
+    [clientSettings, projects, threads],
+  );
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const [viewStack, setViewStack] = useState<CommandPaletteView[]>([]);
   const currentView = viewStack.at(-1) ?? null;
@@ -586,8 +613,8 @@ function OpenCommandPaletteDialog(props: {
     [projects],
   );
   const projectTitleById = useMemo(
-    () => new Map<ProjectId, string>(projects.map((project) => [project.id, project.title])),
-    [projects],
+    () => new Map<ProjectId, string>(visibleProjects.map((project) => [project.id, project.title])),
+    [visibleProjects],
   );
 
   const activeThreadId = activeThread?.id;
@@ -629,9 +656,9 @@ function OpenCommandPaletteDialog(props: {
   );
 
   const openProjectFromSearch = useMemo(
-    () => async (project: (typeof projects)[number]) => {
+    () => async (project: (typeof visibleProjects)[number]) => {
       const latestThread = getLatestThreadForProject(
-        threads.filter((thread) => thread.environmentId === project.environmentId),
+        visibleThreads.filter((thread) => thread.environmentId === project.environmentId),
         project.id,
         clientSettings.sidebarThreadSortOrder,
       );
@@ -647,39 +674,27 @@ function OpenCommandPaletteDialog(props: {
 
       await handleNewThread(scopeProjectRef(project.environmentId, project.id));
     },
-    [handleNewThread, navigate, clientSettings.sidebarThreadSortOrder, threads],
+    [handleNewThread, navigate, clientSettings.sidebarThreadSortOrder, visibleThreads],
   );
 
   const projectSearchItems = useMemo(
     () =>
       buildProjectActionItems({
-        projects,
+        projects: visibleProjects,
         valuePrefix: "project",
-        icon: (project) => (
-          <ProjectFavicon
-            environmentId={project.environmentId}
-            cwd={project.workspaceRoot}
-            className={ITEM_ICON_CLASS}
-          />
-        ),
+        icon: renderProjectFavicon,
         runProject: openProjectFromSearch,
       }),
-    [openProjectFromSearch, projects],
+    [openProjectFromSearch, visibleProjects],
   );
 
   const projectThreadItems = useMemo(
     () =>
       buildProjectActionItems({
-        projects,
+        projects: visibleProjects,
         valuePrefix: "new-thread-in",
         shortcutCommand: "chat.new",
-        icon: (project) => (
-          <ProjectFavicon
-            environmentId={project.environmentId}
-            cwd={project.workspaceRoot}
-            className={ITEM_ICON_CLASS}
-          />
-        ),
+        icon: renderProjectFavicon,
         runProject: async (project) => {
           await startNewThreadInProjectFromContext(
             {
@@ -692,13 +707,13 @@ function OpenCommandPaletteDialog(props: {
           );
         },
       }),
-    [activeDraftThread, activeThread, defaultProjectRef, handleNewThread, projects],
+    [activeDraftThread, activeThread, defaultProjectRef, handleNewThread, visibleProjects],
   );
 
   const allThreadItems = useMemo(
     () =>
       buildThreadActionItems({
-        threads,
+        threads: visibleThreads,
         ...(activeThreadId ? { activeThreadId } : {}),
         projectTitleById,
         sortOrder: clientSettings.sidebarThreadSortOrder,
@@ -712,7 +727,13 @@ function OpenCommandPaletteDialog(props: {
           });
         },
       }),
-    [activeThreadId, clientSettings.sidebarThreadSortOrder, navigate, projectTitleById, threads],
+    [
+      activeThreadId,
+      clientSettings.sidebarThreadSortOrder,
+      navigate,
+      projectTitleById,
+      visibleThreads,
+    ],
   );
   const recentThreadItems = allThreadItems.slice(0, RECENT_THREAD_LIMIT);
 
@@ -1116,6 +1137,13 @@ function OpenCommandPaletteDialog(props: {
         cwd,
       );
       if (existing) {
+        updateClientSettings(
+          assignProjectKeysToProfilePatch(
+            clientSettings,
+            [projectProfileKeyFromPath(existing.environmentId, existing.workspaceRoot)],
+            getActiveProfileId(clientSettings),
+          ),
+        );
         const latestThread = getLatestThreadForProject(
           threads.filter((thread) => thread.environmentId === existing.environmentId),
           existing.id,
@@ -1176,6 +1204,14 @@ function OpenCommandPaletteDialog(props: {
         return;
       }
 
+      updateClientSettings(
+        assignProjectKeysToProfilePatch(
+          clientSettings,
+          [projectProfileKeyFromPath(input.environmentId, cwd)],
+          getActiveProfileId(clientSettings),
+        ),
+      );
+
       const navigationResult = await settlePromise(() =>
         handleNewThread(scopeProjectRef(input.environmentId, projectId)),
       );
@@ -1195,11 +1231,14 @@ function OpenCommandPaletteDialog(props: {
     [
       handleNewThread,
       createProject,
+      updateClientSettings,
       navigate,
       projects,
       setOpen,
+      clientSettings,
       clientSettings.sidebarThreadSortOrder,
       threads,
+      visibleThreads,
     ],
   );
 
