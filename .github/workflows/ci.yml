@@ -57,8 +57,6 @@ jobs:
 
       - uses: ./.github/actions/setup-apt-mirrors
 
-      - uses: ./.github/actions/setup-apt-mirrors
-
       - name: Install browser secret helper build libraries
         run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
 
@@ -98,8 +96,6 @@ jobs:
 
       - uses: ./.github/actions/setup-apt-mirrors
 
-      - uses: ./.github/actions/setup-apt-mirrors
-
       - name: Install browser secret helper build libraries
         run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
 
@@ -110,7 +106,8 @@ jobs:
         run: node --test .github/scripts/check-nightly-release.test.cjs
 
       - name: Test
-        run: vp run --parallel --concurrency-limit 4 --filter '!t3' --filter '!@t3tools/monorepo' test
+        # Forks use smaller hosted runners; avoid competing test worker pools.
+        run: vp run --parallel --concurrency-limit ${{ github.repository == 'pingdotgg/t3code' && '4' || '1' }} --filter '!t3' --filter '!@t3tools/monorepo' test
 
   # apps/server sets `fileParallelism: false`, so its 239 files run strictly
   # one at a time. Sharding spreads them over separate runners instead of

@@ -55,8 +55,9 @@
     "apps/web": {
       // Vitest loads this through the per-file @vitest-environment directive.
       "ignoreDependencies": ["jsdom"],
-      // Worktree setup (scripts/setup-worktree.ts) runs this directly.
-      "entry": ["scripts/warm-dep-cache.ts"],
+      // Worktree setup runs warm-dep-cache directly. The document editor is a
+      // separate HTML entry loaded by the mobile WebView.
+      "entry": ["scripts/warm-dep-cache.ts", "src/documents/nativeEntry.tsx!"],
       // UI component modules are copied and adapted as cohesive sets. Keep their
       // named subcomponents even before they have callers; the file audit still
       // reports an entire component module when nothing imports it.
