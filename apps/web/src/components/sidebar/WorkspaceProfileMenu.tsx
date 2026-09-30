@@ -1,5 +1,5 @@
 import { randomUUID } from "../../lib/utils";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import type { WorkspaceProfile } from "@t3tools/contracts";
 import { workspaceProfileIncludesProject } from "@t3tools/client-runtime/workspace-profiles";
@@ -12,14 +12,26 @@ import {
 } from "../../state/entities";
 import { buildThreadRouteParams, resolveThreadRouteRef } from "../../threadRoutes";
 import { Button } from "../ui/button";
+import { Checkbox } from "../ui/checkbox";
 import { Input } from "../ui/input";
-import { Dialog, DialogPopup, DialogTitle, DialogDescription } from "../ui/dialog";
+import { Label } from "../ui/label";
+import {
+  Dialog,
+  DialogPopup,
+  DialogTitle,
+  DialogDescription,
+  DialogHeader,
+  DialogPanel,
+  DialogFooter,
+} from "../ui/dialog";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 
 let switchingProfile = false;
 
 /** Shared sidebar footer for both layouts, with device-local membership. */
 export function WorkspaceProfileMenu() {
+  const formId = useId();
   const settings = useClientSettings();
   const update = useUpdateClientSettings();
   const projects = useAllProjects();
@@ -178,130 +190,159 @@ export function WorkspaceProfileMenu() {
         </Button>
       </div>
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogPopup>
-          <DialogTitle>Workspace profiles</DialogTitle>
-          <DialogDescription>
-            Choose which projects appear on this device. A project can belong to several profiles.
-          </DialogDescription>
-          <div className="flex flex-wrap gap-2 py-3">
-            <Button variant="outline" size="sm" onClick={() => edit(null)}>
-              New profile
-            </Button>
-            {settings.workspaceProfiles.map((profile) => (
-              <Button
-                key={profile.id}
-                variant={editing?.id === profile.id ? "secondary" : "ghost"}
-                size="sm"
-                onClick={() => edit(profile)}
-              >
-                {profile.emoji} {profile.name}
+        <DialogPopup className="max-h-[min(48rem,calc(100dvh-2rem))] max-sm:max-h-[calc(100dvh-3rem)]">
+          <DialogHeader className="shrink-0">
+            <DialogTitle>Workspace profiles</DialogTitle>
+            <DialogDescription>
+              Choose which projects appear on this device. A project can belong to several profiles.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogPanel>
+            <div className="flex min-w-0 flex-wrap gap-2">
+              <Button variant="outline" size="sm" onClick={() => edit(null)}>
+                New profile
               </Button>
-            ))}
-          </div>
-          <div className="grid gap-3">
-            <label className="grid gap-1 text-sm">
-              Name
-              <Input
-                value={name}
-                maxLength={60}
-                onChange={(event) => setName(event.target.value)}
-              />
-            </label>
-            <div className="flex gap-3">
-              <label className="grid flex-1 gap-1 text-sm">
-                Emoji
-                <Input
-                  value={emoji}
-                  maxLength={32}
-                  onChange={(event) => setEmoji(event.target.value)}
-                />
-              </label>
-              <label className="grid gap-1 text-sm">
-                Background
-                <input
-                  aria-label="Profile background color"
-                  type="color"
-                  value={color}
-                  onChange={(event) => setColor(event.target.value)}
-                />
-              </label>
-            </div>
-            <fieldset className="max-h-64 overflow-y-auto">
-              <legend className="mb-2 text-sm">Projects</legend>
-              {projects.map((project) => {
-                const included = members.some(
-                  (member) =>
-                    member.environmentId === project.environmentId &&
-                    member.projectId === project.id,
-                );
-                return (
-                  <label
-                    key={`${project.environmentId}:${project.id}`}
-                    className="flex items-center gap-2 py-1 text-sm"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={included}
-                      onChange={() =>
-                        setMembers(
-                          included
-                            ? members.filter(
-                                (member) =>
-                                  member.environmentId !== project.environmentId ||
-                                  member.projectId !== project.id,
-                              )
-                            : [
-                                ...members,
-                                { environmentId: project.environmentId, projectId: project.id },
-                              ],
-                        )
-                      }
-                    />
-                    <span className="min-w-0 truncate">
-                      {project.title} · {project.workspaceRoot}
-                    </span>
-                  </label>
-                );
-              })}
-            </fieldset>
-            {error ? (
-              <p role="alert" className="text-sm text-destructive">
-                {error}
-              </p>
-            ) : null}
-            <div className="flex justify-between gap-2">
-              {editing ? (
+              {settings.workspaceProfiles.map((profile) => (
                 <Button
-                  variant="destructive"
-                  onClick={() => {
-                    void update({
-                      workspaceProfiles: settings.workspaceProfiles.filter(
-                        (profile) => profile.id !== editing.id,
-                      ),
-                      ...(active?.id === editing.id ? { activeWorkspaceProfileId: null } : {}),
-                    })
-                      .then(() => edit(null))
-                      .catch((cause) =>
-                        setError(
-                          cause instanceof Error ? cause.message : "Could not delete profile.",
-                        ),
-                      );
-                  }}
+                  key={profile.id}
+                  variant={editing?.id === profile.id ? "secondary" : "ghost"}
+                  size="sm"
+                  className="min-w-0 max-w-full"
+                  title={profile.name}
+                  onClick={() => edit(profile)}
                 >
-                  Delete profile
+                  <span className="shrink-0" aria-hidden>
+                    {profile.emoji}
+                  </span>
+                  <span className="min-w-0 truncate">{profile.name}</span>
                 </Button>
-              ) : (
-                <span />
-              )}
+              ))}
+            </div>
+            <div className="grid min-w-0 grid-cols-1 gap-4">
+              <div className="grid min-w-0 gap-2">
+                <Label htmlFor={`${formId}-name`}>Name</Label>
+                <Input
+                  id={`${formId}-name`}
+                  value={name}
+                  maxLength={60}
+                  onChange={(event) => setName(event.target.value)}
+                />
+              </div>
+              <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_6rem] gap-3">
+                <div className="grid min-w-0 gap-2">
+                  <Label htmlFor={`${formId}-emoji`}>Emoji</Label>
+                  <Input
+                    id={`${formId}-emoji`}
+                    value={emoji}
+                    maxLength={32}
+                    onChange={(event) => setEmoji(event.target.value)}
+                  />
+                </div>
+                <div className="grid min-w-0 gap-2">
+                  <Label htmlFor={`${formId}-color`}>Background</Label>
+                  <Input
+                    id={`${formId}-color`}
+                    nativeInput
+                    type="color"
+                    value={color}
+                    onChange={(event) => setColor(event.target.value)}
+                  />
+                </div>
+              </div>
+              <fieldset className="min-w-0">
+                <legend className="mb-2">
+                  <Label render={<span />}>Projects</Label>
+                </legend>
+                {projects.map((project, index) => {
+                  const included = members.some(
+                    (member) =>
+                      member.environmentId === project.environmentId &&
+                      member.projectId === project.id,
+                  );
+                  const projectId = `${formId}-project-${index}`;
+                  return (
+                    <Tooltip key={`${project.environmentId}:${project.id}`}>
+                      <div className="min-w-0 py-2">
+                        <TooltipTrigger render={<Label className="flex min-w-0" />}>
+                          <Checkbox
+                            checked={included}
+                            aria-labelledby={`${projectId}-title`}
+                            aria-describedby={`${projectId}-path`}
+                            onCheckedChange={(checked) =>
+                              setMembers(
+                                checked
+                                  ? [
+                                      ...members,
+                                      {
+                                        environmentId: project.environmentId,
+                                        projectId: project.id,
+                                      },
+                                    ]
+                                  : members.filter(
+                                      (member) =>
+                                        member.environmentId !== project.environmentId ||
+                                        member.projectId !== project.id,
+                                    ),
+                              )
+                            }
+                          />
+                          <span className="flex min-w-0 flex-1 flex-col gap-1">
+                            <span id={`${projectId}-title`} className="truncate">
+                              {project.title}
+                            </span>
+                            <span
+                              id={`${projectId}-path`}
+                              className="truncate text-xs text-muted-foreground"
+                            >
+                              {project.workspaceRoot}
+                            </span>
+                          </span>
+                        </TooltipTrigger>
+                      </div>
+                      <TooltipPopup variant="code">{project.workspaceRoot}</TooltipPopup>
+                    </Tooltip>
+                  );
+                })}
+              </fieldset>
+              {error ? (
+                <p role="alert" className="text-sm text-destructive">
+                  {error}
+                </p>
+              ) : null}
+            </div>
+          </DialogPanel>
+          <DialogFooter className="shrink-0 sm:justify-between">
+            {editing ? (
               <Button
+                variant="destructive"
                 onClick={() => {
-                  void save();
+                  void update({
+                    workspaceProfiles: settings.workspaceProfiles.filter(
+                      (profile) => profile.id !== editing.id,
+                    ),
+                    ...(active?.id === editing.id ? { activeWorkspaceProfileId: null } : {}),
+                  })
+                    .then(() => edit(null))
+                    .catch((cause) =>
+                      setError(
+                        cause instanceof Error ? cause.message : "Could not delete profile.",
+                      ),
+                    );
                 }}
               >
-                Save profile
+                Delete profile
               </Button>
-            </div>
-          </div>
+            ) : (
+              <span />
+            )}
+            <Button
+              onClick={() => {
+                void save();
+              }}
+            >
+              Save profile
+            </Button>
+          </DialogFooter>
         </DialogPopup>
       </Dialog>
     </>
