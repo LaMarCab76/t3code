@@ -1,0 +1,149 @@
+name: Fork desktop builds
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bundle:
+    if: github.repository == 'LaMarCab76/t3code'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      # Manual checkout avoids credential cleanup traversing vendored gitlinks.
+      - name: Checkout
+        env:
+          CHECKOUT_REF: ${{ github.sha }}
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "$CHECKOUT_REF"
+          git sparse-checkout set --no-cone '/*' '!/.repos/'
+          git checkout --detach FETCH_HEAD
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+
+      - name: Install bundle dependencies
+        run: vp install --filter=t3... --filter=@t3tools/web... --filter=@t3tools/desktop... --filter=@t3tools/scripts...
+
+      - name: Set fork preview version
+        id: version
+        run: |
+          set -euo pipefail
+          base_version="$(node -p "require('./apps/desktop/package.json').version")"
+          version="${base_version}-preview.$(date -u +%Y%m%d).${GITHUB_RUN_NUMBER}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          node scripts/update-release-package-versions.ts "$version"
+          cp .env.example .env
+
+      - name: Install browser secret helper libraries
+        run: sudo apt-get update && sudo apt-get install -y libsecret-1-dev pkg-config
+
+      - name: Build web, server and desktop bundle
+        run: vp run build:desktop
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: js-bundle
+          path: |
+            apps/server/dist
+            apps/desktop/dist-electron
+          if-no-files-found: error
+          retention-days: 7
+
+  macos:
+    name: macOS ${{ matrix.arch }}
+    needs: bundle
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+            rust_target: aarch64-apple-darwin
+          - arch: x64
+            runner: macos-15-intel
+            rust_target: x86_64-apple-darwin
+    uses: ./.github/workflows/release-desktop.yml
+    with:
+      label: macOS ${{ matrix.arch }}
+      runner: ${{ matrix.runner }}
+      platform: mac
+      target: dmg
+      arch: ${{ matrix.arch }}
+      rust_target: ${{ matrix.rust_target }}
+      resource_key: darwin-${{ matrix.arch }}
+      version: ${{ needs.bundle.outputs.version }}
+      ref: ${{ github.sha }}
+      release_channel: preview
+      relay_client_tracing: false
+      clerk_publishable_key: pk_live_Y2xlcmsudDMuY29kZXMk
+      clerk_jwt_template: t3-relay
+      clerk_cli_oauth_client_id: hzxSgY2cH10sDU2r
+      relay_url: https://relay.t3.codes
+
+  publish:
+    name: Publish fork installers
+    needs: [bundle, macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download installers
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: desktop-mac-*
+          merge-multiple: true
+          path: installers
+
+      - name: Publish preview in this fork
+        uses: actions/github-script@v8
+        env:
+          BUILD_VERSION: ${{ needs.bundle.outputs.version }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const version = process.env.BUILD_VERSION;
+            const tag = `fork-v${version}`;
+            const repo = context.repo;
+            let release;
+            try {
+              release = (await github.rest.repos.getReleaseByTag({ ...repo, tag })).data;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              release = (await github.rest.repos.createRelease({
+                ...repo, tag_name: tag, target_commitish: context.sha,
+                name: `T3 Code fork ${version}`, prerelease: true, make_latest: 'false',
+                body: `Build of ${context.sha}. Includes macOS Apple Silicon and Intel installers.\n\nThese fork builds are not notarized by Apple and have no automatic update feed.`,
+              })).data;
+            }
+            const existing = await github.paginate(github.rest.repos.listReleaseAssets, { ...repo, release_id: release.id });
+            for (const name of fs.readdirSync('installers')) {
+              if (!/\.(dmg|zip|sha256)$/.test(name) || existing.some(asset => asset.name === name)) continue;
+              const file = path.join('installers', name);
+              await github.rest.repos.uploadReleaseAsset({
+                ...repo, release_id: release.id, name,
+                data: fs.readFileSync(file),
+              });
+            }
+            await core.summary.addLink('Download fork installers', release.html_url).write();
