@@ -179,7 +179,7 @@ describe("getComposerProviderState", () => {
     expect(state.modelOptionsForDispatch).toEqual(selections(["agent", "plan"]));
   });
 
-  it("drops the plan agent from dispatch when legacy plan mode is disabled", () => {
+  it("preserves the native plan agent regardless of the legacy preference", () => {
     const state = getComposerProviderState({
       provider: PROVIDER,
       model: MODEL,
@@ -193,10 +193,10 @@ describe("getComposerProviderState", () => {
       planModeEnabled: false,
     });
 
-    expect(state.modelOptionsForDispatch).toEqual(selections(["agent", "build"]));
+    expect(state.modelOptionsForDispatch).toEqual(selections(["agent", "plan"]));
   });
 
-  it("drops the agent descriptor entirely when plan is the only option and plan mode is disabled", () => {
+  it("preserves the sole native plan agent regardless of the legacy preference", () => {
     const state = getComposerProviderState({
       provider: PROVIDER,
       model: MODEL,
@@ -209,12 +209,12 @@ describe("getComposerProviderState", () => {
 
     expect(state).toEqual({
       provider: PROVIDER,
-      promptEffort: null,
-      modelOptionsForDispatch: undefined,
+      promptEffort: "plan",
+      modelOptionsForDispatch: selections(["agent", "plan"]),
     });
   });
 
-  it("falls back to a surviving agent when plan was the descriptor default and plan mode is disabled", () => {
+  it("uses the native default without dispatching redundant options", () => {
     const state = getComposerProviderState({
       provider: PROVIDER,
       model: MODEL,
@@ -324,7 +324,7 @@ describe("getComposerProviderState", () => {
     expect(state.modelOptionsForDispatch).toEqual(selections(["effort", "low"]));
   });
 
-  it("still drops the plan agent when an absent model has a saved plan selection", () => {
+  it("preserves saved native options when the model catalog is unavailable", () => {
     const state = getComposerProviderState({
       provider: ProviderDriverKind.make("opencode"),
       model: "opencode/kimi-k3",
@@ -333,7 +333,9 @@ describe("getComposerProviderState", () => {
       planModeEnabled: false,
     });
 
-    expect(state.modelOptionsForDispatch).toEqual(selections(["variant", "max"]));
+    expect(state.modelOptionsForDispatch).toEqual(
+      selections(["variant", "max"], ["agent", "plan"]),
+    );
   });
 
   it("adds ultrathink class names when the prompt triggers a promptInjectedValues descriptor", () => {

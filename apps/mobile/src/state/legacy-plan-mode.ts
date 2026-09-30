@@ -20,7 +20,7 @@ export function resolveLegacyPlanModeEnabled(input: {
   readonly loaded: boolean;
   readonly preference: boolean | undefined;
 }): boolean {
-  return input.loaded && input.preference === true;
+  return input.loaded;
 }
 
 export function resolvePendingTaskInteractionMode(input: {
@@ -33,14 +33,7 @@ export function resolvePendingTaskInteractionMode(input: {
   if (input.provider?.showInteractionModeToggle === false) {
     return DEFAULT_PROVIDER_INTERACTION_MODE;
   }
-  if (input.planModeEnabled) {
-    return input.draftInteractionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE;
-  }
-  if (!input.preferenceLoaded) {
-    // Only an existing queued task may retain its previous mode while the
-    // preference is unknown. A fresh draft still defaults to Build so a stale
-    // persisted Plan selection cannot bypass a disabled preference at launch.
-    return input.queuedInteractionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE;
-  }
-  return DEFAULT_PROVIDER_INTERACTION_MODE;
+  return (
+    input.draftInteractionMode ?? input.queuedInteractionMode ?? DEFAULT_PROVIDER_INTERACTION_MODE
+  );
 }

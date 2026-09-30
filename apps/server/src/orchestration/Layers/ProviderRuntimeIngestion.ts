@@ -1796,6 +1796,31 @@ const make = Effect.gen(function* () {
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
+      if (event.type === "thread.goal.changed") {
+        const shell = thread.session
+          ? Option.none()
+          : yield* projectionSnapshotQuery.getThreadShellById(thread.id);
+        yield* orchestrationEngine.dispatch({
+          type: "thread.session.set",
+          commandId: yield* providerCommandId(event, "goal-state"),
+          threadId: thread.id,
+          session: {
+            ...(thread.session ?? {
+              threadId: thread.id,
+              status: "ready",
+              providerName: event.provider,
+              runtimeMode: Option.isSome(shell) ? shell.value.runtimeMode : "full-access",
+              activeTurnId: null,
+              lastError: null,
+            }),
+            nativeGoal: event.payload,
+            updatedAt: now,
+          },
+          createdAt: now,
+        });
+        return;
+      }
+
       const isTerminalTurn = event.type === "turn.completed" || event.type === "turn.aborted";
       const isCompactedThreadState =
         event.type === "thread.state.changed" && event.payload.state === "compacted";

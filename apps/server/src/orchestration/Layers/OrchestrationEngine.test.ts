@@ -569,6 +569,149 @@ describe("OrchestrationEngine", () => {
   );
 
   effectIt.effect(
+    "persists native Goal across session updates and blocks settlement while it is active",
+    () =>
+      Effect.gen(function* () {
+        const engine = yield* OrchestrationEngineService;
+        const receipts = yield* OrchestrationCommandReceipts.OrchestrationCommandReceiptRepository;
+        const projectId = ProjectId.make("project-goal-settle");
+        const threadId = ThreadId.make("thread-goal-settle");
+        const commandId = CommandId.make("cmd-goal-settle");
+        const createdAt = now();
+
+        yield* engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.make("cmd-goal-settle-project-create"),
+          projectId,
+          title: "Project",
+          workspaceRoot: "/tmp/project-goal-settle",
+          createdAt,
+        });
+        yield* engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("cmd-goal-settle-thread-create"),
+          threadId,
+          projectId,
+          title: "Thread",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5-codex",
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        });
+        yield* engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("cmd-goal-settle-session-set"),
+          threadId,
+          createdAt,
+          session: {
+            threadId,
+            status: "ready",
+            nativeGoal: {
+              available: true,
+              goal: {
+                threadId: "native-thread",
+                objective: "Finish",
+                status: "active",
+                tokenBudget: 1000,
+                tokensUsed: 25,
+                timeUsedSeconds: 1,
+                createdAt: 1,
+                updatedAt: 2,
+              },
+            },
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: createdAt,
+          },
+        });
+
+        yield* engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("goal-ready-update"),
+          threadId,
+          createdAt,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: createdAt,
+          },
+        });
+        const query = yield* ProjectionSnapshotQuery;
+        expect(
+          Option.getOrNull(yield* query.getThreadShellById(threadId))?.session?.nativeGoal?.goal
+            ?.tokensUsed,
+        ).toBe(25);
+        const sequence = yield* engine.latestSequence;
+        const error = yield* engine
+          .dispatch({ type: "thread.settle", commandId, threadId })
+          .pipe(Effect.flip);
+        const message =
+          "This thread still needs attention. Resolve or interrupt it first, then try again.";
+        expect(error).toMatchObject({
+          _tag: "OrchestrationThreadSettleBlockedError",
+          threadId,
+          message,
+        });
+        expect(Option.getOrNull(yield* receipts.getByCommandId({ commandId }))).toMatchObject({
+          commandId,
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          status: "rejected",
+          error: message,
+          resultSequence: sequence,
+        });
+        expect(yield* engine.latestSequence).toBe(sequence);
+        yield* engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("goal-paused-update"),
+          threadId,
+          createdAt,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: createdAt,
+            nativeGoal: {
+              available: true,
+              goal: {
+                threadId: "native-thread",
+                objective: "Finish",
+                status: "paused",
+                tokenBudget: 1000,
+                tokensUsed: 25,
+                timeUsedSeconds: 1,
+                createdAt: 1,
+                updatedAt: 3,
+              },
+            },
+          },
+        });
+        yield* engine.dispatch({
+          type: "thread.settle",
+          commandId: CommandId.make("settle-paused-goal"),
+          threadId,
+        });
+        expect(Option.getOrNull(yield* query.getThreadShellById(threadId))?.settledOverride).toBe(
+          "settled",
+        );
+      }).pipe(Effect.provide(makeOrchestrationLayer())),
+  );
+
+  effectIt.effect(
     "rejects persisted changes and live background work without blocking unrelated threads",
     () =>
       Effect.gen(function* () {

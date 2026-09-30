@@ -1,3 +1,4 @@
+import { GoalControl } from "./GoalControl";
 import type { WorktreeSetupCardProps } from "./worktree-setup-card";
 import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
 import { type EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
@@ -1071,6 +1072,11 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                     : undefined
                 }
               >
+                <GoalControl
+                  key={selectedThreadKey}
+                  environmentId={props.environmentId}
+                  thread={props.selectedThread}
+                />
                 <ThreadComposer
                   editorRef={composerEditorRef}
                   draftMessage={props.draftMessage}

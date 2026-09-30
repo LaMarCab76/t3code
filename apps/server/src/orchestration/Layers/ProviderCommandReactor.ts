@@ -78,6 +78,7 @@ type ProviderIntentEvent = Extract<
     type:
       | "thread.meta-updated"
       | "thread.runtime-mode-set"
+      | "thread.interaction-mode-set"
       | "thread.turn-start-requested"
       | "thread.turn-interrupt-requested"
       | "thread.approval-response-requested"
@@ -759,6 +760,7 @@ const make = Effect.gen(function* () {
               options?.pendingTurnStart === true && session.status === "ready"
                 ? "starting"
                 : mapProviderSessionStatusToOrchestrationStatus(session.status),
+            ...(session.nativeGoal ? { nativeGoal: session.nativeGoal } : {}),
             providerName: session.provider,
             providerInstanceId: session.providerInstanceId,
             runtimeMode: desiredRuntimeMode,
@@ -1806,6 +1808,14 @@ const make = Effect.gen(function* () {
         if (event.payload.session.status === "ready")
           yield* maybeRefineThreadTitle(event.payload.threadId);
         return;
+      case "thread.interaction-mode-set": {
+        if (event.payload.interactionMode !== "plan") return;
+        const thread = yield* resolveThreadShell(event.payload.threadId);
+        if (thread?.session?.nativeGoal?.goal?.status === "active") {
+          yield* providerService.goal({ threadId: thread.id, action: "set", status: "paused" });
+        }
+        return;
+      }
       case "thread.runtime-mode-set": {
         const thread = yield* resolveThreadShell(event.payload.threadId);
         if (!thread?.session || thread.session.status === "stopped") {
@@ -1907,6 +1917,7 @@ const make = Effect.gen(function* () {
             event.payload.titleState?.needsRefinement === true)) ||
         (event.type === "thread.session-set" && event.payload.session.status === "ready") ||
         event.type === "thread.runtime-mode-set" ||
+        event.type === "thread.interaction-mode-set" ||
         event.type === "thread.turn-start-requested" ||
         event.type === "thread.turn-interrupt-requested" ||
         event.type === "thread.approval-response-requested" ||

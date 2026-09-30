@@ -22,10 +22,111 @@ import {
   makeMemoryConsolidationNotificationFilter,
   openCodexThread,
   readCodexThread,
+  requestCodexGoal,
   rollbackCodexThread,
   toMcpElicitationResponse,
 } from "./CodexSessionRuntime.ts";
 const isCodexAppServerRequestError = Schema.is(CodexErrors.CodexAppServerRequestError);
+
+describe("Codex native goals", () => {
+  it.effect(
+    "creates, pauses, resumes, reads provider usage limits and clears the native goal",
+    () =>
+      Effect.gen(function* () {
+        const calls: { method: string; params: unknown }[] = [];
+        let goal: EffectCodexSchema.V2ThreadGoalGetResponse["goal"] = null;
+        const client: Parameters<typeof requestCodexGoal>[0] = {
+          request: <M extends CodexRpc.ClientRequestMethod>(
+            method: M,
+            params: CodexRpc.ClientRequestParamsByMethod[M],
+          ) =>
+            Effect.sync(() => {
+              calls.push({ method, params });
+              if (method === "thread/goal/clear") {
+                goal = null;
+                return {};
+              }
+              if (method === "thread/goal/set") {
+                const input = params as EffectCodexSchema.V2ThreadGoalSetParams;
+                goal = {
+                  threadId: "native-thread",
+                  objective: input.objective ?? goal?.objective ?? "",
+                  status: input.status ?? "active",
+                  tokenBudget: input.tokenBudget ?? goal?.tokenBudget ?? null,
+                  tokensUsed: goal?.tokensUsed ?? 0,
+                  timeUsedSeconds: 0,
+                  createdAt: 1,
+                  updatedAt: 2,
+                };
+              }
+              return { goal };
+            }).pipe(Effect.map((value) => value as CodexRpc.ClientRequestResponsesByMethod[M])),
+        };
+        const input = { threadId: ThreadId.make("t3-thread"), action: "set" as const };
+        const created = yield* requestCodexGoal(client, "native-thread", {
+          ...input,
+          objective: "Finish the task",
+          tokenBudget: 1000,
+          status: "active",
+        });
+        NodeAssert.equal(created.goal?.tokenBudget, 1000);
+        NodeAssert.equal(
+          (yield* requestCodexGoal(client, "native-thread", { ...input, status: "paused" })).goal
+            ?.status,
+          "paused",
+        );
+        NodeAssert.equal(
+          (yield* requestCodexGoal(client, "native-thread", { ...input, status: "active" })).goal
+            ?.status,
+          "active",
+        );
+        goal = { ...created.goal!, status: "budgetLimited", tokensUsed: 1000 };
+        const recovered = yield* requestCodexGoal(client, "native-thread", {
+          ...input,
+          action: "get",
+        });
+        NodeAssert.equal(recovered.goal?.status, "budgetLimited");
+        NodeAssert.equal(recovered.goal?.tokensUsed, 1000);
+        NodeAssert.deepEqual(
+          yield* requestCodexGoal(client, "native-thread", { ...input, action: "clear" }),
+          { available: true, goal: null },
+        );
+        NodeAssert.deepEqual(
+          calls.map((call) => call.method),
+          [
+            "thread/goal/set",
+            "thread/goal/set",
+            "thread/goal/set",
+            "thread/goal/get",
+            "thread/goal/clear",
+          ],
+        );
+        NodeAssert.ok(
+          calls.every((call) => (call.params as { threadId: string }).threadId === "native-thread"),
+        );
+      }),
+  );
+  it.effect("reports unavailable on older app servers while preserving other request errors", () =>
+    Effect.gen(function* () {
+      const oldClient: Parameters<typeof requestCodexGoal>[0] = {
+        request: () =>
+          Effect.fail(CodexErrors.CodexAppServerRequestError.methodNotFound("thread/goal/get")),
+      };
+      const input = { threadId: ThreadId.make("t3-thread"), action: "get" as const };
+      NodeAssert.deepEqual(yield* requestCodexGoal(oldClient, "native-thread", input), {
+        available: false,
+        goal: null,
+      });
+      const rejection = CodexErrors.CodexAppServerRequestError.invalidParams("Invalid budget");
+      NodeAssert.strictEqual(
+        yield* Effect.flip(
+          requestCodexGoal({ request: () => Effect.fail(rejection) }, "native-thread", input),
+        ),
+        rejection,
+      );
+    }),
+  );
+});
 
 describe("Codex thread history", () => {
   for (const numTurns of [1, 2, 3, 5]) {

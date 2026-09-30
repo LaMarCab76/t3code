@@ -1,3 +1,7 @@
+import { isEditableDocumentFile } from "@t3tools/shared/filePreview";
+import { ThreadId } from "@t3tools/contracts";
+import { useEnvironmentServerConfig } from "../../state/entities";
+import { NativeDocumentPreview } from "./NativeDocumentPreview";
 /* oxlint-disable react/no-array-index-key -- Captured table rows and columns have stable positions and may contain identical values. */
 import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/StackHeader";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
@@ -184,7 +188,14 @@ export function AttachmentFileScreen(props: AttachmentFileScreenProps) {
   const [nativeOpen, setNativeOpen] = useState(false);
   // A format we cannot render goes straight to the system viewer; this screen is only the
   // launch pad and, when no viewer can show it, the honest fallback.
-  const nativeKind = nativeViewerKind(document.kind);
+  const config = useEnvironmentServerConfig(environmentId);
+  const hasEditor =
+    environmentId !== null &&
+    params.threadId !== undefined &&
+    params.draftKey === undefined &&
+    config?.environment.capabilities.documents === true &&
+    isEditableDocumentFile(params.name);
+  const nativeKind = hasEditor ? null : nativeViewerKind(document.kind);
   const [nativeViewer, setNativeViewer] = useState<"pending" | "open" | "unavailable" | null>(
     nativeKind ? "pending" : null,
   );
@@ -401,17 +412,26 @@ export function AttachmentFileScreen(props: AttachmentFileScreenProps) {
             ))}
         </NativeHeaderToolbar.Menu>
       </NativeHeaderToolbar>
-      <AttachmentDocumentBody
-        document={document}
-        name={params.name}
-        environmentId={environmentId}
-        nativeViewer={nativeViewer}
-        nativeError={nativeError}
-        onOpenNative={() => {
-          setNativeViewer((current) => (current === null ? null : "open"));
-          setNativeOpen(true);
-        }}
-      />
+      {hasEditor && environmentId && params.threadId ? (
+        <NativeDocumentPreview
+          key={`${environmentId}:${params.threadId}:${params.attachmentId}`}
+          environmentId={environmentId}
+          threadId={ThreadId.make(params.threadId)}
+          source={{ kind: "attachment", id: params.attachmentId, name: params.name }}
+        />
+      ) : (
+        <AttachmentDocumentBody
+          document={document}
+          name={params.name}
+          environmentId={environmentId}
+          nativeViewer={nativeViewer}
+          nativeError={nativeError}
+          onOpenNative={() => {
+            setNativeViewer((current) => (current === null ? null : "open"));
+            setNativeOpen(true);
+          }}
+        />
+      )}
       {nativeOpen && nativeSource ? (
         <FilePreviewModal
           source={nativeSource}

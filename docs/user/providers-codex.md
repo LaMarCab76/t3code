@@ -105,3 +105,13 @@ In an existing Codex thread, send `/feedback` with an optional description, for
 example `/feedback The agent stopped before finishing the tests`. This uploads
 the conversation and Codex logs to OpenAI. The returned thread ID can be shared
 with OpenAI support.
+
+## Native goals
+
+In a Codex thread, choose **Set goal**, enter an objective and optionally a token
+budget, then start it. Codex continues the work across turns and reports the
+goal's status and usage. Use **Pause**, **Resume** or **Remove goal** to control it.
+Entering Plan pauses an active goal; returning to Normal leaves it paused until
+you resume it. A thread with an active goal cannot be settled, including between
+automatic turns. Older Codex versions without the native Goal API show it as
+unavailable; update Codex to use it.

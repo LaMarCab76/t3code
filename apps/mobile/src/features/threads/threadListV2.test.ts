@@ -2010,3 +2010,65 @@ describe("buildThreadListV2ListItems row-state stamps", () => {
     expect(threadListV2ListItemsAreEqual(shelfLoading, shelfLoaded)).toBe(false);
   });
 });
+
+describe("project history views", () => {
+  it.each(["combined", "projects"] as const)(
+    "groups %s history while preserving pinned and snoozed rows exactly once",
+    (viewMode) => {
+      const threads = [
+        makeThread({ id: ThreadId.make("pinned"), title: "Pinned", pinnedAt: NOW }),
+        makeThread({ id: ThreadId.make("pending"), title: "Pending" }),
+        makeThread({
+          id: ThreadId.make("snoozed"),
+          title: "Snoozed",
+          snoozedUntil: "2026-07-01T00:00:00.000Z",
+        }),
+        makeThread({
+          id: ThreadId.make("done-a1"),
+          title: "A1",
+          settledOverride: "settled",
+          settledAt: NOW,
+        }),
+        makeThread({
+          id: ThreadId.make("done-b"),
+          title: "B",
+          projectId: ProjectId.make("project-2"),
+          settledOverride: "settled",
+          settledAt: NOW,
+        }),
+        makeThread({
+          id: ThreadId.make("done-a2"),
+          title: "A2",
+          settledOverride: "settled",
+          settledAt: NOW,
+        }),
+      ];
+      const built = buildThreadListV2Items({
+        threads,
+        environmentId: null,
+        searchQuery: "",
+        now: NOW,
+        snoozedShelfExpanded: true,
+        settledShelfExpanded: true,
+      });
+      const items = buildThreadListV2ListItems({
+        ...built,
+        viewMode,
+        pendingTasks: [],
+        snoozedShelfExpanded: true,
+        settledShelfExpanded: true,
+      });
+      const rows = items.filter((item) => item.type === "v2-thread");
+      expect(rows).toHaveLength(threads.length);
+      expect(new Set(rows.map((item) => item.item.thread.id)).size).toBe(threads.length);
+      expect(rows[0]?.item.thread.id).toBe("pinned");
+      expect(items.some((item) => item.type === "v2-snoozed-shelf")).toBe(true);
+      const settled = rows.filter((item) => item.item.thread.settledOverride === "settled");
+      expect(settled.map((item) => item.item.thread.projectId)).toEqual([
+        "project-1",
+        "project-1",
+        "project-2",
+      ]);
+    },
+  );
+});

@@ -1,3 +1,5 @@
+import { WorkspaceProfilesControl } from "./WorkspaceProfilesControl";
+import { useMobileSidebarViewMode } from "./useMobileSidebarViewMode";
 import { useAndroidControlSizing } from "../../components/useAndroidControlSizing";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import { computeThreadMoveAvailability } from "./threadOrder";
@@ -290,11 +292,13 @@ function ThreadNavigationSidebarPane(
   );
   const {
     loaded: shelfPreferencesLoaded,
-    settledShelfExpanded,
+    settledShelfExpanded: savedSettledShelfExpanded,
     snoozedShelfExpanded,
     toggleSettledShelf,
     toggleSnoozedShelf,
   } = useThreadListV2ShelfPreferences();
+  const sidebarViewMode = useMobileSidebarViewMode();
+  const settledShelfExpanded = sidebarViewMode !== "status" || savedSettledShelfExpanded;
   // The queued-start and snooze helpers need a clock while the pane stays open.
   const [nowMinute, setNowMinute] = useState(() => new Date().toISOString().slice(0, 16));
   // Snooze wake times are second-precise; a counter bumped exactly at the
@@ -493,6 +497,8 @@ function ThreadNavigationSidebarPane(
           pendingTask.title.toLocaleLowerCase().includes(v2SearchQuery)),
     );
     const items: SidebarListItem[] = buildThreadListV2ListItems({
+      viewMode: sidebarViewMode,
+      projectTitles: projectTitleByProjectKey,
       items: threadListV2Layout.items,
       pendingTasks: v2PendingTasks,
       snoozedCount: threadListV2Layout.snoozedCount,
@@ -516,6 +522,8 @@ function ThreadNavigationSidebarPane(
     }
     return items;
   }, [
+    sidebarViewMode,
+    projectTitleByProjectKey,
     nowMinute,
     options.selectedEnvironmentId,
     pendingTasks,
@@ -738,6 +746,7 @@ function ThreadNavigationSidebarPane(
           // which re-renders identically.
           return (
             <ThreadListV2Row
+              projectHeading={item.projectHeading}
               onNewThreadOnBranch={props.onNewThreadOnBranch}
               thread={thread}
               variant={item.item.variant}
@@ -815,7 +824,7 @@ function ThreadNavigationSidebarPane(
               count={item.count}
               disabled={item.disabled}
               expanded={item.expanded}
-              onToggle={toggleSettledShelf}
+              onToggle={sidebarViewMode === "status" ? toggleSettledShelf : undefined}
               pane="sidebar"
             />
           );
@@ -958,6 +967,7 @@ function ThreadNavigationSidebarPane(
           }}
         />
         <View className="flex-1">
+          <WorkspaceProfilesControl />
           <SwipeableScrollGateProvider enabled={swipeEnabled}>
             <GestureDetector gesture={sidebarScrollGesture}>
               <LegendList
@@ -1021,6 +1031,7 @@ function ThreadNavigationSidebarPane(
             : { paddingBottom: insets.bottom }
         }
       >
+        <WorkspaceProfilesControl />
         {Platform.OS === "android" && listItems.length === 0 ? (
           <View className="flex-1 items-center justify-center">{listEmpty}</View>
         ) : (

@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./workspace-profiles": "./src/workspaceProfiles.ts",
     "./device/stream": {
       "types": "./src/device/stream.ts",
       "default": "./src/device/stream.ts"
@@ -302,7 +303,8 @@
     "./device/duo-control": {
       "types": "./src/device/duoControl.ts",
       "default": "./src/device/duoControl.ts"
-    }
+    },
+    "./state/documents": "./src/state/documents.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

@@ -257,6 +257,12 @@ export function createThreadEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    goal: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:commands:thread:goal",
+      tag: WS_METHODS.providerGoal,
+      scheduler,
+      concurrency,
+    }),
     uploadFeedback: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:commands:thread:upload-feedback",
       tag: WS_METHODS.providerUploadFeedback,
@@ -271,6 +277,7 @@ export function createThreadEnvironmentAtoms<R, E>(
     settle: optimistic.wrap(commands.settle, (thread, _input, now, accepted) =>
       !accepted &&
       (!canSnooze(thread, { now }) ||
+        thread.session?.nativeGoal?.goal?.status === "active" ||
         thread.session?.status === "starting" ||
         thread.session?.status === "running")
         ? thread

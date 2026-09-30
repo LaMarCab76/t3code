@@ -12,6 +12,14 @@ import type {
   ServerConfig,
 } from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/unstable/reactivity";
+import { useMemo } from "react";
+import {
+  activeWorkspaceProfile,
+  filterWorkspaceProfileProjects,
+  filterWorkspaceProfileThreads,
+} from "@t3tools/client-runtime/workspace-profiles";
+import { mobilePreferencesAtom } from "./preferences";
 
 import { environmentProjects } from "./projects";
 import { environmentServerConfigsAtom, serverEnvironment } from "./server";
@@ -53,11 +61,29 @@ export function waitForProject(
 }
 
 export function useProjects(): ReadonlyArray<EnvironmentProject> {
+  const projects = useAllProjects();
+  const profile = useActiveWorkspaceProfile();
+  return useMemo(() => filterWorkspaceProfileProjects(projects, profile), [projects, profile]);
+}
+
+export function useAllProjects(): ReadonlyArray<EnvironmentProject> {
   return useAtomValue(environmentProjects.projectsAtom);
 }
 
+export function useActiveWorkspaceProfile() {
+  const preferences = useAtomValue(mobilePreferencesAtom);
+  return AsyncResult.isSuccess(preferences)
+    ? activeWorkspaceProfile(
+        preferences.value.workspaceProfiles ?? [],
+        preferences.value.activeWorkspaceProfileId,
+      )
+    : null;
+}
+
 export function useThreadShells(): ReadonlyArray<EnvironmentThreadShell> {
-  return useAtomValue(environmentThreadShells.threadShellsAtom);
+  const threads = useAtomValue(environmentThreadShells.threadShellsAtom);
+  const profile = useActiveWorkspaceProfile();
+  return useMemo(() => filterWorkspaceProfileThreads(threads, profile), [threads, profile]);
 }
 
 export function useProject(ref: ScopedProjectRef | null): EnvironmentProject | null {
@@ -82,4 +108,8 @@ export function useEnvironmentServerConfig(
 
 export function useServerConfigs(): ReadonlyMap<EnvironmentId, ServerConfig> {
   return useAtomValue(environmentServerConfigsAtom);
+}
+
+export function readThreadShell(ref: ScopedThreadRef): EnvironmentThreadShell | null {
+  return appAtomRegistry.get(environmentThreadShells.threadShellAtom(ref));
 }

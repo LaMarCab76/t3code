@@ -12,6 +12,15 @@ becomes an attachment when inserting it would exceed the message limit. On a
 hardware keyboard, use `Cmd+Shift+V` on Apple devices or `Ctrl+Shift+V` elsewhere
 to keep a large paste editable in the composer instead.
 
+## Plan mode
+
+Choose **Plan** in the composer when the selected provider supports it. New
+threads start in Normal mode. Drafts and queued messages keep their chosen mode.
+Codex, Claude and Cursor use their native planning integration. OpenCode uses
+its `plan` agent when the connected server advertises it, and returns to your
+previous agent when you leave Plan. Providers that offer planning only through
+a native slash command expose that command in the composer instead.
+
 ## Attach files
 
 Attach up to 100 files per message. Each image can be up to 10 MiB, with at most
@@ -234,3 +243,22 @@ automatically. HTML previews cannot access your T3 Code session.
 
 On mobile, select a PDF attachment or link to open it. iOS uses the native viewer;
 Android opens a compatible installed file viewer.
+
+## Documents
+
+Open PDF, DOCX, XLSX, CSV or TSV attachments and project files in the file panel.
+Choose **Enable basic editing** after reviewing the import limitations. DOCX
+supports basic text, headings, emphasis, lists, links and tables. Spreadsheets
+support cells, ranges, copy/paste, formulas and basic formatting. PDF editing
+adds notes and fills existing forms; it preserves the original page text.
+
+**Save a copy** opens a separate file beside the project file. Copies of
+attachments and newly generated documents go into the project's `artifacts/`
+folder. Download the result from the editor. The original remains unchanged.
+If someone changes the source while you edit, reload it before saving.
+
+Ask the agent to read, generate or modify these formats using T3's document
+tools. Common formulas recalculate inside T3; circular references and unsupported
+formulas show errors rather than old cached results. Advanced Office layout,
+macros and simultaneous editing are outside the basic editor's scope. Update
+the environment's T3 server if the editor or document tools are unavailable.

@@ -3,6 +3,28 @@
 Use a new thread for a separate task. Choose **New worktree** when its code changes
 need a separate branch and working directory.
 
+## Profiles and views
+
+Use the profile selector at the bottom of the web or desktop sidebar, or
+**Workspace profiles** in mobile navigation, to create a local profile. Give it
+a name, emoji and background color, then choose its projects. **All** is the
+permanent initial view. A project can belong to several profiles, and each
+profile includes its existing and future threads. Projects created from a
+custom profile join it automatically.
+
+Profiles filter the sidebar, thread searches and project pickers on this device.
+Switching profiles restores that profile's last selected thread. Opening a link
+to a thread outside the selected profile switches to All with a notice. Deleting
+a profile removes only its local configuration; projects and conversations stay
+available.
+
+Choose **By status**, **By project** or **Combined** in the sidebar's view control.
+Combined keeps pending work above settled history grouped by project. Opening or
+reading a thread updates its unread indicator without settling it. Settle moves
+it into history; un-settling or new activity brings it back to pending work.
+Pinned and snoozed threads retain their usual behavior. Your previous sidebar
+choice is preserved until you select a different view.
+
 ## Start a thread
 
 On web and desktop, a new thread keeps the current project and carries your model

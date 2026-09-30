@@ -47,3 +47,11 @@ restart before T3 Code can see configuration changes.
 
 Existing threads keep their selected model and options even when it disappears
 from the catalog. If OpenCode rejects that model, select an available one and retry.
+
+## Document tools on external servers
+
+T3 connects its document tools automatically when it manages OpenCode. For an
+external OpenCode server, enable **Connect T3 tools to external server** in that
+provider's settings. Set **T3 MCP URL** when the external server needs a different
+address to reach this T3 environment's `/mcp` endpoint. The provider status tells
+you when the document tools are unavailable because this connection is disabled.

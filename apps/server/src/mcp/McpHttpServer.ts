@@ -1,3 +1,4 @@
+import { DocumentsToolkit, DocumentsHandlers } from "./toolkits/documents.ts";
 import * as NodeCrypto from "node:crypto";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -667,7 +668,12 @@ const McpTransportLive = McpServer.layerHttp({
   protocols: [McpProtocol.v2025_06_18],
 }).pipe(Layer.provide(McpAuthMiddlewareLive));
 
+const DocumentsRegistration = McpServer.toolkit(DocumentsToolkit).pipe(
+  Layer.provide(DocumentsHandlers),
+);
+
 export const layer = Layer.mergeAll(
+  DocumentsRegistration,
   PreviewToolkitRegistrationLive,
   PullRequestsToolkitRegistrationLive,
   DeviceToolkitRegistrationLive,

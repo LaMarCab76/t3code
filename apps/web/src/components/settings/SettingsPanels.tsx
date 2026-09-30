@@ -2051,11 +2051,7 @@ function AutoSettleDaysInput({
 
 // The legacy rows sit behind the fold, so a settings-search jump has to
 // expand the section before its target can mount and scroll.
-const LEGACY_FEATURE_TARGET_IDS: ReadonlySet<string> = new Set([
-  "legacy-plan-mode",
-  "legacy-context-window-indicator",
-  "legacy-sidebar",
-]);
+const LEGACY_FEATURE_TARGET_IDS: ReadonlySet<string> = new Set(["legacy-context-window-indicator"]);
 
 /**
  * Retired features kept only for users who still depend on them. Collapsed by
@@ -2096,19 +2092,6 @@ function LegacyFeaturesSection() {
         <CollapsiblePanel>
           <SettingsGroup>
             <SettingsRow
-              {...searchableSetting("legacy-plan-mode")}
-              description="Restore Build/Plan, /plan, /default, and Shift+Tab. Off uses build mode."
-              control={
-                <Switch
-                  checked={settings.planModeEnabled}
-                  onCheckedChange={(checked) => {
-                    updateSettings({ planModeEnabled: Boolean(checked) });
-                  }}
-                  aria-label="Plan mode (legacy)"
-                />
-              }
-            />
-            <SettingsRow
               {...searchableSetting("legacy-context-window-indicator")}
               description="Shows context window usage as a circular indicator in the composer."
               control={
@@ -2118,19 +2101,6 @@ function LegacyFeaturesSection() {
                     updateSettings({ contextWindowMeterEnabled: Boolean(checked) })
                   }
                   aria-label="Context window indicator (legacy)"
-                />
-              }
-            />
-            <SettingsRow
-              {...searchableSetting("legacy-sidebar")}
-              description="Restore per-project thread trees instead of the default flat sidebar."
-              control={
-                <Switch
-                  checked={settings.legacySidebarEnabled}
-                  onCheckedChange={(checked) =>
-                    updateSettings({ legacySidebarEnabled: Boolean(checked) })
-                  }
-                  aria-label="Sidebar (legacy)"
                 />
               }
             />
@@ -3204,7 +3174,7 @@ export function GeneralSettingsPanel() {
                     onPromptChange={() => {}}
                     modelOptions={textGenModelOptions}
                     allowPromptInjectedEffort={false}
-                    planModeEnabled={settings.planModeEnabled}
+                    planModeEnabled={true}
                     triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
                     onModelOptionsChange={(nextOptions) => {
                       updateSettings({
@@ -3274,6 +3244,30 @@ export function GeneralSettingsPanel() {
         />
       </SettingsSection>
 
+      <SettingsGroup>
+        {" "}
+        <SettingsRow
+          {...searchableSetting("sidebar-view")}
+          description="Show threads by status, by project, or combine pending work with project history."
+          control={
+            <select
+              aria-label="Sidebar view"
+              value={
+                settings.sidebarViewMode ?? (settings.legacySidebarEnabled ? "projects" : "status")
+              }
+              onChange={(event) =>
+                updateSettings({
+                  sidebarViewMode: event.target.value as "status" | "projects" | "combined",
+                })
+              }
+            >
+              <option value="status">By status</option>
+              <option value="projects">By project</option>
+              <option value="combined">Combined</option>
+            </select>
+          }
+        />
+      </SettingsGroup>
       <LegacyFeaturesSection />
     </SettingsPageContainer>
   );

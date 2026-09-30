@@ -142,6 +142,8 @@ const makeOpenCodeConfig = (overrides: Partial<OpenCodeSettings>): OpenCodeSetti
   binaryPath: "opencode",
   serverUrl: "",
   serverPassword: "",
+  externalMcpEnabled: false,
+  externalMcpUrl: "",
   customModels: [],
   ...overrides,
 });

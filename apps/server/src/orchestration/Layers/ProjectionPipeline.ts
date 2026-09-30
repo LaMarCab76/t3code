@@ -1,3 +1,4 @@
+import { NativeGoalState } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
   isImportedAgentSessionMessageId,
@@ -114,6 +115,8 @@ interface AttachmentSideEffects {
   readonly deletedThreadIds: Set<string>;
   readonly prunedThreadRelativePaths: Map<string, Set<string>>;
 }
+
+const encodeNativeGoal = Schema.encodeEffect(Schema.fromJsonString(NativeGoalState));
 
 const materializeAttachmentsForProjection = Effect.fn("materializeAttachmentsForProjection")(
   (input: { readonly attachments: ReadonlyArray<ChatAttachment> }) =>
@@ -1371,6 +1374,9 @@ const makeOrchestrationProjectionPipeline = Effect.fn("makeOrchestrationProjecti
         runtimeMode: event.payload.session.runtimeMode,
         activeTurnId: event.payload.session.activeTurnId,
         lastError: event.payload.session.lastError,
+        goalStateJson: event.payload.session.nativeGoal
+          ? yield* encodeNativeGoal(event.payload.session.nativeGoal).pipe(Effect.orDie)
+          : null,
         updatedAt: event.payload.session.updatedAt,
       });
     });

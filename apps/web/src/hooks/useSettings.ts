@@ -10,6 +10,10 @@
  * cannot silently read the wrong server's settings.
  */
 import { useCallback, useMemo, useSyncExternalStore } from "react";
+import {
+  addWorkspaceProfileProject,
+  resolveSidebarViewMode,
+} from "@t3tools/client-runtime/workspace-profiles";
 import { useAtomValue } from "@effect/atom-react";
 import {
   DEFAULT_SERVER_SETTINGS,
@@ -376,7 +380,11 @@ export function useEnvironmentIdentificationMode(): EnvironmentIdentificationMod
 export function useLegacySidebarEnabled(): boolean {
   const settingsHydrated = useClientSettingsHydrated();
   const legacySidebarEnabled = useClientSettingsValue().legacySidebarEnabled;
-  return settingsHydrated && legacySidebarEnabled;
+  const mode = useClientSettingsValue().sidebarViewMode;
+  return (
+    settingsHydrated &&
+    resolveSidebarViewMode({ sidebarViewMode: mode, legacySidebarEnabled }) === "projects"
+  );
 }
 
 /** Read current settings for one environment, merged with client-local preferences. */
@@ -521,4 +529,19 @@ export function __setClientSettingsForTests(settings: ClientSettings): void {
   clientSettingsSnapshot = settings;
   clientSettingsHydrationStatus = "ready";
   clientSettingsHydrationPromise = null;
+}
+
+export async function addProjectToActiveWorkspaceProfile(
+  project: import("@t3tools/contracts").ScopedProjectRef,
+): Promise<void> {
+  await ensureClientSettingsHydrated();
+  const settings = getClientSettings();
+  if (!settings.activeWorkspaceProfileId) return;
+  await persistClientSettingsPatch({
+    workspaceProfiles: addWorkspaceProfileProject(
+      settings.workspaceProfiles,
+      settings.activeWorkspaceProfileId,
+      project,
+    ),
+  });
 }

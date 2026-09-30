@@ -6534,6 +6534,42 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
     }),
   );
 
+  it.effect("uses the native Plan agent and restores the selected agent for Normal turns", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("plan-native-agent");
+      yield* adapter.startSession({
+        provider: ProviderDriverKind.make("opencode"),
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const modelSelection = createModelSelection(
+        ProviderInstanceId.make("opencode"),
+        "openai/gpt-5",
+        [{ id: "agent", value: "github-copilot" }],
+      );
+      const turn = yield* adapter.sendTurn({
+        threadId,
+        input: "Plan it",
+        interactionMode: "plan",
+        modelSelection,
+      });
+      NodeAssert.equal((runtimeMock.state.promptCalls.at(-1) as { agent: string }).agent, "plan");
+      yield* adapter.interruptTurn(threadId, turn.turnId);
+      yield* adapter.sendTurn({
+        threadId,
+        input: "Implement it",
+        interactionMode: "default",
+        modelSelection,
+      });
+      NodeAssert.equal(
+        (runtimeMock.state.promptCalls.at(-1) as { agent: string }).agent,
+        "github-copilot",
+      );
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("passes agent and variant options for the adapter's bound custom instance id", () => {
     const instanceId = ProviderInstanceId.make("opencode_zen");
     const adapterLayer = Layer.effect(

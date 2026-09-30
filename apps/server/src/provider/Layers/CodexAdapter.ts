@@ -1,3 +1,5 @@
+import * as Option from "effect/Option";
+import { NativeGoalState } from "@t3tools/contracts";
 /**
  * CodexAdapterLive - Scoped live implementation for the Codex provider adapter.
  *
@@ -77,6 +79,8 @@ import {
   codexUsageLimitMessage,
   mergeCodexRateLimits,
 } from "./codexUsageLimits.ts";
+const decodeNativeGoal = Schema.decodeUnknownOption(NativeGoalState);
+
 const isCodexAppServerProcessExitedError = Schema.is(CodexErrors.CodexAppServerProcessExitedError);
 const isCodexAppServerTransportError = Schema.is(CodexErrors.CodexAppServerTransportError);
 const isCodexSessionRuntimeThreadIdMissingError = Schema.is(
@@ -1463,6 +1467,19 @@ function mapToRuntimeEvents(
     ];
   }
 
+  if (event.method === "session/goal") {
+    const payload = decodeNativeGoal(event.payload);
+    return Option.isSome(payload)
+      ? [
+          {
+            ...runtimeEventBase(event, canonicalThreadId),
+            type: "thread.goal.changed",
+            payload: payload.value,
+          },
+        ]
+      : [];
+  }
+
   if (event.method === "session/connecting") {
     return [
       {
@@ -2711,6 +2728,16 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     );
   };
 
+  const goal: NonNullable<CodexAdapterShape["goal"]> = (input) =>
+    requireSession(input.threadId).pipe(
+      Effect.flatMap((session) => session.runtime.goal(input)),
+      Effect.mapError((cause) =>
+        cause._tag === "ProviderAdapterSessionNotFoundError"
+          ? cause
+          : mapCodexRuntimeError(input.threadId, "thread/goal", cause),
+      ),
+    );
+
   const uploadFeedback: CodexAdapterShape["uploadFeedback"] = (input) =>
     requireSession(input.threadId).pipe(
       Effect.flatMap((session) => session.runtime.uploadFeedback(input.reason)),
@@ -2811,6 +2838,7 @@ export const makeCodexAdapter = Effect.fn("makeCodexAdapter")(function* (
     interruptTurn,
     readThread,
     rollbackThread,
+    goal,
     uploadFeedback,
     respondToRequest,
     respondToUserInput,

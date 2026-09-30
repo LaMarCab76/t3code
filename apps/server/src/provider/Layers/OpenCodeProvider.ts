@@ -349,7 +349,10 @@ export const makePendingOpenCodeProvider = (
 
     if (!openCodeSettings.enabled) {
       return buildServerProvider({
-        presentation: OPENCODE_PRESENTATION,
+        presentation: {
+          ...OPENCODE_PRESENTATION,
+          documentTools: !openCodeSettings.serverUrl.trim() || openCodeSettings.externalMcpEnabled,
+        },
         enabled: false,
         checkedAt,
         models,
@@ -367,7 +370,10 @@ export const makePendingOpenCodeProvider = (
     }
 
     return buildServerProvider({
-      presentation: OPENCODE_PRESENTATION,
+      presentation: {
+        ...OPENCODE_PRESENTATION,
+        documentTools: !openCodeSettings.serverUrl.trim() || openCodeSettings.externalMcpEnabled,
+      },
       enabled: true,
       checkedAt,
       models,
@@ -409,7 +415,10 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
       serverUrl: openCodeSettings.serverUrl,
     });
     return buildServerProvider({
-      presentation: OPENCODE_PRESENTATION,
+      presentation: {
+        ...OPENCODE_PRESENTATION,
+        documentTools: !openCodeSettings.serverUrl.trim() || openCodeSettings.externalMcpEnabled,
+      },
       enabled: openCodeSettings.enabled,
       checkedAt,
       models: providerModelsFromSettings([], customModels, DEFAULT_OPENCODE_MODEL_CAPABILITIES),
@@ -425,7 +434,10 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
 
   if (!openCodeSettings.enabled) {
     return buildServerProvider({
-      presentation: OPENCODE_PRESENTATION,
+      presentation: {
+        ...OPENCODE_PRESENTATION,
+        documentTools: !openCodeSettings.serverUrl.trim() || openCodeSettings.externalMcpEnabled,
+      },
       enabled: false,
       checkedAt,
       models: providerModelsFromSettings([], customModels, DEFAULT_OPENCODE_MODEL_CAPABILITIES),
@@ -480,7 +492,10 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
     }
     if (compareSemverVersions(version, MINIMUM_OPENCODE_VERSION) < 0) {
       return buildServerProvider({
-        presentation: OPENCODE_PRESENTATION,
+        presentation: {
+          ...OPENCODE_PRESENTATION,
+          documentTools: !openCodeSettings.serverUrl.trim() || openCodeSettings.externalMcpEnabled,
+        },
         enabled: openCodeSettings.enabled,
         checkedAt,
         models: providerModelsFromSettings([], customModels, DEFAULT_OPENCODE_MODEL_CAPABILITIES),
@@ -542,7 +557,13 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
   const skills = openCodeSkillsToServerProviderSkills(inventoryExit.value.inventory.skills);
   const connectedCount = inventoryExit.value.inventory.providerList.connected.length;
   return buildServerProvider({
-    presentation: OPENCODE_PRESENTATION,
+    presentation: {
+      ...OPENCODE_PRESENTATION,
+      documentTools: !isExternalServer || openCodeSettings.externalMcpEnabled,
+      showInteractionModeToggle: inventoryExit.value.inventory.agents.some(
+        (agent) => agent.name === "plan" && !agent.hidden && agent.mode !== "subagent",
+      ),
+    },
     enabled: true,
     checkedAt,
     models,
@@ -560,7 +581,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
       },
       message:
         connectedCount > 0
-          ? `${connectedCount} upstream provider${connectedCount === 1 ? "" : "s"} connected through ${isExternalServer ? "the configured OpenCode server" : "OpenCode"}.`
+          ? `${connectedCount} upstream provider${connectedCount === 1 ? "" : "s"} connected through ${isExternalServer ? "the configured OpenCode server" : "OpenCode"}.${isExternalServer && !openCodeSettings.externalMcpEnabled ? " T3 document tools are unavailable until you enable the external MCP connection in provider settings." : ""}`
           : isExternalServer
             ? "Connected to the configured OpenCode server, but it did not report any connected upstream providers."
             : "OpenCode is available, but it did not report any connected upstream providers.",

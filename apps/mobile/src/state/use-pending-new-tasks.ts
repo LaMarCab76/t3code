@@ -1,3 +1,5 @@
+import { filterWorkspaceProfileThreads } from "@t3tools/client-runtime/workspace-profiles";
+import { useActiveWorkspaceProfile } from "./entities";
 import { useAtomValue } from "@effect/atom-react";
 import { useMemo } from "react";
 
@@ -13,14 +15,18 @@ export type {
 } from "./pending-new-tasks-model";
 
 export function usePendingNewTasks(): ReadonlyArray<PendingNewTask> {
+  const profile = useActiveWorkspaceProfile();
   const queuedMessagesByThreadKey = useThreadOutboxMessages();
   const drafts = useAtomValue(composerDraftsAtom);
   return useMemo(
     () =>
-      buildPendingNewTasks({
-        queuedMessages: flattenQueuedThreadMessages(queuedMessagesByThreadKey),
-        drafts,
-      }),
-    [queuedMessagesByThreadKey, drafts],
+      filterWorkspaceProfileThreads(
+        buildPendingNewTasks({
+          queuedMessages: flattenQueuedThreadMessages(queuedMessagesByThreadKey),
+          drafts,
+        }),
+        profile,
+      ),
+    [queuedMessagesByThreadKey, drafts, profile],
   );
 }

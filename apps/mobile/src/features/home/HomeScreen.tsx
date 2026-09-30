@@ -1,3 +1,5 @@
+import { WorkspaceProfilesControl } from "../threads/WorkspaceProfilesControl";
+import { useMobileSidebarViewMode } from "../threads/useMobileSidebarViewMode";
 import { useAndroidControlSizing } from "../../components/useAndroidControlSizing";
 import type { ThreadMoveDestination } from "../threads/threadOrder";
 import { computeThreadMoveAvailability } from "../threads/threadOrder";
@@ -468,11 +470,13 @@ export function HomeScreen(props: HomeScreenProps) {
   );
   const {
     loaded: shelfPreferencesLoaded,
-    settledShelfExpanded,
+    settledShelfExpanded: savedSettledShelfExpanded,
     snoozedShelfExpanded,
     toggleSettledShelf,
     toggleSnoozedShelf,
   } = useThreadListV2ShelfPreferences();
+  const sidebarViewMode = useMobileSidebarViewMode();
+  const settledShelfExpanded = sidebarViewMode !== "status" || savedSettledShelfExpanded;
   // The queued-start and snooze helpers need a clock while the list stays open.
   const [nowMinute, setNowMinute] = useState(() => new Date().toISOString().slice(0, 16));
   // Snooze wake times are second-precise; a counter bumped exactly at the
@@ -678,6 +682,8 @@ export function HomeScreen(props: HomeScreenProps) {
   const threadListV2Items = useMemo(
     () =>
       buildThreadListV2ListItems({
+        viewMode: sidebarViewMode,
+        projectTitles: v2ProjectTitleByProjectKey,
         items: threadListV2Layout.items,
         pendingTasks: v2PendingTasks,
         snoozedCount: threadListV2Layout.snoozedCount,
@@ -693,6 +699,8 @@ export function HomeScreen(props: HomeScreenProps) {
         shelfPreferencesLoading: !shelfPreferencesLoaded,
       }),
     [
+      sidebarViewMode,
+      v2ProjectTitleByProjectKey,
       nowMinute,
       queuedThreadKeys,
       threadMoveAvailability,
@@ -752,13 +760,14 @@ export function HomeScreen(props: HomeScreenProps) {
             count={item.count}
             disabled={item.disabled}
             expanded={item.expanded}
-            onToggle={toggleSettledShelf}
+            onToggle={sidebarViewMode === "status" ? toggleSettledShelf : undefined}
           />
         );
       }
       const thread = item.item.thread;
       return (
         <ThreadListV2Row
+          projectHeading={item.projectHeading}
           onNewThreadOnBranch={props.onNewThreadOnBranch}
           thread={thread}
           variant={item.item.variant}
@@ -983,6 +992,7 @@ export function HomeScreen(props: HomeScreenProps) {
   if (Platform.OS === "android" && threadListV2Items.length === 0) {
     return (
       <View className="flex-1 bg-header">
+        <WorkspaceProfilesControl />
         <View
           className="flex-1 items-center justify-center overflow-hidden rounded-t-[28px] bg-screen px-4"
           style={{ paddingBottom: insets.bottom }}
@@ -1005,6 +1015,7 @@ export function HomeScreen(props: HomeScreenProps) {
         {/* Shared with the iPad sidebar: cells are reused across data
             rebuilds and `itemsAreEqual` keeps a minute tick (or an unrelated
             shell update) from re-rendering untouched rows. */}
+        <WorkspaceProfilesControl />
         <SwipeableScrollGateProvider enabled={swipeEnabled} activation={swipeRowActivation}>
           <LegendList
             ref={listRef}

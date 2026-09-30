@@ -147,6 +147,7 @@ function createProviderServiceHarness() {
       });
     },
     rollbackConversation: () => unsupported(),
+    goal: () => Effect.succeed({ available: false, goal: null }),
     uploadFeedback: () => unsupported(),
     get streamEvents() {
       return Stream.fromPubSub(runtimeEventPubSub).pipe(
@@ -439,6 +440,69 @@ describe("ProviderRuntimeIngestion", () => {
       drain,
     };
   }
+
+  it("projects Goal progress across automatic turns without a client turn-start command", async () => {
+    const harness = await createHarness();
+    const base = {
+      provider: ProviderDriverKind.make("codex"),
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-01-01T00:00:00.000Z",
+    };
+    const goal = {
+      threadId: "native-thread",
+      objective: "Finish",
+      status: "active",
+      tokenBudget: 1000,
+      tokensUsed: 10,
+      timeUsedSeconds: 1,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    await harness.emitAndDrain([
+      {
+        ...base,
+        type: "thread.goal.changed",
+        eventId: asEventId("goal-active"),
+        payload: { available: true, goal },
+      },
+    ]);
+    for (const id of ["auto-1", "auto-2"]) {
+      await harness.emitAndDrain([
+        { ...base, type: "turn.started", eventId: asEventId(`${id}-start`), turnId: asTurnId(id) },
+      ]);
+      expect((await harness.readThreadShell()).session?.status).toBe("running");
+      await harness.emitAndDrain([
+        {
+          ...base,
+          type: "turn.completed",
+          eventId: asEventId(`${id}-done`),
+          turnId: asTurnId(id),
+          payload: { state: "completed" },
+        },
+      ]);
+      const turn = await harness.readTurn(asTurnId(id));
+      expect(turn?.state).toBe("completed");
+      expect((await harness.readThreadShell()).session?.nativeGoal?.goal?.status).toBe("active");
+    }
+    await harness.emitAndDrain([
+      {
+        ...base,
+        type: "thread.goal.changed",
+        eventId: asEventId("goal-completed"),
+        payload: { available: true, goal: { ...goal, status: "complete", tokensUsed: 100 } },
+      },
+    ]);
+    expect((await harness.readThreadShell()).session?.nativeGoal?.goal?.tokensUsed).toBe(100);
+    await harness.emitAndDrain([
+      {
+        ...base,
+        type: "thread.goal.changed",
+        eventId: asEventId("goal-cleared"),
+        payload: { available: true, goal: null },
+      },
+    ]);
+    expect((await harness.readThreadShell()).session?.nativeGoal?.goal).toBeNull();
+  });
 
   it("maps turn started/completed events into thread session updates", async () => {
     const harness = await createHarness();

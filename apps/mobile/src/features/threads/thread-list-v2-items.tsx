@@ -183,7 +183,7 @@ type ThreadListV2ShelfHeaderProps = {
   readonly count: number;
   readonly disabled?: boolean;
   readonly expanded: boolean;
-  readonly onToggle: () => void;
+  readonly onToggle?: (() => void) | undefined;
   readonly pane?: "screen" | "sidebar";
 };
 
@@ -196,13 +196,17 @@ function ThreadListV2ShelfHeader(
       label={props.expanded ? label : `${label} (${props.count})`}
       pane={props.pane}
       tone={props.kind === "snoozed" ? "snoozed" : "default"}
-      disclosure={{
-        expanded: props.expanded,
-        disabled: props.disabled,
-        onToggle: props.onToggle,
-        accessibilityLabel: `${props.count} ${props.kind} ${props.count === 1 ? "thread" : "threads"}`,
-        accessibilityHint: `${props.expanded ? "Collapses" : "Expands"} the ${props.kind} threads.`,
-      }}
+      disclosure={
+        props.onToggle
+          ? {
+              expanded: props.expanded,
+              disabled: props.disabled,
+              onToggle: props.onToggle,
+              accessibilityLabel: `${props.count} ${props.kind} ${props.count === 1 ? "thread" : "threads"}`,
+              accessibilityHint: `${props.expanded ? "Collapses" : "Expands"} the ${props.kind} threads.`,
+            }
+          : undefined
+      }
     />
   );
 }
@@ -438,6 +442,7 @@ export const ThreadListV2PendingRow = memo(function ThreadListV2PendingRow(props
 });
 
 export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
+  readonly projectHeading?: string;
   readonly thread: EnvironmentThreadShell;
   readonly variant: "card" | "slim";
   /** A message for this thread is waiting in the outbox. */
@@ -1178,6 +1183,9 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
 
   return (
     <View collapsable={false}>
+      {props.projectHeading ? (
+        <Text className="px-4 pt-4 pb-1 text-sm text-foreground-muted">{props.projectHeading}</Text>
+      ) : null}
       {customSnoozeOpen && (
         <CustomSnoozeSheet onClose={() => setCustomSnoozeOpen(false)} onSnooze={handleSnooze} />
       )}

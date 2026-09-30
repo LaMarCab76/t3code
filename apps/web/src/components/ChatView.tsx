@@ -1,3 +1,4 @@
+import { GoalControl } from "./chat/GoalControl";
 import { isChatGptUsageLimitError } from "@t3tools/shared/usageLimits";
 import { useLoadBalancedEnvironment } from "../hooks/useLoadBalancedEnvironment";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
@@ -2873,7 +2874,7 @@ export default function ChatView(props: ChatViewProps) {
   const activeProviderInstanceId = selectedProviderEntry?.instanceId ?? null;
   const activeProviderStatus = selectedProviderEntry?.snapshot ?? null;
   const { enabled: interactionModeEnabled, interactionMode } = resolveComposerInteractionMode({
-    planModeEnabled: settings.planModeEnabled,
+    planModeEnabled: true,
     provider: activeProviderStatus,
     interactionMode:
       composerInteractionMode ?? activeThread?.interactionMode ?? DEFAULT_INTERACTION_MODE,
@@ -7794,7 +7795,7 @@ export default function ChatView(props: ChatViewProps) {
         models: provider.models,
         modelOptions: selection.options,
         promptInjectionState: getComposerPromptInjectionState(messageTextForSend),
-        planModeEnabled: settings.planModeEnabled,
+        planModeEnabled: true,
       });
       const text = formatOutgoingPrompt({
         provider: provider.driverKind,
@@ -7812,7 +7813,7 @@ export default function ChatView(props: ChatViewProps) {
         ),
         text,
         interactionMode: resolveComposerInteractionMode({
-          planModeEnabled: settings.planModeEnabled,
+          planModeEnabled: true,
           provider: provider.snapshot,
           interactionMode: sendInteractionMode,
         }).interactionMode,
@@ -9981,6 +9982,9 @@ export default function ChatView(props: ChatViewProps) {
                     <ComposerSurface.Shell contextStrip={showComposerContextStrip}>
                       <ComposerSurface.Host>
                         <div ref={attachDraftHeroComposerAnchorRef} className="relative z-10">
+                          <GoalControl
+                            key={`${routeThreadRef.environmentId}:${routeThreadRef.threadId}`}
+                          />
                           <ChatComposer
                             multipleModelSelections={multipleModelSelections}
                             supportsMultipleModels={

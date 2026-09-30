@@ -1,4 +1,6 @@
+import { ScopedThreadRef } from "./environment.ts";
 import { SshDeviceHostConfigs } from "./device.ts";
+import { SidebarViewMode, WorkspaceProfile } from "./workspaceProfile.ts";
 import * as Effect from "effect/Effect";
 import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
@@ -296,6 +298,14 @@ export const ChatWidth = Schema.Literals(["comfortable", "wide", "full"]);
 export type ChatWidth = typeof ChatWidth.Type;
 
 export const ClientSettingsSchema = Schema.Struct({
+  workspaceProfiles: Schema.Array(WorkspaceProfile).pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
+  allWorkspaceProfileLastThread: Schema.optionalKey(ScopedThreadRef),
+  activeWorkspaceProfileId: Schema.NullOr(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(Effect.succeed(null)),
+  ),
+  sidebarViewMode: Schema.optionalKey(SidebarViewMode),
   notificationMode: NotificationMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("off" as const)),
   ),
@@ -435,9 +445,7 @@ export const ClientSettingsSchema = Schema.Struct({
     TrimmedNonEmptyString,
     PullRequestMergeMethod,
   ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
-  // Legacy plan mode. The composer's Build/Plan toggle was removed from the
-  // default UI; this beta flag restores it (plus the /plan and /default slash
-  // commands) for users who still rely on the old workflow.
+  // Retained for decoding older device preferences. Mode availability now follows the provider.
   planModeEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   // Legacy context window meter. The composer hides it by default; users who
   // still want the old usage indicator can restore it from Settings.
@@ -864,6 +872,22 @@ export const OpenCodeSettings = makeProviderSettingsSchema(
           placeholder: "http://127.0.0.1:4096",
           clearWhenEmpty: "omit",
         },
+      }),
+    ),
+    externalMcpEnabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({
+        title: "Connect T3 tools to external server",
+        description:
+          "Explicitly register T3 document, browser and device tools with the configured OpenCode server.",
+      }),
+    ),
+    externalMcpUrl: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "T3 MCP URL",
+        description:
+          "For an external server on another machine, enter this T3 environment's reachable /mcp URL. Leave blank for the local endpoint.",
       }),
     ),
     serverPassword: TrimmedString.pipe(
@@ -1457,6 +1481,8 @@ const OpenCodeSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(TrimmedString),
   serverUrl: Schema.optionalKey(TrimmedString),
+  externalMcpEnabled: Schema.optionalKey(Schema.Boolean),
+  externalMcpUrl: Schema.optionalKey(TrimmedString),
   serverPassword: Schema.optionalKey(TrimmedString),
   customModels: Schema.optionalKey(Schema.Array(CustomModelSetting)),
 });
@@ -1593,6 +1619,10 @@ export const ServerSettingsPatch = Schema.Struct({
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
 export const ClientSettingsPatch = Schema.Struct({
+  workspaceProfiles: Schema.optionalKey(Schema.Array(WorkspaceProfile)),
+  allWorkspaceProfileLastThread: Schema.optionalKey(ScopedThreadRef),
+  activeWorkspaceProfileId: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),
+  sidebarViewMode: Schema.optionalKey(SidebarViewMode),
   notificationMode: Schema.optionalKey(NotificationMode),
   inAppNotificationsEnabled: Schema.optionalKey(Schema.Boolean),
   diffColorScheme: Schema.optionalKey(DiffColorScheme),

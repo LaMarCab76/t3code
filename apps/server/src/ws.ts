@@ -1,3 +1,5 @@
+import { make as makeDocuments } from "./documents/Documents.ts";
+import { ProviderGoalError } from "@t3tools/contracts";
 import {
   sameUsageLimitCommandCoverage,
   withUsageLimitsCommands,
@@ -507,6 +509,7 @@ const makeWsRpcLayer = (
       const currentSessionId = currentSession.sessionId;
       const crypto = yield* Crypto.Crypto;
       const sql = yield* SqlClient.SqlClient;
+      const documents = yield* makeDocuments;
       const projectionSnapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
       /** A reference's host-level link key; the project's own host where the ref names none. */
       const resolvePullRequestSyncKey = (reference: PullRequestRef) =>
@@ -2430,6 +2433,59 @@ const makeWsRpcLayer = (
               return { providers };
             }),
             { "rpc.aggregate": "server" },
+          ),
+        [WS_METHODS.documentRead]: (input) => documents.read(input),
+        [WS_METHODS.documentSaveCopy]: (input) => documents.saveCopy(input),
+        [WS_METHODS.documentCreate]: (input) => documents.create(input),
+        [WS_METHODS.providerGoal]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.providerGoal,
+            Effect.gen(function* () {
+              const thread = Option.getOrNull(
+                yield* projectionSnapshotQuery.getThreadShellById(input.threadId),
+              );
+              if (!thread)
+                return yield* new ProviderGoalError({
+                  threadId: input.threadId,
+                  detail: "Thread not found.",
+                });
+              if (!thread.session && input.action === "set") {
+                const project = Option.getOrNull(
+                  yield* projectionSnapshotQuery.getProjectShellById(thread.projectId),
+                );
+                if (!project)
+                  return yield* new ProviderGoalError({
+                    threadId: input.threadId,
+                    detail: "Project not found.",
+                  });
+                yield* providerService.startSession(thread.id, {
+                  threadId: thread.id,
+                  providerInstanceId: thread.modelSelection.instanceId,
+                  modelSelection: thread.modelSelection,
+                  runtimeMode: thread.runtimeMode,
+                  cwd: thread.worktreePath ?? project.workspaceRoot,
+                });
+              }
+              if (
+                input.action === "set" &&
+                (input.objective !== undefined || input.status === "active")
+              ) {
+                yield* orchestrationEngine.dispatch({
+                  type: "thread.interaction-mode.set",
+                  commandId: CommandId.make(`goal-mode:${yield* crypto.randomUUIDv4}`),
+                  threadId: input.threadId,
+                  interactionMode: "default",
+                  createdAt: DateTime.formatIso(yield* DateTime.now),
+                });
+              }
+              return yield* providerService.goal(input);
+            }).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderGoalError({ threadId: input.threadId, detail: cause.message }),
+              ),
+            ),
+            { "rpc.aggregate": "provider" },
           ),
         [WS_METHODS.providerUploadFeedback]: (input) =>
           observeRpcEffect(

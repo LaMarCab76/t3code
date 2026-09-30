@@ -1,4 +1,13 @@
 import {
+  DocumentReadInput,
+  DocumentPage,
+  DocumentSaveCopyInput,
+  DocumentCreateInput,
+  DocumentSavedCopy,
+  DocumentError,
+} from "./documents.ts";
+import { ProviderGoalInput, ProviderGoalError, NativeGoalState } from "./goal.ts";
+import {
   ChatGptReconnectProfileInput,
   ChatGptReconnectProfile,
   ChatGptImportProfileInput,
@@ -306,6 +315,10 @@ export const WS_METHODS = {
   attachmentsDelete: "attachments.delete",
 
   // Provider methods
+  documentRead: "documents.read",
+  documentSaveCopy: "documents.saveCopy",
+  documentCreate: "documents.create",
+  providerGoal: "provider.goal",
   providerUploadFeedback: "provider.uploadFeedback",
   providerAuthStart: "provider.auth.start",
   providerConsumeResetCredit: "provider.consumeResetCredit",
@@ -1036,6 +1049,27 @@ const WsAttachmentsDeleteRpc = Rpc.make(WS_METHODS.attachmentsDelete, {
   error: EnvironmentAuthorizationError,
 });
 
+const WsDocumentReadRpc = Rpc.make(WS_METHODS.documentRead, {
+  payload: DocumentReadInput,
+  success: DocumentPage,
+  error: Schema.Union([DocumentError, EnvironmentAuthorizationError]),
+});
+const WsDocumentSaveCopyRpc = Rpc.make(WS_METHODS.documentSaveCopy, {
+  payload: DocumentSaveCopyInput,
+  success: DocumentSavedCopy,
+  error: Schema.Union([DocumentError, EnvironmentAuthorizationError]),
+});
+const WsDocumentCreateRpc = Rpc.make(WS_METHODS.documentCreate, {
+  payload: DocumentCreateInput,
+  success: DocumentSavedCopy,
+  error: Schema.Union([DocumentError, EnvironmentAuthorizationError]),
+});
+const WsProviderGoalRpc = Rpc.make(WS_METHODS.providerGoal, {
+  payload: ProviderGoalInput,
+  success: NativeGoalState,
+  error: Schema.Union([ProviderGoalError, EnvironmentAuthorizationError]),
+});
+
 const WsProviderUploadFeedbackRpc = Rpc.make(WS_METHODS.providerUploadFeedback, {
   payload: ProviderUploadFeedbackInput,
   success: ProviderUploadFeedbackResult,
@@ -1516,6 +1550,10 @@ export const WsRpcGroup = RpcGroup.make(
   WsAssetsCreateUrlRpc,
   WsAttachmentsCreateUploadUrlRpc,
   WsAttachmentsDeleteRpc,
+  WsDocumentReadRpc,
+  WsDocumentSaveCopyRpc,
+  WsDocumentCreateRpc,
+  WsProviderGoalRpc,
   WsProviderUploadFeedbackRpc,
   WsSubscribeVcsStatusRpc,
   WsSubscribeWorktreeSetupRpc,

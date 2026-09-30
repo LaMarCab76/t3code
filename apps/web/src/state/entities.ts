@@ -12,6 +12,12 @@ import type { ScopedProjectRef, ScopedThreadRef, ServerConfig } from "@t3tools/c
 import type { EnvironmentId } from "@t3tools/contracts";
 import { Atom } from "effect/unstable/reactivity";
 import { useMemo } from "react";
+import {
+  activeWorkspaceProfile,
+  filterWorkspaceProfileProjects,
+  filterWorkspaceProfileThreads,
+} from "@t3tools/client-runtime/workspace-profiles";
+import { useClientSettings } from "../hooks/useSettings";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentProjects } from "./projects";
 import { environmentServerConfigsAtom } from "./server";
@@ -67,7 +73,19 @@ export function useEnvironmentThreadRefs(
 }
 
 export function useProjects(): ReadonlyArray<EnvironmentProject> {
+  const projects = useAllProjects();
+  const profile = useActiveWorkspaceProfile();
+  return useMemo(() => filterWorkspaceProfileProjects(projects, profile), [projects, profile]);
+}
+
+export function useAllProjects(): ReadonlyArray<EnvironmentProject> {
   return useAtomValue(environmentProjects.projectsAtom);
+}
+
+export function useActiveWorkspaceProfile() {
+  const profiles = useClientSettings((settings) => settings.workspaceProfiles);
+  const activeId = useClientSettings((settings) => settings.activeWorkspaceProfileId);
+  return activeWorkspaceProfile(profiles, activeId);
 }
 
 export function useServerConfigs(): ReadonlyMap<EnvironmentId, ServerConfig> {
@@ -75,7 +93,9 @@ export function useServerConfigs(): ReadonlyMap<EnvironmentId, ServerConfig> {
 }
 
 export function useThreadShells(): ReadonlyArray<EnvironmentThreadShell> {
-  return useAtomValue(environmentThreadShells.threadShellsAtom);
+  const threads = useAtomValue(environmentThreadShells.threadShellsAtom);
+  const profile = useActiveWorkspaceProfile();
+  return useMemo(() => filterWorkspaceProfileThreads(threads, profile), [threads, profile]);
 }
 
 export function useAllEnvironmentShellsBootstrapped(): boolean {

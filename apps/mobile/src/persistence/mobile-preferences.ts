@@ -5,17 +5,31 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
-import type { ProviderInstanceId, SidebarProjectGroupingMode } from "@t3tools/contracts";
+import {
+  WorkspaceProfile,
+  SidebarViewMode,
+  ScopedThreadRef,
+  type ProviderInstanceId,
+  type SidebarProjectGroupingMode,
+} from "@t3tools/contracts";
 import type { ComposerEnterBehavior } from "../lib/composerEnterBehavior";
 import { MOBILE_THEME_IDS, type MobileThemeId, type MobileThemeMode } from "../lib/mobileTheme";
 import * as MobileDatabase from "./mobile-database";
 import * as MobileSecureStorage from "./mobile-secure-storage";
 import { MobileStorageDecodeError, MobileStorageEncodeError } from "./mobile-storage";
 
+const decodeLastProfileThread = Schema.decodeUnknownOption(ScopedThreadRef);
+const decodeWorkspaceProfiles = Schema.decodeUnknownOption(Schema.Array(WorkspaceProfile));
+const decodeSidebarViewMode = Schema.decodeUnknownOption(SidebarViewMode);
+
 const PREFERENCES_KEY = "t3code.preferences";
 const PREFERENCES_FALLBACK_KEY = "t3code.preferences.fallback";
 
 export interface Preferences {
+  readonly workspaceProfiles?: readonly WorkspaceProfile[];
+  readonly allWorkspaceProfileLastThread?: ScopedThreadRef;
+  readonly activeWorkspaceProfileId?: string | null;
+  readonly sidebarViewMode?: SidebarViewMode;
   readonly liveActivitiesEnabled?: boolean;
   readonly themeId?: MobileThemeId;
   readonly lightThemeId?: MobileThemeId;
@@ -84,6 +98,10 @@ export class MobilePreferencesStore extends Context.Service<
 
 function sanitizePreferences(parsed: Preferences): Preferences {
   const preferences: {
+    workspaceProfiles?: readonly WorkspaceProfile[];
+    allWorkspaceProfileLastThread?: ScopedThreadRef;
+    activeWorkspaceProfileId?: string | null;
+    sidebarViewMode?: SidebarViewMode;
     liveActivitiesEnabled?: boolean;
     themeId?: MobileThemeId;
     lightThemeId?: MobileThemeId;
@@ -105,6 +123,18 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     threadListSnoozedShelfExpanded?: boolean;
   } = {};
 
+  const lastThreadResult = decodeLastProfileThread(parsed.allWorkspaceProfileLastThread);
+  if (Option.isSome(lastThreadResult))
+    preferences.allWorkspaceProfileLastThread = lastThreadResult.value;
+  const profileResult = decodeWorkspaceProfiles(parsed.workspaceProfiles);
+  if (Option.isSome(profileResult)) preferences.workspaceProfiles = profileResult.value;
+  if (
+    typeof parsed.activeWorkspaceProfileId === "string" ||
+    parsed.activeWorkspaceProfileId === null
+  )
+    preferences.activeWorkspaceProfileId = parsed.activeWorkspaceProfileId;
+  const viewResult = decodeSidebarViewMode(parsed.sidebarViewMode);
+  if (Option.isSome(viewResult)) preferences.sidebarViewMode = viewResult.value;
   if (typeof parsed.liveActivitiesEnabled === "boolean") {
     preferences.liveActivitiesEnabled = parsed.liveActivitiesEnabled;
   }

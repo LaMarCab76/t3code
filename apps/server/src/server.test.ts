@@ -819,6 +819,7 @@ const buildAppUnderTest = (options?: {
             ...options?.layers?.providerRegistry,
           }),
           Layer.mock(ProviderService.ProviderService)({
+            goal: () => Effect.succeed({ available: false, goal: null }),
             uploadFeedback: () => Effect.die("Provider feedback is not stubbed in this test"),
             ...options?.layers?.providerService,
           }),
@@ -6303,6 +6304,7 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
       yield* buildAppUnderTest({
         layers: {
           providerService: {
+            goal: () => Effect.succeed({ available: false, goal: null }),
             uploadFeedback: () =>
               Effect.fail(
                 new ProviderAdapterRequestError({

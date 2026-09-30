@@ -83,7 +83,10 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
         // fleets, workflow runs, Monitor watch loops). Those live inside the
         // provider process, so stopping the session would kill them silently,
         // and nothing bumps lastSeenAt between turns.
-        if (thread?.backgroundLiveness != null) {
+        if (
+          thread?.backgroundLiveness != null ||
+          thread?.session?.nativeGoal?.goal?.status === "active"
+        ) {
           yield* Effect.logDebug("provider.session.reaper.skipped-background-work", {
             threadId: binding.threadId,
             backgroundLiveness: thread.backgroundLiveness,

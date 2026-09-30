@@ -495,7 +495,11 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       }
       // The server owns settle eligibility. A stale command must not settle
       // a thread whose session is coming alive or working.
-      if (thread.session?.status === "starting" || thread.session?.status === "running") {
+      if (
+        thread.session?.nativeGoal?.goal?.status === "active" ||
+        thread.session?.status === "starting" ||
+        thread.session?.status === "running"
+      ) {
         return yield* new OrchestrationThreadSettleBlockedError({ threadId: command.threadId });
       }
       const pendingRequests = openRequests(thread);
@@ -1898,7 +1902,10 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.session-set",
         payload: {
           threadId: command.threadId,
-          session: command.session,
+          session: {
+            ...(thread.session?.nativeGoal ? { nativeGoal: thread.session.nativeGoal } : {}),
+            ...command.session,
+          },
         },
       };
       // Only a session coming alive is activity worth waking a settled thread
@@ -1910,7 +1917,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       // with a raised hand (approval / input / failure / fresh completion)
       // as snoozed, without spending the return ticket.
       const isSessionActivity =
-        command.session.status === "starting" || command.session.status === "running";
+        command.session.status === "starting" ||
+        command.session.status === "running" ||
+        command.session.nativeGoal?.goal?.status === "active";
       // Real activity resets ANY override (settled wakes, active unpins).
       if (thread.settledOverride === null || !isSessionActivity) {
         return sessionSetEvent;

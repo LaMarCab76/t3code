@@ -932,7 +932,10 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
   const agentAccessCapabilities = Effect.fn("ProviderService.agentAccessCapabilities")(function* (
     threadId: ThreadId,
   ) {
-    const capabilities = new Set<McpInvocationContext.McpCapability>(["pull-requests"]);
+    const capabilities = new Set<McpInvocationContext.McpCapability>([
+      "pull-requests",
+      "documents",
+    ]);
     const access = yield* agentAccessSettings(threadId);
     if (access.browser) capabilities.add("preview");
     if (access.device) capabilities.add("device");
@@ -2298,6 +2301,22 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     );
   });
 
+  const goal: ProviderServiceMethod<"goal"> = Effect.fn("ProviderService.goal")(function* (input) {
+    const routed = yield* resolveRoutableSession({
+      threadId: input.threadId,
+      operation: "ProviderService.goal",
+      allowRecovery: true,
+    });
+    if (!routed.adapter.goal) {
+      if (input.action === "get") return { available: false, goal: null };
+      return yield* toValidationError(
+        "ProviderService.goal",
+        "This provider does not support native goals.",
+      );
+    }
+    return yield* routed.adapter.goal(input);
+  });
+
   const uploadFeedback: ProviderServiceMethod<"uploadFeedback"> = Effect.fn("uploadFeedback")(
     function* (rawInput) {
       const input = yield* decodeInputOrValidationError({
@@ -2462,6 +2481,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
     getInstanceInfo,
     assertConversationRollbackSupported,
     rollbackConversation,
+    goal,
     uploadFeedback,
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (ProviderRuntimeIngestion, CheckpointReactor, etc.) each

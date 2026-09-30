@@ -205,6 +205,44 @@ describe("resolveAutoSettlementAt", () => {
     ).toBe(false);
   });
 
+  it("keeps active native goals pending between turns and permits settlement after pausing", () => {
+    const thread = makeThread({
+      session: {
+        threadId: ThreadId.make("thread-1"),
+        status: "ready",
+        providerName: "codex",
+        runtimeMode: "full-access",
+        activeTurnId: null,
+        lastError: null,
+        updatedAt: NOW,
+        nativeGoal: {
+          available: true,
+          goal: {
+            threadId: "native",
+            objective: "Finish",
+            status: "active",
+            tokensUsed: 0,
+            timeUsedSeconds: 0,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        },
+      },
+    });
+    expect(decide(thread)).toBe(false);
+    const paused = {
+      ...thread,
+      session: {
+        ...thread.session!,
+        nativeGoal: {
+          available: true,
+          goal: { ...thread.session!.nativeGoal!.goal!, status: "paused" as const },
+        },
+      },
+    };
+    expect(decide(paused)).toBe(true);
+  });
+
   it("allows a fresh completion to wake snooze before settlement", () => {
     expect(
       decide(

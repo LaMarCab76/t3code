@@ -1,3 +1,7 @@
+import { useAtomSet } from "@effect/atom-react";
+import { workspaceProfileIncludesProject } from "@t3tools/client-runtime/workspace-profiles";
+import { useActiveWorkspaceProfile } from "../../state/entities";
+import { updateMobilePreferencesAtom } from "../../state/preferences";
 import { makeTurnCommandMetadata } from "../../lib/commandMetadata";
 import { enqueueThreadOutboxMessage } from "../../state/thread-outbox";
 import {
@@ -252,6 +256,45 @@ export function ThreadRouteScreen(props: ThreadRouteScreenProps) {
   const { state: workspaceState } = useWorkspaceState();
   const { connectionState } = useRemoteConnectionStatus();
   const { selectedThread } = useThreadSelection();
+  const profile = useActiveWorkspaceProfile();
+  const saveProfile = useAtomSet(updateMobilePreferencesAtom);
+  const recordedThread = useRef<string | null>(null);
+  useEffect(() => {
+    if (!selectedThread) return;
+    const key = `${profile?.id ?? "all"}:${selectedThread.environmentId}:${selectedThread.id}`;
+    if (recordedThread.current === key) return;
+    recordedThread.current = key;
+    if (!profile) {
+      saveProfile({
+        allWorkspaceProfileLastThread: {
+          environmentId: selectedThread.environmentId,
+          threadId: selectedThread.id,
+        },
+      });
+    } else if (!workspaceProfileIncludesProject(profile, selectedThread)) {
+      saveProfile({ activeWorkspaceProfileId: null });
+      Alert.alert(
+        "Switched to All",
+        "This thread belongs to a project outside the selected profile.",
+      );
+    } else {
+      saveProfile({
+        transform: (preferences) => ({
+          workspaceProfiles: (preferences.workspaceProfiles ?? []).map((entry) =>
+            entry.id === profile.id
+              ? {
+                  ...entry,
+                  lastThread: {
+                    environmentId: selectedThread.environmentId,
+                    threadId: selectedThread.id,
+                  },
+                }
+              : entry,
+          ),
+        }),
+      });
+    }
+  }, [selectedThread, profile, saveProfile]);
   const params = props.route.params;
   const environmentIdRaw = firstRouteParam(params.environmentId);
   const threadIdRaw = firstRouteParam(params.threadId);

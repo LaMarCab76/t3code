@@ -1,3 +1,6 @@
+import { useAtomSet } from "@effect/atom-react";
+import { updateMobilePreferencesAtom } from "../../state/preferences";
+import { addWorkspaceProfileProject } from "@t3tools/client-runtime/workspace-profiles";
 import { MaterialListRow } from "../../components/MaterialListRow";
 import { SettingsScreen } from "../settings/components/SettingsScreen";
 import { ScreenScrollView as ScrollView } from "../../components/ScreenScrollView";
@@ -52,7 +55,7 @@ import * as Cause from "effect/Cause";
 import * as Order from "effect/Order";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { cn } from "../../lib/cn";
-import { useProjects, useServerConfigs, waitForProject } from "../../state/entities";
+import { useAllProjects, useServerConfigs, waitForProject } from "../../state/entities";
 import { filesystemEnvironment } from "../../state/filesystem";
 import { projectEnvironment } from "../../state/projects";
 import { useEnvironmentQuery } from "../../state/query";
@@ -632,8 +635,9 @@ function openNewTaskDraft(
 
 function useCreateProject(environment: EnvironmentOption | null) {
   const navigation = useNavigation();
+  const updateProfile = useAtomSet(updateMobilePreferencesAtom);
   const createProject = useAtomCommand(projectEnvironment.create, { reportFailure: false });
-  const projects = useProjects();
+  const projects = useAllProjects();
 
   return useCallback(
     async (workspaceRoot: string) => {
@@ -645,6 +649,15 @@ function useCreateProject(environment: EnvironmentOption | null) {
         path: workspaceRoot,
       });
       if (existing) {
+        updateProfile({
+          transform: (preferences) => ({
+            workspaceProfiles: addWorkspaceProfileProject(
+              preferences.workspaceProfiles ?? [],
+              preferences.activeWorkspaceProfileId,
+              { environmentId: existing.environmentId, projectId: existing.id },
+            ),
+          }),
+        });
         Alert.alert("Project already exists", existing.title);
         navigation.dispatch(
           CommonActions.reset({
@@ -678,6 +691,15 @@ function useCreateProject(environment: EnvironmentOption | null) {
       if (AsyncResult.isFailure(result)) {
         return result;
       }
+      updateProfile({
+        transform: (preferences) => ({
+          workspaceProfiles: addWorkspaceProfileProject(
+            preferences.workspaceProfiles ?? [],
+            preferences.activeWorkspaceProfileId,
+            { environmentId: environment.environmentId, projectId },
+          ),
+        }),
+      });
       navigation.dispatch(
         CommonActions.reset({
           index: 0,
@@ -695,7 +717,7 @@ function useCreateProject(environment: EnvironmentOption | null) {
       );
       return result;
     },
-    [createProject, environment, projects, navigation],
+    [createProject, environment, projects, navigation, updateProfile],
   );
 }
 

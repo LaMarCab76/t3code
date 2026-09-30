@@ -1,3 +1,4 @@
+import { NativeGoalState } from "./goal.ts";
 import * as Schema from "effect/Schema";
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 import {
@@ -33,6 +34,7 @@ const ProviderSessionStatus = Schema.Literals([
 ]);
 
 export const ProviderSession = Schema.Struct({
+  nativeGoal: Schema.optionalKey(NativeGoalState),
   provider: ProviderDriverKind,
   // Optional during the driver/instance migration. Once every producer
   // populates it (post-slice-4), routing flips to instance-id-only and the

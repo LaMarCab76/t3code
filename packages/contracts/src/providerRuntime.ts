@@ -1,3 +1,4 @@
+import { NativeGoalState } from "./goal.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import {
@@ -1175,7 +1176,14 @@ const ProviderRuntimeErrorEvent = Schema.Struct({
 });
 export type ProviderRuntimeErrorEvent = typeof ProviderRuntimeErrorEvent.Type;
 
+const ProviderRuntimeGoalChangedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: Schema.Literal("thread.goal.changed"),
+  payload: NativeGoalState,
+});
+
 export const ProviderRuntimeEventV2 = Schema.Union([
+  ProviderRuntimeGoalChangedEvent,
   ProviderRuntimeSessionStartedEvent,
   ProviderRuntimeSessionConfiguredEvent,
   ProviderRuntimeSessionStateChangedEvent,

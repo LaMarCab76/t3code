@@ -1,3 +1,4 @@
+import type { ProviderGoalInput, NativeGoalState } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
   DEFAULT_MODEL,
@@ -66,6 +67,37 @@ const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   "does not exist",
   "no rollout found",
 ];
+
+/** Uses only the provider protocol; older app servers report unsupported without prompt fallbacks. */
+export const requestCodexGoal = (
+  client: Pick<CodexClient.CodexAppServerClient["Service"], "request">,
+  threadId: string,
+  input: ProviderGoalInput,
+) =>
+  Effect.gen(function* () {
+    if (input.action === "clear") {
+      yield* client.request("thread/goal/clear", { threadId });
+      return { available: true, goal: null } satisfies NativeGoalState;
+    }
+    const result =
+      input.action === "get"
+        ? yield* client.request("thread/goal/get", { threadId })
+        : yield* client.request("thread/goal/set", {
+            threadId,
+            ...(input.objective !== undefined ? { objective: input.objective } : {}),
+            ...(input.status !== undefined ? { status: input.status } : {}),
+            ...(input.tokenBudget !== undefined ? { tokenBudget: input.tokenBudget } : {}),
+          });
+    return {
+      available: true,
+      goal: result.goal ? { ...result.goal, tokenBudget: result.goal.tokenBudget ?? null } : null,
+    } satisfies NativeGoalState;
+  }).pipe(
+    Effect.catchIf(
+      (error) => error._tag === "CodexAppServerRequestError" && error.code === -32601,
+      () => Effect.succeed({ available: false, goal: null } satisfies NativeGoalState),
+    ),
+  );
 
 export function hasConfiguredMcpServer(appServerArgs: ReadonlyArray<string> | undefined): boolean {
   return appServerArgs?.some((argument) => argument.includes("mcp_servers.")) === true;
@@ -217,6 +249,9 @@ export interface CodexSessionRuntimeShape {
   readonly sendTurn: (
     input: CodexSessionRuntimeSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, CodexSessionRuntimeError>;
+  readonly goal: (
+    input: ProviderGoalInput,
+  ) => Effect.Effect<NativeGoalState, CodexSessionRuntimeError>;
   readonly compactThread: Effect.Effect<void, CodexSessionRuntimeError>;
   readonly interruptTurn: (turnId?: TurnId) => Effect.Effect<void, CodexSessionRuntimeError>;
   readonly readThread: Effect.Effect<CodexThreadSnapshot, CodexSessionRuntimeError>;
@@ -2478,6 +2513,39 @@ export const makeCodexSessionRuntime = (
       Effect.forkIn(runtimeScope),
     );
 
+    const confirmGoal = (state: NativeGoalState) =>
+      Effect.gen(function* () {
+        yield* updateSession(sessionRef, { nativeGoal: state });
+        yield* emitEvent({
+          kind: "session",
+          threadId: options.threadId,
+          method: "session/goal",
+          payload: state,
+        });
+        return state;
+      });
+    const goal = (input: ProviderGoalInput) =>
+      readProviderThreadId.pipe(
+        Effect.flatMap((threadId) => requestCodexGoal(client, threadId, input)),
+        Effect.flatMap(confirmGoal),
+      );
+
+    yield* client.handleServerNotification("thread/goal/updated", (payload) =>
+      Effect.gen(function* () {
+        if (payload.threadId !== currentProviderThreadId(yield* Ref.get(sessionRef))) return;
+        yield* confirmGoal({
+          available: true,
+          goal: { ...payload.goal, tokenBudget: payload.goal.tokenBudget ?? null },
+        });
+      }),
+    );
+    yield* client.handleServerNotification("thread/goal/cleared", (payload) =>
+      Effect.gen(function* () {
+        if (payload.threadId !== currentProviderThreadId(yield* Ref.get(sessionRef))) return;
+        yield* confirmGoal({ available: true, goal: null });
+      }),
+    );
+
     const start = Effect.fn("CodexSessionRuntime.start")(function* () {
       yield* emitSessionEvent("session/connecting", "Starting Codex App Server session.");
       yield* client.request("initialize", buildCodexInitializeParams());
@@ -2506,7 +2574,8 @@ export const makeCodexSessionRuntime = (
       } satisfies ProviderSession;
       yield* Ref.set(sessionRef, session);
       yield* emitSessionEvent("session/ready", "Codex App Server session ready.");
-      return session;
+      yield* goal({ threadId: options.threadId, action: "get" });
+      return yield* Ref.get(sessionRef);
     });
 
     const readProviderThreadId = Effect.gen(function* () {
@@ -2542,6 +2611,7 @@ export const makeCodexSessionRuntime = (
 
     return {
       start,
+      goal,
       getSession: Ref.get(sessionRef),
       compactThread: Effect.gen(function* () {
         const providerThreadId = yield* readProviderThreadId;
@@ -2550,6 +2620,12 @@ export const makeCodexSessionRuntime = (
       sendTurn: (input) =>
         Effect.gen(function* () {
           const providerThreadId = yield* readProviderThreadId;
+          if (
+            input.interactionMode === "plan" &&
+            (yield* Ref.get(sessionRef)).nativeGoal?.goal?.status === "active"
+          ) {
+            yield* goal({ threadId: options.threadId, action: "set", status: "paused" });
+          }
           if (hasConfiguredMcpServer(options.appServerArgs)) {
             yield* client.request("config/mcpServer/reload", undefined).pipe(
               Effect.catch((cause) =>

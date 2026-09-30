@@ -1,3 +1,7 @@
+import { isEditableDocumentFile } from "@t3tools/shared/filePreview";
+import { useEnvironmentServerConfig } from "../../state/entities";
+import { NativeDocumentPreview } from "./NativeDocumentPreview";
+import { resolveWorkspaceFilePath } from "./filePath";
 import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
@@ -225,6 +229,28 @@ function FileContent(props: {
 }) {
   // Reopening a mutable host file must not reuse a poster from an earlier visit.
   const thumbnailInstanceId = useId();
+  const config = useEnvironmentServerConfig(props.environmentId);
+  const documentSource = useMemo(
+    () => ({
+      kind: "workspace" as const,
+      path: resolveWorkspaceFilePath(props.cwd, props.relativePath),
+    }),
+    [props.cwd, props.relativePath],
+  );
+  if (
+    props.threadId &&
+    config?.environment.capabilities.documents === true &&
+    isEditableDocumentFile(props.relativePath)
+  ) {
+    return (
+      <NativeDocumentPreview
+        key={`${props.environmentId}:${props.threadId}:${documentSource.path}`}
+        environmentId={props.environmentId}
+        threadId={props.threadId}
+        source={documentSource}
+      />
+    );
+  }
   const isMarkdown = isMarkdownPreviewFile(props.relativePath);
   const isBrowserFile = isWorkspaceBrowserPreviewPath(props.relativePath);
   const isImageFile = isWorkspaceImagePreviewPath(props.relativePath);
@@ -575,6 +601,11 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
   const [previewRevision, setPreviewRevision] = useState(0);
   const previewKey = JSON.stringify([environmentId, cwd, relativePath, previewRevision]);
   const [fullScreenPreview, setFullScreenPreview] = useState<FilePreviewSource | null>(null);
+  const config = useEnvironmentServerConfig(environmentId);
+  const isDocumentFile =
+    threadId !== null &&
+    config?.environment.capabilities.documents === true &&
+    isEditableDocumentFile(relativePath ?? "");
   const isVideoFile = relativePath !== null && isVideoPreviewFile(relativePath);
   const isAudioFile = relativePath !== null && !isVideoFile && isAudioPreviewFile(relativePath);
   const isBrowserFile =
@@ -593,7 +624,7 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
       ? modeOverride.mode
       : defaultViewMode(relativePath);
   const resolvedActiveMode =
-    isVideoFile || isAudioFile ? "preview" : canPreview ? activeMode : "source";
+    isDocumentFile || isVideoFile || isAudioFile ? "preview" : canPreview ? activeMode : "source";
   const assetPreviewPath =
     isBrowserFile || isImageFile || isVideoFile || isAudioFile ? relativePath : null;
   const assetPreview = useWorkspaceFileAssetUrlState({
@@ -653,6 +684,7 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
     void assetPreview.refresh().finally(() => setPreviewRevision((current) => current + 1));
   };
   const needsFileContents =
+    !isDocumentFile &&
     relativePath !== null &&
     !isVideoFile &&
     !isAudioFile &&

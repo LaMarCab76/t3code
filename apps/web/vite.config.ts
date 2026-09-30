@@ -278,6 +278,7 @@ export default defineConfig(() => {
       devSourcemap: buildSourcemap !== false,
     },
     build: {
+      rolldownOptions: { input: { main: "index.html", documents: "document-editor.html" } },
       outDir: "dist",
       emptyOutDir: true,
       manifest: true,

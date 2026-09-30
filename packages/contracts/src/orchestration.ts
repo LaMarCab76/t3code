@@ -1,3 +1,4 @@
+import { NativeGoalState } from "./goal.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
@@ -617,6 +618,7 @@ export const OrchestrationSessionStatus = Schema.Literals([
 export type OrchestrationSessionStatus = typeof OrchestrationSessionStatus.Type;
 
 export const OrchestrationSession = Schema.Struct({
+  nativeGoal: Schema.optionalKey(NativeGoalState),
   threadId: ThreadId,
   status: OrchestrationSessionStatus,
   providerName: Schema.NullOr(TrimmedNonEmptyString),

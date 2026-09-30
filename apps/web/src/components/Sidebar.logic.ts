@@ -823,7 +823,11 @@ export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): Si
   if (thread.hasPendingUserInput) {
     return "input";
   }
-  if (thread.session?.status === "running" || thread.session?.status === "starting") {
+  if (
+    thread.session?.nativeGoal?.goal?.status === "active" ||
+    thread.session?.status === "running" ||
+    thread.session?.status === "starting"
+  ) {
     return "working";
   }
   // A failed session outranks lingering background liveness: the user must

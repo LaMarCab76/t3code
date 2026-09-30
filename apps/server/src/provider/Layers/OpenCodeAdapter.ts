@@ -2867,13 +2867,16 @@ export function makeOpenCodeAdapter(
                 directory,
                 ...(server.serverPassword ? { serverPassword: server.serverPassword } : {}),
               });
-              if (mcpSession && !server.external) {
+              if (mcpSession && (!server.external || openCodeSettings.externalMcpEnabled)) {
                 yield* runOpenCodeSdk("mcp.add", () =>
                   client.mcp.add({
                     name: "t3-code",
                     config: {
                       type: "remote",
-                      url: mcpSession.endpoint,
+                      url:
+                        server.external && openCodeSettings.externalMcpUrl
+                          ? openCodeSettings.externalMcpUrl
+                          : mcpSession.endpoint,
                       headers: {
                         Authorization: mcpSession.authorizationHeader,
                       },
@@ -3205,7 +3208,8 @@ export function makeOpenCodeAdapter(
             context.turnTokenUsage = makeOpenCodeTurnTokenUsageAccumulator();
           }
           context.turnTokenUsage?.promptMessageIds.add(messageId);
-          context.activeAgent = agent ?? (input.interactionMode === "plan" ? "plan" : undefined);
+          context.activeAgent =
+            input.interactionMode === "plan" ? "plan" : agent === "plan" ? undefined : agent;
           context.activeVariant = variant;
           if (steeringTurnId === undefined) {
             context.awaitingBusyAfterInterruption = context.interruptedTurnId !== undefined;

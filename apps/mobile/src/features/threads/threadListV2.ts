@@ -1,4 +1,6 @@
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
+import { groupWorkspaceHistory } from "@t3tools/client-runtime/workspace-profiles";
+import type { SidebarViewMode } from "@t3tools/contracts";
 import {
   canSnooze,
   effectiveSnoozed,
@@ -126,7 +128,11 @@ export function resolveThreadListV2Status(
   if (thread.hasPendingUserInput) {
     return "input";
   }
-  if (thread.session?.status === "running" || thread.session?.status === "starting") {
+  if (
+    thread.session?.nativeGoal?.goal?.status === "active" ||
+    thread.session?.status === "running" ||
+    thread.session?.status === "starting"
+  ) {
     return "working";
   }
   if (thread.session?.status === "error") {
@@ -224,6 +230,7 @@ export interface ThreadListV2Layout {
 }
 
 export interface ThreadListV2ThreadListItem {
+  readonly projectHeading?: string;
   readonly type: "v2-thread";
   readonly key: string;
   readonly item: ThreadListV2Item;
@@ -320,6 +327,7 @@ export function threadListV2ListItemsAreEqual(
       return (
         previous.type === "v2-thread" &&
         previous.key === item.key &&
+        previous.projectHeading === item.projectHeading &&
         previous.item.thread === item.item.thread &&
         previous.item.variant === item.item.variant &&
         previous.item.snoozed === item.item.snoozed &&
@@ -381,6 +389,8 @@ function resolveThreadListV2ItemTimeLabel(
  * reachable without competing with either the inbox or settled history.
  */
 export function buildThreadListV2ListItems(input: {
+  readonly viewMode?: SidebarViewMode;
+  readonly projectTitles?: ReadonlyMap<string, string>;
   readonly items: ReadonlyArray<ThreadListV2Item>;
   readonly pendingTasks: ReadonlyArray<PendingNewTask>;
   readonly snoozedCount?: number;
@@ -479,9 +489,56 @@ export function buildThreadListV2ListItems(input: {
   }
   // Hairlines depend on the final neighbour, so they are stamped after the
   // splice: a recycled cell only re-renders when its divider actually flips.
-  return result.map((entry, index) => {
+  const projectKey = (entry: ThreadListV2ThreadListItem) =>
+    `${entry.item.thread.environmentId}:${entry.item.thread.projectId}`;
+  const history = result.filter(
+    (entry): entry is ThreadListV2ThreadListItem =>
+      entry.type === "v2-thread" &&
+      !entry.item.pinned &&
+      !entry.item.snoozed &&
+      (input.viewMode === "projects" || entry.item.variant === "slim"),
+  );
+  const grouped = groupWorkspaceHistory(history, projectKey);
+  let previousProject: string | null = null;
+  const headings = new Map(
+    grouped.map((entry) => {
+      const key = projectKey(entry);
+      const heading =
+        key !== previousProject ? (input.projectTitles?.get(key) ?? "Project") : undefined;
+      previousProject = key;
+      return [entry.key, heading] as const;
+    }),
+  );
+  let historyIndex = 0;
+  const display =
+    input.viewMode === "projects"
+      ? [
+          ...result.filter(
+            (entry) =>
+              entry.type === "v2-pending" || (entry.type === "v2-thread" && entry.item.pinned),
+          ),
+          ...grouped,
+          ...result.filter(
+            (entry) =>
+              entry.type === "v2-snoozed-shelf" ||
+              (entry.type === "v2-thread" && entry.item.snoozed),
+          ),
+        ]
+      : input.viewMode === "combined"
+        ? result.map((entry) =>
+            entry.type === "v2-thread" &&
+            !entry.item.pinned &&
+            !entry.item.snoozed &&
+            entry.item.variant === "slim"
+              ? grouped[historyIndex++]!
+              : entry,
+          )
+        : result;
+  return display.map((entry, index) => {
     if (entry.type !== "v2-thread" && entry.type !== "v2-pending") return entry;
-    const next = result[index + 1];
+    if (entry.type === "v2-thread" && input.viewMode !== undefined && input.viewMode !== "status")
+      entry = { ...entry, projectHeading: headings.get(entry.key) };
+    const next = display[index + 1];
     const showTrailingDivider =
       next?.type === "v2-thread" || (next?.type === "v2-pending" && !next.showPendingDivider);
     return showTrailingDivider === entry.showTrailingDivider

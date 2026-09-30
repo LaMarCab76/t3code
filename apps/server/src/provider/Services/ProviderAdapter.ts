@@ -1,3 +1,4 @@
+import type { ProviderGoalInput, NativeGoalState } from "@t3tools/contracts";
 /**
  * ProviderAdapter - Provider-specific runtime adapter contract.
  *
@@ -142,6 +143,8 @@ export interface ProviderAdapterShape<TError> {
   /**
    * Upload a thread to the provider when the adapter supports feedback.
    */
+  readonly goal?: (input: ProviderGoalInput) => Effect.Effect<NativeGoalState, TError>;
+
   readonly uploadFeedback?: (
     input: ProviderUploadFeedbackInput,
   ) => Effect.Effect<ProviderUploadFeedbackResult, TError>;

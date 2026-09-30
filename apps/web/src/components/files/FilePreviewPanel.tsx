@@ -1,3 +1,5 @@
+import { isEditableDocumentFile } from "@t3tools/shared/filePreview";
+import { useServerConfigs, useThreadShell } from "~/state/entities";
 import { Spinner } from "~/components/ui/spinner";
 import type {
   ChatFileAttachment,
@@ -23,7 +25,7 @@ import {
 import { mediaFileReference } from "@t3tools/client-runtime/media-reference";
 import { Code2, Eye, FolderTree, Globe2, Table2, WrapTextIcon } from "lucide-react";
 import * as Schema from "effect/Schema";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
 import { useAssetUrlRefresh, useAssetUrlState } from "~/assets/assetUrls";
@@ -904,7 +906,50 @@ function initialExplorerOpen(): boolean {
   }
 }
 
-export default function FilePreviewPanel({
+const DocumentPreview = lazy(() => import("../../documents/WorkspaceDocumentPreview"));
+
+export default function FilePreviewPanel(props: FilePreviewPanelProps) {
+  const config = useServerConfigs().get(props.environmentId);
+  const thread = useThreadShell(props.threadRef);
+  const source = useMemo(
+    () =>
+      props.attachment
+        ? { kind: "attachment" as const, id: props.attachment.id, name: props.attachment.name }
+        : props.relativePath
+          ? {
+              kind: "workspace" as const,
+              path: resolvePathLinkTarget(props.relativePath, props.cwd),
+            }
+          : null,
+    [props.attachment, props.relativePath, props.cwd],
+  );
+  if (
+    thread &&
+    config?.environment.capabilities.documents === true &&
+    source &&
+    isEditableDocumentFile(props.attachment?.name ?? props.relativePath ?? "")
+  ) {
+    return (
+      <SourceFilePreviewPanel
+        {...props}
+        documentEditor={
+          <Suspense fallback={<FileSurfaceLoading className="p-4" />}>
+            <DocumentPreview
+              key={`${props.environmentId}:${props.threadRef.threadId}:${source.kind === "workspace" ? source.path : source.id}`}
+              environmentId={props.environmentId}
+              threadId={props.threadRef.threadId}
+              source={source}
+              onSaved={props.onOpenFile}
+            />
+          </Suspense>
+        }
+      />
+    );
+  }
+  return <SourceFilePreviewPanel {...props} />;
+}
+
+function SourceFilePreviewPanel({
   environmentId,
   cwd,
   projectName,
@@ -920,7 +965,8 @@ export default function FilePreviewPanel({
   onPendingChange,
   selectedFilePending,
   workspaceMutationId,
-}: FilePreviewPanelProps) {
+  documentEditor,
+}: FilePreviewPanelProps & { documentEditor?: import("react").ReactNode }) {
   const relativePath =
     attachment === undefined ? resolveFilePreviewPath(requestedPath, cwd) : requestedPath;
   const { resolvedTheme } = useTheme();
@@ -952,7 +998,7 @@ export default function FilePreviewPanel({
     environmentId,
     cwd,
     relativePath,
-    attachment === undefined && relativePath !== null,
+    documentEditor === undefined && attachment === undefined && relativePath !== null,
   );
   // A chat link cannot tell a folder from a file, so a folder arrives here as
   // a file surface and the read fails. Keep the breadcrumbs, drop the preview
@@ -1010,11 +1056,15 @@ export default function FilePreviewPanel({
         ? ("html" as const)
         : null;
   const canToggleRendered =
-    previewPath !== null && attachment === undefined && renderedMode !== null;
+    documentEditor === undefined &&
+    previewPath !== null &&
+    attachment === undefined &&
+    renderedMode !== null;
   const updateClientSettings = useUpdateClientSettings();
   // Word wrap only reaches the text bodies. A rendered Markdown document, a table and the
   // browser frame all lay themselves out, so the toggle stays hidden rather than inert.
   const showsRawText =
+    documentEditor === undefined &&
     previewPath !== null &&
     file.data !== null &&
     !(isMarkdown && renderMarkdown) &&
@@ -1037,6 +1087,7 @@ export default function FilePreviewPanel({
   const onFilePostRender = useFileLineReveal(relativePath, revealLine, revealRequestId);
   useWorkspaceMutationRefresh({
     enabled:
+      documentEditor === undefined &&
       attachment === undefined &&
       relativePath !== null &&
       // Media and PDFs never show their contents, so re-reading them on every
@@ -1188,108 +1239,109 @@ export default function FilePreviewPanel({
         <div
           className={cn("min-w-0 flex-1 flex-col overflow-hidden", previewPath ? "flex" : "hidden")}
         >
-          {isDirectory ? null : relativePath && attachment ? (
-            <AttachmentFilePreview
-              key={`${environmentId}:${attachment.id}`}
-              name={attachment.name}
-              mimeType={attachment.mimeType}
-              sizeBytes={attachment.sizeBytes}
-              asset={{ environmentId, attachmentId: attachment.id }}
-            />
-          ) : relativePath && isVideo && absolutePath ? (
-            <WorkspaceVideoPreview
-              key={`${environmentId}:${threadRef.threadId}:${absolutePath}`}
-              environmentId={environmentId}
-              threadRef={threadRef}
-              absolutePath={absolutePath}
-              workspaceRoot={cwd}
-              name={relativePath}
-              workspaceMutationId={workspaceMutationId}
-            />
-          ) : relativePath && isAudio && absolutePath ? (
-            <WorkspaceAudioPreview
-              key={`${environmentId}:${threadRef.threadId}:${absolutePath}`}
-              environmentId={environmentId}
-              threadRef={threadRef}
-              absolutePath={absolutePath}
-              name={relativePath}
-              workspaceMutationId={workspaceMutationId}
-            />
-          ) : relativePath && isImage && absolutePath ? (
-            <WorkspaceImagePreview
-              key={absolutePath}
-              environmentId={environmentId}
-              threadRef={threadRef}
-              absolutePath={absolutePath}
-              workspaceRoot={cwd}
-              alt={relativePath}
-              workspaceMutationId={workspaceMutationId}
-            />
-          ) : relativePath && renderBrowserFile && absolutePath ? (
-            <WorkspaceBrowserPreview
-              key={absolutePath}
-              environmentId={environmentId}
-              threadRef={threadRef}
-              absolutePath={absolutePath}
-              workspaceRoot={cwd}
-              title={relativePath}
-              workspaceMutationId={workspaceMutationId}
-            />
-          ) : relativePath && file.error && file.data === null ? (
-            <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-xs leading-relaxed text-destructive">
-              {file.error}
-            </div>
-          ) : relativePath && file.data === null ? (
-            <div className="flex min-h-0 flex-1 items-center justify-center text-muted-foreground">
-              <Spinner size="lg" />
-            </div>
-          ) : relativePath && file.data ? (
-            isMarkdown && renderMarkdown ? (
-              // Markdown reconciles in place across text updates, so a file
-              // switch needs a new key or the previous file's disclosure and
-              // wrap state carries into the next document.
-              <RenderedMarkdownSurface
-                key={relativePath}
+          {documentEditor ??
+            (isDirectory ? null : relativePath && attachment ? (
+              <AttachmentFilePreview
+                key={`${environmentId}:${attachment.id}`}
+                name={attachment.name}
+                mimeType={attachment.mimeType}
+                sizeBytes={attachment.sizeBytes}
+                asset={{ environmentId, attachmentId: attachment.id }}
+              />
+            ) : relativePath && isVideo && absolutePath ? (
+              <WorkspaceVideoPreview
+                key={`${environmentId}:${threadRef.threadId}:${absolutePath}`}
                 environmentId={environmentId}
-                cwd={cwd}
-                relativePath={relativePath}
                 threadRef={threadRef}
-                contents={file.data.contents}
-                readOnly={isHostFile}
-                onPendingChange={onPendingChange}
-              />
-            ) : tableDelimiter && renderTable ? (
-              <DelimitedTablePreview
-                key={relativePath}
+                absolutePath={absolutePath}
+                workspaceRoot={cwd}
                 name={relativePath}
-                text={file.data.contents}
-                delimiter={tableDelimiter}
+                workspaceMutationId={workspaceMutationId}
               />
-            ) : file.data.truncated || isHostFile ? (
-              <SourceFilePreview
+            ) : relativePath && isAudio && absolutePath ? (
+              <WorkspaceAudioPreview
+                key={`${environmentId}:${threadRef.threadId}:${absolutePath}`}
+                environmentId={environmentId}
+                threadRef={threadRef}
+                absolutePath={absolutePath}
                 name={relativePath}
-                text={file.data.contents}
-                cacheKey={projectFileCacheKey(cwd, relativePath, file.data.contents)}
-                onPostRender={onFilePostRender}
+                workspaceMutationId={workspaceMutationId}
               />
-            ) : (
-              <DiffWorkerPoolProvider>
-                <EditableFileSurface
-                  key={`${relativePath}:${resolvedTheme}`}
+            ) : relativePath && isImage && absolutePath ? (
+              <WorkspaceImagePreview
+                key={absolutePath}
+                environmentId={environmentId}
+                threadRef={threadRef}
+                absolutePath={absolutePath}
+                workspaceRoot={cwd}
+                alt={relativePath}
+                workspaceMutationId={workspaceMutationId}
+              />
+            ) : relativePath && renderBrowserFile && absolutePath ? (
+              <WorkspaceBrowserPreview
+                key={absolutePath}
+                environmentId={environmentId}
+                threadRef={threadRef}
+                absolutePath={absolutePath}
+                workspaceRoot={cwd}
+                title={relativePath}
+                workspaceMutationId={workspaceMutationId}
+              />
+            ) : relativePath && file.error && file.data === null ? (
+              <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-xs leading-relaxed text-destructive">
+                {file.error}
+              </div>
+            ) : relativePath && file.data === null ? (
+              <div className="flex min-h-0 flex-1 items-center justify-center text-muted-foreground">
+                <Spinner size="lg" />
+              </div>
+            ) : relativePath && file.data ? (
+              isMarkdown && renderMarkdown ? (
+                // Markdown reconciles in place across text updates, so a file
+                // switch needs a new key or the previous file's disclosure and
+                // wrap state carries into the next document.
+                <RenderedMarkdownSurface
+                  key={relativePath}
                   environmentId={environmentId}
                   cwd={cwd}
                   relativePath={relativePath}
-                  composerDraftTarget={composerDraftTarget}
+                  threadRef={threadRef}
                   contents={file.data.contents}
-                  resolvedTheme={resolvedTheme}
-                  revealRequestId={revealRequestId}
-                  wordWrap={wordWrap}
-                  onPostRender={onFilePostRender}
+                  readOnly={isHostFile}
                   onPendingChange={onPendingChange}
                 />
-              </DiffWorkerPoolProvider>
-            )
-          ) : null}
+              ) : tableDelimiter && renderTable ? (
+                <DelimitedTablePreview
+                  key={relativePath}
+                  name={relativePath}
+                  text={file.data.contents}
+                  delimiter={tableDelimiter}
+                />
+              ) : file.data.truncated || isHostFile ? (
+                <SourceFilePreview
+                  name={relativePath}
+                  text={file.data.contents}
+                  cacheKey={projectFileCacheKey(cwd, relativePath, file.data.contents)}
+                  onPostRender={onFilePostRender}
+                />
+              ) : (
+                <DiffWorkerPoolProvider>
+                  <EditableFileSurface
+                    key={`${relativePath}:${resolvedTheme}`}
+                    environmentId={environmentId}
+                    cwd={cwd}
+                    relativePath={relativePath}
+                    composerDraftTarget={composerDraftTarget}
+                    contents={file.data.contents}
+                    resolvedTheme={resolvedTheme}
+                    revealRequestId={revealRequestId}
+                    wordWrap={wordWrap}
+                    onPostRender={onFilePostRender}
+                    onPendingChange={onPendingChange}
+                  />
+                </DiffWorkerPoolProvider>
+              )
+            ) : null)}
         </div>
         {showExplorer ? (
           <aside

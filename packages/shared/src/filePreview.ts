@@ -196,3 +196,8 @@ export function isWorkspaceAudioPreviewPath(path: string): boolean {
 export function isWorkspacePreviewEntryPath(path: string): boolean {
   return isWorkspaceBrowserPreviewPath(path) || isWorkspaceImagePreviewPath(path);
 }
+
+/** Formats handled by the paged document editor on capable servers. */
+export function isEditableDocumentFile(name: string): boolean {
+  return /\.(pdf|docx|xlsx|csv|tsv)$/i.test(name);
+}

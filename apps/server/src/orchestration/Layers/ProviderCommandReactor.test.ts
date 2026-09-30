@@ -356,6 +356,9 @@ describe("ProviderCommandReactor", () => {
       },
     ];
 
+    const goal = vi.fn<ProviderServiceShape["goal"]>(() =>
+      Effect.succeed({ available: false, goal: null }),
+    );
     const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
     const service: ProviderServiceShape = {
       startSession: startSession as ProviderServiceShape["startSession"],
@@ -397,6 +400,7 @@ describe("ProviderCommandReactor", () => {
         });
       },
       rollbackConversation: () => unsupported(),
+      goal,
       uploadFeedback: () => unsupported(),
       get streamEvents() {
         return Stream.fromPubSub(runtimeEventPubSub);
@@ -615,6 +619,7 @@ describe("ProviderCommandReactor", () => {
         ),
       tryHandlePromptCommand,
       startSession,
+      goal,
       sendTurn,
       compactThread,
       interruptTurn,
@@ -638,6 +643,65 @@ describe("ProviderCommandReactor", () => {
       },
     };
   }
+
+  effectIt.effect(
+    "pauses an active Goal when entering Plan and does not resume it on returning to Normal",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* Effect.promise(() => createHarness());
+        const threadId = ThreadId.make("thread-1"),
+          createdAt = "2026-01-01T00:00:00.000Z";
+        yield* harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.make("goal-active-session"),
+          threadId,
+          createdAt,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: createdAt,
+            nativeGoal: {
+              available: true,
+              goal: {
+                threadId: "native-thread",
+                objective: "Finish",
+                status: "active",
+                tokensUsed: 10,
+                timeUsedSeconds: 1,
+                createdAt: 1,
+                updatedAt: 2,
+              },
+            },
+          },
+        });
+        yield* harness.engine.dispatch({
+          type: "thread.interaction-mode.set",
+          commandId: CommandId.make("goal-enter-plan"),
+          threadId,
+          interactionMode: "plan",
+          createdAt,
+        });
+        yield* Effect.promise(() => harness.drain());
+        expect(harness.goal).toHaveBeenCalledExactlyOnceWith({
+          threadId,
+          action: "set",
+          status: "paused",
+        });
+        yield* harness.engine.dispatch({
+          type: "thread.interaction-mode.set",
+          commandId: CommandId.make("goal-leave-plan"),
+          threadId,
+          interactionMode: "default",
+          createdAt,
+        });
+        yield* Effect.promise(() => harness.drain());
+        expect(harness.goal).toHaveBeenCalledTimes(1);
+      }),
+  );
 
   effectIt.effect.each(["new", "ready", "stopped"] as const)(
     "handles sign-out for a %s thread before worktree repair, text helpers, or startup",

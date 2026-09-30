@@ -1,3 +1,4 @@
+import type { ProviderGoalInput, NativeGoalState } from "@t3tools/contracts";
 /**
  * ProviderService - Service interface for provider sessions, turns, and checkpoints.
  *
@@ -124,6 +125,8 @@ export interface ProviderServiceShape {
   /**
    * Upload a thread and return the provider's shareable feedback identifier.
    */
+  readonly goal: (input: ProviderGoalInput) => Effect.Effect<NativeGoalState, ProviderServiceError>;
+
   readonly uploadFeedback: (
     input: ProviderUploadFeedbackInput,
   ) => Effect.Effect<ProviderUploadFeedbackResult, ProviderServiceError>;

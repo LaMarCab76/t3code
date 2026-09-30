@@ -3,6 +3,9 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   ClientSettingsSchema,
   DEFAULT_CLIENT_SETTINGS,
+  EnvironmentId,
+  ProjectId,
+  ThreadId,
   type ClientSettings,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -18,6 +21,26 @@ import * as DesktopClientSettings from "./DesktopClientSettings.ts";
 
 const clientSettings: ClientSettings = {
   ...DEFAULT_CLIENT_SETTINGS,
+  activeWorkspaceProfileId: "work",
+  sidebarViewMode: "combined",
+  workspaceProfiles: [
+    {
+      id: "work",
+      name: "Work",
+      emoji: "💼",
+      color: "#6366f1",
+      projects: [
+        {
+          environmentId: EnvironmentId.make("profile-environment"),
+          projectId: ProjectId.make("profile-project"),
+        },
+      ],
+      lastThread: {
+        environmentId: EnvironmentId.make("profile-environment"),
+        threadId: ThreadId.make("profile-thread"),
+      },
+    },
+  ],
   notificationMode: "notifications-and-sound",
   inAppNotificationsEnabled: true,
   appearanceContrast: 100,

@@ -474,22 +474,16 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/general",
   },
   {
-    id: "legacy-plan-mode",
-    title: "Plan mode (legacy)",
-    to: "/settings/general",
-    searchTerms: ["build plan composer old"],
-  },
-  {
     id: "legacy-context-window-indicator",
     title: "Context window indicator (legacy)",
     to: "/settings/general",
     searchTerms: ["composer meter usage tokens circle old"],
   },
   {
-    id: "legacy-sidebar",
-    title: "Sidebar (legacy)",
+    id: "sidebar-view",
+    title: "Sidebar view",
     to: "/settings/general",
-    searchTerms: ["project thread tree old flat list"],
+    searchTerms: ["project thread status combined pending history profiles"],
   },
   {
     id: "keybindings",
