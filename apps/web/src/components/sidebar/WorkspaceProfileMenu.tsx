@@ -26,6 +26,7 @@ import {
 } from "../ui/dialog";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
+import { WorkspaceProfileAvatarPicker } from "./WorkspaceProfileAvatarPicker";
 
 let switchingProfile = false;
 
@@ -156,7 +157,7 @@ export function WorkspaceProfileMenu() {
     <>
       <div className="flex items-center gap-2 px-2">
         <span
-          className="flex size-7 shrink-0 items-center justify-center rounded-md"
+          className="flex size-7 shrink-0 items-center justify-center rounded-full"
           style={{ backgroundColor: active?.color ?? "#64748b" }}
           aria-hidden
         >
@@ -228,27 +229,13 @@ export function WorkspaceProfileMenu() {
                   onChange={(event) => setName(event.target.value)}
                 />
               </div>
-              <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_6rem] gap-3">
-                <div className="grid min-w-0 gap-2">
-                  <Label htmlFor={`${formId}-emoji`}>Emoji</Label>
-                  <Input
-                    id={`${formId}-emoji`}
-                    value={emoji}
-                    maxLength={32}
-                    onChange={(event) => setEmoji(event.target.value)}
-                  />
-                </div>
-                <div className="grid min-w-0 gap-2">
-                  <Label htmlFor={`${formId}-color`}>Background</Label>
-                  <Input
-                    id={`${formId}-color`}
-                    nativeInput
-                    type="color"
-                    value={color}
-                    onChange={(event) => setColor(event.target.value)}
-                  />
-                </div>
-              </div>
+              <WorkspaceProfileAvatarPicker
+                key={editing?.id ?? "new-profile"}
+                emoji={emoji}
+                color={color}
+                onEmojiChange={setEmoji}
+                onColorChange={setColor}
+              />
               <fieldset className="min-w-0">
                 <legend className="mb-2">
                   <Label render={<span />}>Projects</Label>
