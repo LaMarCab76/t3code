@@ -1,7 +1,6 @@
 import { AutoSettleDaysField } from "./components/AutoSettleDaysField";
 import { ScreenScrollView as ScrollView } from "../../components/ScreenScrollView";
-import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { useAtomSet } from "@effect/atom-react";
 import { useRef, useState } from "react";
 import { Pressable, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -9,7 +8,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
 import { supportsSharedSettingsSync } from "@t3tools/client-runtime/state/shared-settings";
 import { AppText as Text } from "../../components/AppText";
-import { mobilePreferencesAtom, updateMobilePreferencesAtom } from "../../state/preferences";
+import { updateMobilePreferencesAtom } from "../../state/preferences";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { SettingsSection } from "./components/SettingsSection";
@@ -22,6 +21,7 @@ import {
 } from "./components/SettingsEnvironmentFilterHeader";
 import { planAutoSettleSettingsSync, type AutoSettleSettings } from "./autoSettleSettingsSync";
 import { useSettingsEnvironmentFilter } from "./settings-environment-filter";
+import { useMobileSidebarViewMode } from "../threads/useMobileSidebarViewMode";
 import {
   planMobileScopedSettingsClear,
   planMobileScopedSettingsPatch,
@@ -44,6 +44,7 @@ export function SettingsThreadsRouteScreen() {
           contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 18) + 18 }}
         >
           <AutoSettleSettingsRows />
+          <SidebarViewSettings />
         </ScrollView>
       </SettingsScreen>
     </>
@@ -51,6 +52,31 @@ export function SettingsThreadsRouteScreen() {
 }
 
 const AUTO_SETTLE_DEFAULT_DAYS = DEFAULT_SERVER_SETTINGS.sidebarAutoSettleAfterDays ?? 3;
+
+function SidebarViewSettings() {
+  const mode = useMobileSidebarViewMode();
+  const save = useAtomSet(updateMobilePreferencesAtom);
+  return (
+    <SettingsSection title="Sidebar view">
+      <View className="gap-2 p-4">
+        {(["status", "projects", "combined"] as const).map((value) => (
+          <Pressable
+            key={value}
+            accessibilityRole="radio"
+            accessibilityState={{ selected: mode === value }}
+            onPress={() => save({ sidebarViewMode: value })}
+            className="py-2"
+          >
+            <Text className="text-foreground">
+              {mode === value ? "✓ " : ""}
+              {value === "status" ? "By status" : value === "projects" ? "By project" : "Combined"}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+    </SettingsSection>
+  );
+}
 
 /**
  * Mobile edits auto-settle defaults across selected capable targets.

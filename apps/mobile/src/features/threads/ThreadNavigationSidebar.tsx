@@ -1,4 +1,3 @@
-import { WorkspaceProfilesControl } from "./WorkspaceProfilesControl";
 import { useMobileSidebarViewMode } from "./useMobileSidebarViewMode";
 import { useAndroidControlSizing } from "../../components/useAndroidControlSizing";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
@@ -967,7 +966,6 @@ function ThreadNavigationSidebarPane(
           }}
         />
         <View className="flex-1">
-          <WorkspaceProfilesControl />
           <SwipeableScrollGateProvider enabled={swipeEnabled}>
             <GestureDetector gesture={sidebarScrollGesture}>
               <LegendList
@@ -1031,7 +1029,6 @@ function ThreadNavigationSidebarPane(
             : { paddingBottom: insets.bottom }
         }
       >
-        <WorkspaceProfilesControl />
         {Platform.OS === "android" && listItems.length === 0 ? (
           <View className="flex-1 items-center justify-center">{listEmpty}</View>
         ) : (

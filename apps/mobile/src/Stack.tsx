@@ -68,6 +68,7 @@ import {
 import { NewTaskFlowProvider } from "./features/threads/new-task-flow-provider";
 import { NewTaskRouteScreen } from "./features/threads/NewTaskRouteScreen";
 import { SettingsAppearanceRouteScreen } from "./features/settings/SettingsAppearanceRouteScreen";
+import { SettingsProfilesRouteScreen } from "./features/settings/SettingsProfilesRouteScreen";
 import { SettingsClientStorageRouteScreen } from "./features/settings/SettingsClientStorageRouteScreen";
 import { SettingsDiagnosticsRouteScreen } from "./features/diagnostics/SettingsDiagnosticsRouteScreen";
 import { SettingsAuthRouteScreen } from "./features/settings/SettingsAuthRouteScreen";
@@ -254,6 +255,11 @@ const SettingsContentStack = createNativeStackNavigator({
       options: {
         title: "Appearance",
       },
+    }),
+    SettingsProfiles: createNativeStackScreen({
+      screen: SettingsProfilesRouteScreen,
+      linking: "profiles",
+      options: { title: "Profiles" },
     }),
     SettingsProjectGrouping: createNativeStackScreen({
       screen: SettingsProjectGroupingRouteScreen,

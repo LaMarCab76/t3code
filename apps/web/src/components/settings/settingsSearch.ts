@@ -15,6 +15,7 @@ export type SettingsPath =
   | "/settings/projects"
   | "/settings/general"
   | "/settings/appearance"
+  | "/settings/profiles"
   | "/settings/keybindings"
   | "/settings/snap-shot"
   | "/settings/providers"
@@ -86,6 +87,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/projects": "Project",
   "/settings/general": "General",
   "/settings/appearance": "Appearance",
+  "/settings/profiles": "Profiles",
   "/settings/keybindings": "Keybindings",
   "/settings/snap-shot": "SnapShots",
   "/settings/providers": "Providers",
@@ -129,6 +131,18 @@ const KEYBINDING_SEARCH_ITEMS = STATIC_KEYBINDING_COMMANDS.toSorted((left, right
  * that may not be mounted point at their nearest stable section instead.
  */
 export const SETTINGS_SEARCH_ITEMS = [
+  {
+    id: "workspace-profiles",
+    title: "Workspace profiles",
+    to: "/settings/profiles",
+    searchTerms: ["profile emoji color projects create edit delete"],
+  },
+  {
+    id: "profile-startup",
+    title: "Default profile and schedules",
+    to: "/settings/profiles",
+    searchTerms: ["startup last used default time hours weekdays overnight schedule"],
+  },
   {
     id: "storage-worktrees",
     title: "Worktree cleanup",
@@ -837,6 +851,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/projects": "project",
   "/settings/general": null,
   "/settings/appearance": null,
+  "/settings/profiles": null,
   "/settings/snap-shot": null,
   // Keybindings fan out to the selection; Providers shows the representative
   // environment at any selection. Neither needs a particular scope to render.

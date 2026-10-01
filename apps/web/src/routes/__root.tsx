@@ -49,8 +49,14 @@ import {
 import { resolveAndPersistPreferredEditor } from "../editorPreferences";
 import { isElectron } from "../env";
 import { applyAppearanceFontVariables } from "~/appearanceFonts";
+import { WorkspaceProfileStartupGate } from "../components/sidebar/WorkspaceProfileStartupGate";
+import { WorkspaceProfileThreadSync } from "../components/sidebar/useWorkspaceProfileNavigation";
 import { applyAppearanceContrast } from "~/appearanceContrast";
-import { useClientSettings } from "../hooks/useSettings";
+import { useClientSettings, getClientSettings } from "../hooks/useSettings";
+import {
+  activeWorkspaceProfile,
+  workspaceProfileIncludesProject,
+} from "@t3tools/client-runtime/workspace-profiles";
 import {
   deriveLogicalProjectKeyFromSettings,
   derivePhysicalProjectKeyFromPath,
@@ -224,28 +230,31 @@ function RootRouteView() {
           enabled={primaryEnvironmentAuthenticated}
           hostedStatic={authGateState.status === "hosted-static"}
         >
-          {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
-          {primaryEnvironmentAuthenticated ? <DesktopAppActivationCoordinator /> : null}
-          {isElectron ? <RunningThreadKeepAlive /> : null}
-          <RelayClientInstallDialog />
-          <ConnectOnboardingDialog />
-          <SshPasswordPromptDialog />
-          <SnapShotCoordinator />
-          <ThreadNotificationCoordinator />
-          <QueuedMessageSender />
-          <ConfirmDialogHost />
-          <CustomSnoozeDialogHost />
-          <SlowRpcRequestToastCoordinator />
-          <ProjectCloneToastCoordinator />
-          <HostedStaticEnvironmentBootstrap />
-          {primaryEnvironmentAuthenticated ? (
-            <EventRouter skipInitialBootstrapNavigation={returningFromWelcomeRef.current} />
-          ) : null}
-          {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
-          {appShell}
-          {/* Above the router: a theme draft is judged by walking the app, so the
+          <WorkspaceProfileStartupGate>
+            <WorkspaceProfileThreadSync />
+            {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
+            {primaryEnvironmentAuthenticated ? <DesktopAppActivationCoordinator /> : null}
+            {isElectron ? <RunningThreadKeepAlive /> : null}
+            <RelayClientInstallDialog />
+            <ConnectOnboardingDialog />
+            <SshPasswordPromptDialog />
+            <SnapShotCoordinator />
+            <ThreadNotificationCoordinator />
+            <QueuedMessageSender />
+            <ConfirmDialogHost />
+            <CustomSnoozeDialogHost />
+            <SlowRpcRequestToastCoordinator />
+            <ProjectCloneToastCoordinator />
+            <HostedStaticEnvironmentBootstrap />
+            {primaryEnvironmentAuthenticated ? (
+              <EventRouter skipInitialBootstrapNavigation={returningFromWelcomeRef.current} />
+            ) : null}
+            {primaryEnvironmentAuthenticated ? <ProviderUpdateLaunchNotification /> : null}
+            {appShell}
+            {/* Above the router: a theme draft is judged by walking the app, so the
               editor has to survive navigation away from settings. */}
-          <ThemeEditorHost />
+            <ThemeEditorHost />
+          </WorkspaceProfileStartupGate>
         </FirstRunGate>
       </AnchoredToastProvider>
     </ToastProvider>
@@ -488,6 +497,12 @@ function EventRouter({
   const navigate = useNavigate();
   const pathname = useLocation({ select: (loc) => loc.pathname });
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
+  const profileStartupOwnsNavigation = useClientSettings(
+    (settings) =>
+      settings.activeWorkspaceProfileId !== null ||
+      settings.defaultWorkspaceProfileId !== undefined ||
+      settings.allWorkspaceProfileLastThread !== undefined,
+  );
   const primaryEnvironment = usePrimaryEnvironment();
   const openInEditor = useAtomCommand(shellEnvironment.openInEditor, {
     reportFailure: false,
@@ -497,7 +512,9 @@ function EventRouter({
   const serverWelcome = useAtomValue(primaryServerWelcomeAtom);
   const readPathname = useEffectEvent(() => pathname);
   const handledBootstrapThreadIdRef = useRef<string | null>(null);
-  const skipInitialBootstrapNavigationRef = useRef(skipInitialBootstrapNavigation);
+  const skipInitialBootstrapNavigationRef = useRef(
+    skipInitialBootstrapNavigation || profileStartupOwnsNavigation,
+  );
   const handledConfigEventRef = useRef(serverConfigEvent);
   const [keybindingsToastController] = useState<KeybindingsUpdateToastController>(() =>
     createKeybindingsUpdateToastController({}),
@@ -511,6 +528,18 @@ function EventRouter({
       if (!payload.bootstrapProjectId || !payload.bootstrapThreadId) {
         return;
       }
+      const settings = getClientSettings();
+      const profile = activeWorkspaceProfile(
+        settings.workspaceProfiles,
+        settings.activeWorkspaceProfileId,
+      );
+      if (
+        !workspaceProfileIncludesProject(
+          profile,
+          scopeProjectRef(payload.environment.environmentId, payload.bootstrapProjectId),
+        )
+      )
+        return;
       const bootstrapProject = readProject(
         scopeProjectRef(payload.environment.environmentId, payload.bootstrapProjectId),
       );

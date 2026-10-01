@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ComponentProps } from "r
 import { BackHandler, Keyboard, type TextInput, View, type LayoutChangeEvent } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { MenuAction } from "@react-native-menu/menu";
+import { WorkspaceProfilesControl } from "../threads/WorkspaceProfilesControl";
 
 import { AndroidHeaderIconButton } from "../../components/AndroidScreenHeader";
 import { CompactBrandTitle } from "../../components/CompactBrandTitle";
@@ -112,6 +113,7 @@ export function MaterialThreadListToolbar(props: {
                 icon="gearshape"
                 onPress={props.onOpenSettings}
               />
+              <WorkspaceProfilesControl />
             </>
           )}
         </View>

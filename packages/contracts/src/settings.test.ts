@@ -20,6 +20,36 @@ const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 
+describe("workspace profile startup preferences", () => {
+  const profile = {
+    id: "work",
+    name: "Work",
+    emoji: "💼",
+    color: "#6366f1",
+    projects: [],
+    schedules: [{ days: [1, 2, 3, 4, 5], start: "09:00", end: "17:00" }],
+  };
+  it("keeps last used for old preferences and round-trips optional schedules", () => {
+    expect(decodeClientSettings({}).defaultWorkspaceProfileId).toBeUndefined();
+    const input = { workspaceProfiles: [profile], defaultWorkspaceProfileId: "work" };
+    const settings = decodeClientSettings(input);
+    expect(encodeClientSettings(settings)).toMatchObject(input);
+    expect(decodeClientSettingsPatch(input)).toEqual(input);
+    expect(
+      decodeClientSettings({ defaultWorkspaceProfileId: null }).defaultWorkspaceProfileId,
+    ).toBeNull();
+  });
+  it.each([
+    { days: [7], start: "09:00", end: "17:00" },
+    { days: [1], start: "24:00", end: "17:00" },
+    { days: [1], start: "09:00", end: "9:30" },
+  ])("rejects invalid stored schedule %j", (schedule) => {
+    expect(() =>
+      decodeClientSettings({ workspaceProfiles: [{ ...profile, schedules: [schedule] }] }),
+    ).toThrow();
+  });
+});
+
 describe("storage cleanup settings", () => {
   it("keeps cleanup disabled for existing installations", () => {
     expect(decodeServerSettings({}).worktreeCleanup).toBeNull();

@@ -84,6 +84,7 @@ import { useThreadComposerState } from "../../state/use-thread-composer-state";
 import { threadEnvironment } from "../../state/threads";
 import { projectThreadContentPresentation } from "./threadContentPresentation";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
+import { isMobileWorkspaceProfileSwitching } from "./useWorkspaceProfileSelection";
 import {
   useAdaptiveWorkspaceLayout,
   useAdaptiveWorkspacePaneRole,
@@ -260,7 +261,7 @@ export function ThreadRouteScreen(props: ThreadRouteScreenProps) {
   const saveProfile = useAtomSet(updateMobilePreferencesAtom);
   const recordedThread = useRef<string | null>(null);
   useEffect(() => {
-    if (!selectedThread) return;
+    if (!selectedThread || isMobileWorkspaceProfileSwitching()) return;
     const key = `${profile?.id ?? "all"}:${selectedThread.environmentId}:${selectedThread.id}`;
     if (recordedThread.current === key) return;
     recordedThread.current = key;

@@ -330,10 +330,20 @@ describe("searchSettings", () => {
   });
 
   it("finds the default browser profile action in the profiles list", () => {
-    expect(searchSettings("default profile")[0]).toMatchObject({
+    expect(searchSettings("default browser profile")[0]).toMatchObject({
       id: "browser-default-profile",
       to: "/settings/integrations",
       targetId: "browser-profiles",
+    });
+  });
+  it("finds workspace startup preferences independently of browser profiles", () => {
+    expect(searchSettings("default profile")[0]).toMatchObject({
+      id: "profile-startup",
+      to: "/settings/profiles",
+    });
+    expect(searchSettings("workspace profiles")[0]).toMatchObject({
+      id: "workspace-profiles",
+      to: "/settings/profiles",
     });
   });
 

@@ -5,10 +5,11 @@ need a separate branch and working directory.
 
 ## Profiles and views
 
-Use the profile selector at the bottom of the web or desktop sidebar, or
-**Workspace profiles** in mobile navigation, to create a local profile. Give it
-a name, emoji and background color, then choose its projects. **All** is the
-permanent initial view. A project can belong to several profiles, and each
+Open the profile avatar beside **Settings**, then choose **Create profile**.
+First give the profile a name and choose its emoji and background color. Select
+**Next** to choose projects, then **Create profile** to save and switch to it.
+You can also create and manage profiles in **Settings → Profiles**. **All** shows
+every project. A project can belong to several profiles, and each
 profile includes its existing and future threads. Projects created from a
 custom profile join it automatically.
 
@@ -18,7 +19,21 @@ to a thread outside the selected profile switches to All with a notice. Deleting
 a profile removes only its local configuration; projects and conversations stay
 available.
 
-Choose **By status**, **By project** or **Combined** in the sidebar's view control.
+In **Settings → Profiles**, choose a **Default profile** for startup or keep
+**Last used** to reopen your previous selection. While creating or editing a
+profile, expand **Startup preferences** to make it the default or add weekly
+schedules. Choose the days and start/end times; an end time earlier than the
+start continues into the following day. Select the day the schedule starts.
+Schedules cannot overlap, and a matching schedule takes precedence over the
+default profile.
+
+Schedules use the device's local time and apply only when the client starts:
+loading a web page, opening a desktop window, or starting the mobile app.
+Returning from the background or reconnecting an environment keeps your manual
+selection. Profiles, startup preferences and schedules are local to each device.
+
+Choose **By status**, **By project** or **Combined** in the web or desktop
+sidebar's view control, or **Settings → Thread behavior → Sidebar view** on mobile.
 Combined keeps pending work above settled history grouped by project. Opening or
 reading a thread updates its unread indicator without settling it. Settle moves
 it into history; un-settling or new activity brings it back to pending work.

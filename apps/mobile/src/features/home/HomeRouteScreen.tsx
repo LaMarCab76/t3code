@@ -1,4 +1,5 @@
 import * as Arr from "effect/Array";
+import { useProfileStartupNavigation } from "../threads/useProfileStartupNavigation";
 import * as Order from "effect/Order";
 import { useNavigation } from "@react-navigation/native";
 import { useEffect, useMemo, useState } from "react";
@@ -26,6 +27,7 @@ import { getConnectionAwareBrandHeaderOptions } from "./WorkspaceConnectionTitle
 /* ─── Route screen ───────────────────────────────────────────────────── */
 
 export function HomeRouteScreen() {
+  useProfileStartupNavigation();
   const { width: windowWidth } = useWindowDimensions();
   const { layout, panes } = useAdaptiveWorkspaceLayout();
   const projects = useProjects();

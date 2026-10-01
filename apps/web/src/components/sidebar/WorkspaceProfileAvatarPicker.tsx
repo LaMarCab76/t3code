@@ -1,3 +1,7 @@
+import {
+  WORKSPACE_PROFILE_EMOJIS,
+  WORKSPACE_PROFILE_COLORS,
+} from "@t3tools/client-runtime/workspace-profiles";
 import { Tabs } from "@base-ui/react/tabs";
 import { useId, useState } from "react";
 
@@ -7,92 +11,6 @@ import { ColorHueSlider, ColorSaturationValuePlane } from "../ui/color-picker";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
-
-const PROFILE_EMOJIS = [
-  ["💼", "Briefcase"],
-  ["🏠", "Home"],
-  ["👤", "Person"],
-  ["👥", "People"],
-  ["🧑‍💻", "Developer"],
-  ["🎯", "Target"],
-  ["🚀", "Rocket"],
-  ["⭐", "Star"],
-  ["💡", "Idea"],
-  ["🧠", "Brain"],
-  ["📚", "Books"],
-  ["📝", "Notes"],
-  ["📊", "Chart"],
-  ["📁", "Folder"],
-  ["🗂️", "Files"],
-  ["🛠️", "Tools"],
-  ["⚙️", "Settings"],
-  ["💻", "Laptop"],
-  ["⌨️", "Keyboard"],
-  ["📱", "Phone"],
-  ["🎨", "Art"],
-  ["📷", "Camera"],
-  ["🎬", "Film"],
-  ["🎵", "Music"],
-  ["🎮", "Games"],
-  ["🧩", "Puzzle"],
-  ["🔬", "Science"],
-  ["🔒", "Lock"],
-  ["🔑", "Key"],
-  ["🧭", "Compass"],
-  ["🌐", "Globe"],
-  ["🌎", "Earth"],
-  ["☀️", "Sun"],
-  ["🌙", "Moon"],
-  ["⚡", "Lightning"],
-  ["🔥", "Fire"],
-  ["🌈", "Rainbow"],
-  ["☁️", "Cloud"],
-  ["🌊", "Wave"],
-  ["🏔️", "Mountain"],
-  ["🌳", "Tree"],
-  ["🌱", "Seedling"],
-  ["🌵", "Cactus"],
-  ["🌸", "Flower"],
-  ["🐱", "Cat"],
-  ["🐶", "Dog"],
-  ["🦊", "Fox"],
-  ["🐻", "Bear"],
-  ["🐼", "Panda"],
-  ["🦁", "Lion"],
-  ["🦉", "Owl"],
-  ["🦋", "Butterfly"],
-  ["🐝", "Bee"],
-  ["🐙", "Octopus"],
-  ["🐢", "Turtle"],
-  ["🦄", "Unicorn"],
-  ["☕", "Coffee"],
-  ["🍕", "Pizza"],
-  ["🍎", "Apple"],
-  ["⚽", "Football"],
-  ["🏀", "Basketball"],
-  ["🏆", "Trophy"],
-  ["🎒", "Backpack"],
-  ["✈️", "Airplane"],
-] as const;
-
-const PROFILE_COLORS = [
-  ["#64748b", "Slate"],
-  ["#6b7280", "Gray"],
-  ["#ef4444", "Red"],
-  ["#f97316", "Orange"],
-  ["#f59e0b", "Amber"],
-  ["#eab308", "Yellow"],
-  ["#84cc16", "Lime"],
-  ["#22c55e", "Green"],
-  ["#10b981", "Emerald"],
-  ["#14b8a6", "Teal"],
-  ["#06b6d4", "Cyan"],
-  ["#3b82f6", "Blue"],
-  ["#6366f1", "Indigo"],
-  ["#8b5cf6", "Violet"],
-  ["#d946ef", "Fuchsia"],
-  ["#ec4899", "Pink"],
-] as const;
 
 function ProfileBackgroundColorPanel({
   color,
@@ -116,7 +34,7 @@ function ProfileBackgroundColorPanel({
         aria-label="Preset background colors"
         className="grid grid-cols-6 gap-1 sm:grid-cols-8"
       >
-        {PROFILE_COLORS.map(([value, name]) => (
+        {WORKSPACE_PROFILE_COLORS.map(([value, name]) => (
           <button
             key={value}
             type="button"
@@ -222,7 +140,7 @@ export function WorkspaceProfileAvatarPicker({
               aria-label="Choose a profile emoji"
               className="grid max-h-48 grid-cols-6 gap-1 overflow-y-auto overscroll-contain p-1 sm:grid-cols-8"
             >
-              {PROFILE_EMOJIS.map(([value, name]) => (
+              {WORKSPACE_PROFILE_EMOJIS.map(([value, name]) => (
                 <button
                   key={value}
                   type="button"

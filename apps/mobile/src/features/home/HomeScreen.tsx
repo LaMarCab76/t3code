@@ -1,4 +1,3 @@
-import { WorkspaceProfilesControl } from "../threads/WorkspaceProfilesControl";
 import { useMobileSidebarViewMode } from "../threads/useMobileSidebarViewMode";
 import { useAndroidControlSizing } from "../../components/useAndroidControlSizing";
 import type { ThreadMoveDestination } from "../threads/threadOrder";
@@ -992,7 +991,6 @@ export function HomeScreen(props: HomeScreenProps) {
   if (Platform.OS === "android" && threadListV2Items.length === 0) {
     return (
       <View className="flex-1 bg-header">
-        <WorkspaceProfilesControl />
         <View
           className="flex-1 items-center justify-center overflow-hidden rounded-t-[28px] bg-screen px-4"
           style={{ paddingBottom: insets.bottom }}
@@ -1015,7 +1013,6 @@ export function HomeScreen(props: HomeScreenProps) {
         {/* Shared with the iPad sidebar: cells are reused across data
             rebuilds and `itemsAreEqual` keeps a minute tick (or an unrelated
             shell update) from re-rendering untouched rows. */}
-        <WorkspaceProfilesControl />
         <SwipeableScrollGateProvider enabled={swipeEnabled} activation={swipeRowActivation}>
           <LegendList
             ref={listRef}

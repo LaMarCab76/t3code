@@ -29,6 +29,7 @@ export interface Preferences {
   readonly workspaceProfiles?: readonly WorkspaceProfile[];
   readonly allWorkspaceProfileLastThread?: ScopedThreadRef;
   readonly activeWorkspaceProfileId?: string | null;
+  readonly defaultWorkspaceProfileId?: string | null;
   readonly sidebarViewMode?: SidebarViewMode;
   readonly liveActivitiesEnabled?: boolean;
   readonly themeId?: MobileThemeId;
@@ -101,6 +102,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     workspaceProfiles?: readonly WorkspaceProfile[];
     allWorkspaceProfileLastThread?: ScopedThreadRef;
     activeWorkspaceProfileId?: string | null;
+    defaultWorkspaceProfileId?: string | null;
     sidebarViewMode?: SidebarViewMode;
     liveActivitiesEnabled?: boolean;
     themeId?: MobileThemeId;
@@ -133,6 +135,11 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     parsed.activeWorkspaceProfileId === null
   )
     preferences.activeWorkspaceProfileId = parsed.activeWorkspaceProfileId;
+  if (
+    typeof parsed.defaultWorkspaceProfileId === "string" ||
+    parsed.defaultWorkspaceProfileId === null
+  )
+    preferences.defaultWorkspaceProfileId = parsed.defaultWorkspaceProfileId;
   const viewResult = decodeSidebarViewMode(parsed.sidebarViewMode);
   if (Option.isSome(viewResult)) preferences.sidebarViewMode = viewResult.value;
   if (typeof parsed.liveActivitiesEnabled === "boolean") {

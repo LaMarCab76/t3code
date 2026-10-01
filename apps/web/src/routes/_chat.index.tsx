@@ -1,6 +1,13 @@
 import { RefreshIcon } from "~/components/ui/refresh-icon";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { workspaceProfileIncludesProject } from "@t3tools/client-runtime/workspace-profiles";
+import { useClientSettings } from "../hooks/useSettings";
+import { buildThreadRouteParams } from "../threadRoutes";
+import {
+  finishProfileStartupLanding,
+  isProfileStartupLandingPending,
+} from "../components/sidebar/WorkspaceProfileStartupGate";
 import { LinkIcon, PlusIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -15,6 +22,8 @@ import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { useNewThreadHandler } from "../hooks/useHandleNewThread";
 import {
   useAllEnvironmentShellsBootstrapped,
+  useActiveWorkspaceProfile,
+  readThreadShell,
   useProjects,
   useThreadShells,
 } from "../state/entities";
@@ -40,6 +49,9 @@ function ChatIndexRouteView() {
  * end. Falls back to an add-project hero when no project exists yet.
  */
 function IndexDraftLanding() {
+  const profile = useActiveWorkspaceProfile();
+  const lastAll = useClientSettings((settings) => settings.allWorkspaceProfileLastThread);
+  const navigate = useNavigate();
   const projects = useProjects();
   const threads = useThreadShells();
   const bootstrapped = useAllEnvironmentShellsBootstrapped();
@@ -56,6 +68,21 @@ function IndexDraftLanding() {
   );
 
   useEffect(() => {
+    if (!bootstrapped || startingRef.current) return;
+    const ref = isProfileStartupLandingPending()
+      ? (profile?.lastThread ?? (!profile ? lastAll : undefined))
+      : undefined;
+    const lastThread = ref ? readThreadShell(ref) : null;
+    finishProfileStartupLanding();
+    if (ref && lastThread && workspaceProfileIncludesProject(profile, lastThread)) {
+      startingRef.current = true;
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: buildThreadRouteParams(ref),
+        replace: true,
+      });
+      return;
+    }
     if (mostRecentProject === null || startingRef.current) {
       return;
     }
@@ -66,7 +93,15 @@ function IndexDraftLanding() {
       startingRef.current = false;
       setStartState((state) => ({ ...state, failed: true }));
     });
-  }, [handleNewThread, mostRecentProject, startState.retryRequest]);
+  }, [
+    bootstrapped,
+    profile,
+    lastAll,
+    navigate,
+    handleNewThread,
+    mostRecentProject,
+    startState.retryRequest,
+  ]);
 
   if (!bootstrapped) {
     return null;
@@ -85,7 +120,22 @@ function IndexDraftLanding() {
   }
   // First-run routing to the welcome wizard happens in FirstRunGate at the
   // root, before this route ever renders.
-  return <NoProjectsHero />;
+  return profile ? (
+    <SidebarInset className="h-dvh min-h-0">
+      <Empty className="flex-1">
+        <EmptyHeader>
+          <EmptyTitle>No projects in {profile.name}</EmptyTitle>
+          <EmptyDescription>
+            Add projects to this profile in Settings. Projects from disconnected environments will
+            appear when they reconnect.
+          </EmptyDescription>
+        </EmptyHeader>
+        <Button render={<Link to="/settings/profiles" />}>Manage profiles</Button>
+      </Empty>
+    </SidebarInset>
+  ) : (
+    <NoProjectsHero />
+  );
 }
 
 function DraftStartError({ onRetry }: { readonly onRetry: () => void }) {

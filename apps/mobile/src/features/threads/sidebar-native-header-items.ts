@@ -4,6 +4,8 @@ import type {
 } from "@react-navigation/native-stack";
 
 import type { HomeListFilterMenu } from "../home/home-list-filter-menu";
+import { createElement } from "react";
+import { WorkspaceProfilesControl } from "./WorkspaceProfilesControl";
 import { withNativeGlassHeaderItem } from "../layout/native-glass-header-items";
 
 type NativeHeaderMenuItems = NativeStackHeaderItemMenu["menu"]["items"];
@@ -52,6 +54,11 @@ export function createSidebarHeaderItems(input: {
         items: toNativeHeaderMenuItems(input.filterMenu.items),
       },
     }),
+    {
+      type: "custom",
+      element: createElement(WorkspaceProfilesControl),
+      hidesSharedBackground: true,
+    },
     withNativeGlassHeaderItem({
       type: "button",
       label: "",

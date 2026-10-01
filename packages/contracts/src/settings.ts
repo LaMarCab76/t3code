@@ -305,6 +305,8 @@ export const ClientSettingsSchema = Schema.Struct({
   activeWorkspaceProfileId: Schema.NullOr(TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  /** Missing means last used; null means All. */
+  defaultWorkspaceProfileId: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),
   sidebarViewMode: Schema.optionalKey(SidebarViewMode),
   notificationMode: NotificationMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("off" as const)),
@@ -1622,6 +1624,7 @@ export const ClientSettingsPatch = Schema.Struct({
   workspaceProfiles: Schema.optionalKey(Schema.Array(WorkspaceProfile)),
   allWorkspaceProfileLastThread: Schema.optionalKey(ScopedThreadRef),
   activeWorkspaceProfileId: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),
+  defaultWorkspaceProfileId: Schema.optionalKey(Schema.NullOr(TrimmedNonEmptyString)),
   sidebarViewMode: Schema.optionalKey(SidebarViewMode),
   notificationMode: Schema.optionalKey(NotificationMode),
   inAppNotificationsEnabled: Schema.optionalKey(Schema.Boolean),

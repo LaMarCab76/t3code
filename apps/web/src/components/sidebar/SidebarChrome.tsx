@@ -172,6 +172,9 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
 
   return (
     <SidebarMenu className="flex-row items-center">
+      <SidebarMenuItem className="shrink-0">
+        <WorkspaceProfileMenu />
+      </SidebarMenuItem>
       {isOnUtilityPage ? (
         <SidebarMenuItem className="min-w-0 flex-1">
           <SidebarMenuButton onClick={handleBackClick}>
@@ -208,7 +211,6 @@ export const SidebarUtilityMenu = memo(function SidebarUtilityMenu() {
 export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
   return (
     <SidebarFooter>
-      <WorkspaceProfileMenu />
       <SidebarViewControl />
       <SidebarThreadUndoNotice />
       <SidebarProviderUpdatePill />

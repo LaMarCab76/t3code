@@ -1,337 +1,114 @@
-import { randomUUID } from "../../lib/utils";
-import { useEffect, useId, useState } from "react";
-import { useNavigate, useParams } from "@tanstack/react-router";
+import { Menu } from "@base-ui/react/menu";
+import { CheckIcon, PlusIcon, SettingsIcon } from "lucide-react";
+import { useState } from "react";
+import { useNavigate } from "@tanstack/react-router";
 import type { WorkspaceProfile } from "@t3tools/contracts";
-import { workspaceProfileIncludesProject } from "@t3tools/client-runtime/workspace-profiles";
-import { useClientSettings, useUpdateClientSettings } from "../../hooks/useSettings";
-import {
-  useActiveWorkspaceProfile,
-  useAllProjects,
-  useThreadShell,
-  readThreadShell,
-} from "../../state/entities";
-import { buildThreadRouteParams, resolveThreadRouteRef } from "../../threadRoutes";
-import { Button } from "../ui/button";
-import { Checkbox } from "../ui/checkbox";
-import { Input } from "../ui/input";
-import { Label } from "../ui/label";
-import {
-  Dialog,
-  DialogPopup,
-  DialogTitle,
-  DialogDescription,
-  DialogHeader,
-  DialogPanel,
-  DialogFooter,
-} from "../ui/dialog";
+import { useClientSettings } from "../../hooks/useSettings";
+import { useActiveWorkspaceProfile } from "../../state/entities";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-import { toastManager } from "../ui/toast";
-import { WorkspaceProfileAvatarPicker } from "./WorkspaceProfileAvatarPicker";
+import { WorkspaceProfileDialog } from "./WorkspaceProfileDialog";
+import {
+  reportWorkspaceProfileError,
+  useWorkspaceProfileNavigation,
+} from "./useWorkspaceProfileNavigation";
 
-let switchingProfile = false;
+export function WorkspaceProfileAvatar({ profile }: { profile: WorkspaceProfile | null }) {
+  return (
+    <span
+      aria-hidden
+      className="flex size-7 shrink-0 items-center justify-center overflow-hidden rounded-full text-base"
+      style={{ backgroundColor: profile?.color ?? "#64748b" }}
+    >
+      {profile?.emoji ?? "🌐"}
+    </span>
+  );
+}
 
-/** Shared sidebar footer for both layouts, with device-local membership. */
+/** This feature owns its black menu surface without changing the app's theme. */
 export function WorkspaceProfileMenu() {
-  const formId = useId();
   const settings = useClientSettings();
-  const update = useUpdateClientSettings();
-  const projects = useAllProjects();
   const active = useActiveWorkspaceProfile();
+  const selectProfile = useWorkspaceProfileNavigation();
   const navigate = useNavigate();
-  const routeRef = useParams({ strict: false, select: resolveThreadRouteRef });
-  const thread = useThreadShell(routeRef);
-  const [open, setOpen] = useState(false);
-  const [editing, setEditing] = useState<WorkspaceProfile | null>(null);
-  const [name, setName] = useState("");
-  const [emoji, setEmoji] = useState("💼");
-  const [color, setColor] = useState("#6366f1");
-  const [members, setMembers] = useState<WorkspaceProfile["projects"]>([]);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!thread || switchingProfile) return;
-    if (!active) {
-      if (
-        settings.allWorkspaceProfileLastThread?.environmentId !== thread.environmentId ||
-        settings.allWorkspaceProfileLastThread?.threadId !== thread.id
-      ) {
-        void update({
-          allWorkspaceProfileLastThread: {
-            environmentId: thread.environmentId,
-            threadId: thread.id,
-          },
-        }).catch(() => {});
-      }
-      return;
-    }
-    if (!workspaceProfileIncludesProject(active, thread)) {
-      void update({ activeWorkspaceProfileId: null })
-        .then(() => {
-          toastManager.add({
-            title: "Switched to All",
-            description: "This thread belongs to a project outside the selected profile.",
-            type: "info",
-          });
-        })
-        .catch((cause) =>
-          toastManager.add({
-            title: "Could not change profile",
-            description: cause instanceof Error ? cause.message : "Try again.",
-            type: "error",
-          }),
-        );
-    } else if (
-      active.lastThread?.environmentId !== thread.environmentId ||
-      active.lastThread?.threadId !== thread.id
-    ) {
-      void update({
-        workspaceProfiles: settings.workspaceProfiles.map((profile) =>
-          profile.id === active.id
-            ? {
-                ...profile,
-                lastThread: { environmentId: thread.environmentId, threadId: thread.id },
-              }
-            : profile,
-        ),
-      }).catch(() => {});
-    }
-  }, [active, thread, settings.workspaceProfiles, settings.allWorkspaceProfileLastThread, update]);
-
-  const selectProfile = async (id: string | null) => {
-    switchingProfile = true;
-    try {
-      await update({ activeWorkspaceProfileId: id });
-      const selected = settings.workspaceProfiles.find((profile) => profile.id === id);
-      const ref =
-        selected?.lastThread ?? (id === null ? settings.allWorkspaceProfileLastThread : undefined);
-      const lastThread = ref ? readThreadShell(ref) : null;
-      if (ref && lastThread && workspaceProfileIncludesProject(selected ?? null, lastThread)) {
-        await navigate({ to: "/$environmentId/$threadId", params: buildThreadRouteParams(ref) });
-      } else {
-        await navigate({ to: "/" });
-      }
-    } catch (cause) {
-      toastManager.add({
-        title: "Could not change profile",
-        description: cause instanceof Error ? cause.message : "Try again.",
-        type: "error",
-      });
-    } finally {
-      switchingProfile = false;
-    }
-  };
-  const edit = (profile: WorkspaceProfile | null) => {
-    setEditing(profile);
-    setName(profile?.name ?? "");
-    setEmoji(profile?.emoji ?? "💼");
-    setColor(profile?.color ?? "#6366f1");
-    setMembers(profile?.projects ?? []);
-    setError(null);
-  };
-  const save = async () => {
-    if (!name.trim() || !emoji.trim()) {
-      setError("Enter a name and an emoji.");
-      return;
-    }
-    const profile: WorkspaceProfile = {
-      ...editing,
-      id: editing?.id ?? randomUUID(),
-      name: name.trim(),
-      emoji: emoji.trim(),
-      color,
-      projects: members,
-    };
-    try {
-      await update({
-        workspaceProfiles: editing
-          ? settings.workspaceProfiles.map((value) => (value.id === editing.id ? profile : value))
-          : [...settings.workspaceProfiles, profile],
-      });
-      setOpen(false);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not save profile.");
-    }
-  };
-
+  const [creating, setCreating] = useState(false);
   return (
     <>
-      <div className="flex items-center gap-2 px-2">
-        <span
-          className="flex size-7 shrink-0 items-center justify-center rounded-full"
-          style={{ backgroundColor: active?.color ?? "#64748b" }}
-          aria-hidden
-        >
-          {active?.emoji ?? "🌐"}
-        </span>
-        <select
-          aria-label="Workspace profile"
-          value={active?.id ?? ""}
-          onChange={(event) => {
-            void selectProfile(event.target.value || null);
-          }}
-          className="min-w-0 flex-1 rounded-md bg-transparent py-1 text-sm"
-        >
-          <option value="">All</option>
-          {settings.workspaceProfiles.map((profile) => (
-            <option key={profile.id} value={profile.id}>
-              {profile.name}
-            </option>
-          ))}
-        </select>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label="Manage profiles"
-          onClick={() => {
-            edit(active);
-            setOpen(true);
-          }}
-        >
-          ⚙
-        </Button>
-      </div>
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogPopup className="max-h-[min(48rem,calc(100dvh-2rem))] max-sm:max-h-[calc(100dvh-3rem)]">
-          <DialogHeader className="shrink-0">
-            <DialogTitle>Workspace profiles</DialogTitle>
-            <DialogDescription>
-              Choose which projects appear on this device. A project can belong to several profiles.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogPanel>
-            <div className="flex min-w-0 flex-wrap gap-2">
-              <Button variant="outline" size="sm" onClick={() => edit(null)}>
-                New profile
-              </Button>
-              {settings.workspaceProfiles.map((profile) => (
-                <Button
-                  key={profile.id}
-                  variant={editing?.id === profile.id ? "secondary" : "ghost"}
-                  size="sm"
-                  className="min-w-0 max-w-full"
-                  title={profile.name}
-                  onClick={() => edit(profile)}
-                >
-                  <span className="shrink-0" aria-hidden>
-                    {profile.emoji}
-                  </span>
-                  <span className="min-w-0 truncate">{profile.name}</span>
-                </Button>
-              ))}
-            </div>
-            <div className="grid min-w-0 grid-cols-1 gap-4">
-              <div className="grid min-w-0 gap-2">
-                <Label htmlFor={`${formId}-name`}>Name</Label>
-                <Input
-                  id={`${formId}-name`}
-                  value={name}
-                  maxLength={60}
-                  onChange={(event) => setName(event.target.value)}
-                />
-              </div>
-              <WorkspaceProfileAvatarPicker
-                key={editing?.id ?? "new-profile"}
-                emoji={emoji}
-                color={color}
-                onEmojiChange={setEmoji}
-                onColorChange={setColor}
+      <Menu.Root>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Menu.Trigger
+                render={
+                  <button
+                    type="button"
+                    aria-label={`Workspace profile: ${active?.name ?? "All"}`}
+                    className="flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+                  />
+                }
               />
-              <fieldset className="min-w-0">
-                <legend className="mb-2">
-                  <Label render={<span />}>Projects</Label>
-                </legend>
-                {projects.map((project, index) => {
-                  const included = members.some(
-                    (member) =>
-                      member.environmentId === project.environmentId &&
-                      member.projectId === project.id,
-                  );
-                  const projectId = `${formId}-project-${index}`;
-                  return (
-                    <Tooltip key={`${project.environmentId}:${project.id}`}>
-                      <div className="min-w-0 py-2">
-                        <TooltipTrigger render={<Label className="flex min-w-0" />}>
-                          <Checkbox
-                            checked={included}
-                            aria-labelledby={`${projectId}-title`}
-                            aria-describedby={`${projectId}-path`}
-                            onCheckedChange={(checked) =>
-                              setMembers(
-                                checked
-                                  ? [
-                                      ...members,
-                                      {
-                                        environmentId: project.environmentId,
-                                        projectId: project.id,
-                                      },
-                                    ]
-                                  : members.filter(
-                                      (member) =>
-                                        member.environmentId !== project.environmentId ||
-                                        member.projectId !== project.id,
-                                    ),
-                              )
-                            }
-                          />
-                          <span className="flex min-w-0 flex-1 flex-col gap-1">
-                            <span id={`${projectId}-title`} className="truncate">
-                              {project.title}
-                            </span>
-                            <span
-                              id={`${projectId}-path`}
-                              className="truncate text-xs text-muted-foreground"
-                            >
-                              {project.workspaceRoot}
-                            </span>
-                          </span>
-                        </TooltipTrigger>
-                      </div>
-                      <TooltipPopup variant="code">{project.workspaceRoot}</TooltipPopup>
-                    </Tooltip>
-                  );
-                })}
-              </fieldset>
-              {error ? (
-                <p role="alert" className="text-sm text-destructive">
-                  {error}
-                </p>
-              ) : null}
-            </div>
-          </DialogPanel>
-          <DialogFooter className="shrink-0 sm:justify-between">
-            {editing ? (
-              <Button
-                variant="destructive"
+            }
+          >
+            <WorkspaceProfileAvatar profile={active} />
+          </TooltipTrigger>
+          <TooltipPopup side="top">{active?.name ?? "All"}</TooltipPopup>
+        </Tooltip>
+        <Menu.Portal>
+          <Menu.Positioner
+            side="top"
+            align="start"
+            sideOffset={8}
+            className="z-[130] max-w-[calc(100vw-2rem)]"
+          >
+            <Menu.Popup
+              aria-label="Workspace profiles"
+              className="w-64 max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-white/15 bg-black p-1 text-white shadow-xl outline-none [-webkit-app-region:no-drag]"
+            >
+              <div className="max-h-[min(24rem,var(--available-height))] overflow-y-auto overscroll-contain">
+                <Menu.RadioGroup
+                  value={active?.id ?? ""}
+                  onValueChange={(id) => {
+                    void selectProfile(id || null).catch(reportWorkspaceProfileError);
+                  }}
+                >
+                  {[null, ...settings.workspaceProfiles].map((profile) => (
+                    <Menu.RadioItem
+                      key={profile?.id ?? "all"}
+                      value={profile?.id ?? ""}
+                      className="flex min-h-10 cursor-pointer items-center gap-3 rounded-lg px-2 py-2 text-sm outline-none data-highlighted:bg-white/15"
+                    >
+                      <WorkspaceProfileAvatar profile={profile} />
+                      <span className="min-w-0 flex-1 truncate">{profile?.name ?? "All"}</span>
+                      <Menu.RadioItemIndicator>
+                        <CheckIcon aria-hidden className="size-4 shrink-0" />
+                      </Menu.RadioItemIndicator>
+                    </Menu.RadioItem>
+                  ))}
+                </Menu.RadioGroup>
+              </div>
+              <Menu.Separator className="my-1 h-px bg-white/15" />
+              <Menu.Item
+                className="flex min-h-10 cursor-pointer items-center gap-3 rounded-lg px-2 py-2 text-sm outline-none data-highlighted:bg-white/15"
+                onClick={() => setCreating(true)}
+              >
+                <PlusIcon aria-hidden className="size-4" />
+                Create profile
+              </Menu.Item>
+              <Menu.Item
+                className="flex min-h-10 cursor-pointer items-center gap-3 rounded-lg px-2 py-2 text-sm outline-none data-highlighted:bg-white/15"
                 onClick={() => {
-                  void update({
-                    workspaceProfiles: settings.workspaceProfiles.filter(
-                      (profile) => profile.id !== editing.id,
-                    ),
-                    ...(active?.id === editing.id ? { activeWorkspaceProfileId: null } : {}),
-                  })
-                    .then(() => edit(null))
-                    .catch((cause) =>
-                      setError(
-                        cause instanceof Error ? cause.message : "Could not delete profile.",
-                      ),
-                    );
+                  void navigate({ to: "/settings/profiles" });
                 }}
               >
-                Delete profile
-              </Button>
-            ) : (
-              <span />
-            )}
-            <Button
-              onClick={() => {
-                void save();
-              }}
-            >
-              Save profile
-            </Button>
-          </DialogFooter>
-        </DialogPopup>
-      </Dialog>
+                <SettingsIcon aria-hidden className="size-4" />
+                Manage profiles
+              </Menu.Item>
+            </Menu.Popup>
+          </Menu.Positioner>
+        </Menu.Portal>
+      </Menu.Root>
+      {creating ? (
+        <WorkspaceProfileDialog profile={null} onClose={() => setCreating(false)} />
+      ) : null}
     </>
   );
 }

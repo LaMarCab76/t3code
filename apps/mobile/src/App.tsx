@@ -23,6 +23,7 @@ import { OverlayPortalHost } from "./components/OverlayPortal";
 import { shouldHandleAppLink } from "./lib/appLinking";
 import { useMobileNavigationTheme } from "./lib/useMobileNavigationTheme";
 import { SubscriptionUsageCoordinator } from "./widgets/SubscriptionUsageCoordinator";
+import { WorkspaceProfileStartupGate } from "./features/threads/WorkspaceProfileStartupGate";
 
 import "../global.css";
 
@@ -87,7 +88,9 @@ function AppContent() {
                 the system is in dark mode. */}
             <View style={{ flex: 1 }}>
               <IncomingShareProvider>
-                <Navigation linking={appLinking} theme={navigationTheme} />
+                <WorkspaceProfileStartupGate>
+                  <Navigation linking={appLinking} theme={navigationTheme} />
+                </WorkspaceProfileStartupGate>
               </IncomingShareProvider>
               <ConfirmDialogHost />
               <ThreadArrangementHost />
