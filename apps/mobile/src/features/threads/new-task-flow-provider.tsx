@@ -1,3 +1,4 @@
+import { useModelPreferences } from "../../state/model-preferences";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
@@ -30,6 +31,7 @@ import type { DraftComposerAttachment } from "../../lib/composerImages";
 import type { ModelOption, ProviderGroup } from "../../lib/modelOptions";
 import {
   buildModelOptions,
+  getCurrentModelOption,
   groupByProvider,
   resolveDefaultableModelSelection,
   resolveNewTaskModelSelection,
@@ -491,6 +493,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   // Antigravity keeps unavailable selections so sign-out or a catalog change
   // cannot switch the user's model. Other providers retain their fallback
   // rules. Implicit defaults also exclude legacy models for those providers.
+  const modelPreferences = useModelPreferences();
   const draftModelSelection = resolveSelectableModelSelection(
     selectedEnvironmentServerConfig,
     selectedProjectDraft.modelSelection ?? null,
@@ -498,23 +501,27 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
   const projectDefaultModelSelection = resolveDefaultableModelSelection(
     selectedEnvironmentServerConfig,
     projectSettings.settings.defaultModelSelection,
+    modelPreferences,
   );
   const storedStickyModelSelection = useStickyComposerModelSelection();
   const stickyModelSelection = resolveDefaultableModelSelection(
     selectedEnvironmentServerConfig,
     storedStickyModelSelection,
+    modelPreferences,
   );
   const modelOptions = useMemo(
     () =>
       buildModelOptions(
         selectedEnvironmentServerConfig,
         draftModelSelection ?? projectDefaultModelSelection ?? stickyModelSelection,
+        modelPreferences,
       ),
     [
       selectedEnvironmentServerConfig,
       draftModelSelection,
       projectDefaultModelSelection,
       stickyModelSelection,
+      modelPreferences,
     ],
   );
 
@@ -530,13 +537,7 @@ export function NewTaskFlowProvider(props: React.PropsWithChildren) {
     ? `${selectedModel.instanceId}:${selectedModel.model}`
     : null;
 
-  const selectedModelOption =
-    modelOptions.find(
-      (option) =>
-        selectedModel &&
-        option.selection.instanceId === selectedModel.instanceId &&
-        option.selection.model === selectedModel.model,
-    ) ?? null;
+  const selectedModelOption = getCurrentModelOption(selectedEnvironmentServerConfig, selectedModel);
   const selectedProviderStatus = useMemo(
     () =>
       selectedEnvironmentServerConfig?.providers.find(

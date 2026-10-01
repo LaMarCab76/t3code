@@ -1046,7 +1046,19 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
                 ))}
               </div>
             ) : (
-              <ComboboxEmpty className="empty:h-0">No models found</ComboboxEmpty>
+              <ComboboxEmpty className="empty:h-0">
+                No models found
+                {props.onOpenProviderSetup ? (
+                  <InlineButton
+                    onClick={() => {
+                      props.onRequestClose?.();
+                      props.onOpenProviderSetup?.(props.activeInstanceId);
+                    }}
+                  >
+                    Manage visible models
+                  </InlineButton>
+                ) : null}
+              </ComboboxEmpty>
             )}
           </div>
         </Combobox>

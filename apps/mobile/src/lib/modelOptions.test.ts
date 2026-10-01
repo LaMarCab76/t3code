@@ -409,3 +409,70 @@ describe("mobile model options", () => {
     ).toBeNull();
   });
 });
+
+describe("device model visibility", () => {
+  it.each(["codex", "claudeAgent", "cursor", "grok", "opencode", "antigravity"])(
+    "filters built-in, custom and favorite choices for %s without changing explicit selections",
+    (driver) => {
+      const instanceId = ProviderInstanceId.make(`${driver}_work`);
+      const selection = { instanceId, model: "hidden-custom" };
+      const config = {
+        providers: [
+          {
+            instanceId,
+            driver,
+            enabled: true,
+            installed: true,
+            auth: { status: "authenticated" },
+            models: [
+              { slug: "hidden-custom", name: "Hidden custom", isCustom: true, capabilities: {} },
+              { slug: "visible", name: "Visible", isDefault: true, capabilities: {} },
+            ],
+          },
+        ],
+      } as unknown as ServerConfig;
+      const preferences = {
+        [instanceId]: { hiddenModels: ["hidden-custom", "temporarily-absent"], modelOrder: [] },
+      };
+      expect(
+        buildModelOptions(config, selection, preferences).map((option) => option.selection.model),
+      ).toEqual(["visible"]);
+      expect(resolveSelectableModelSelection(config, selection)).toEqual(selection);
+      expect(resolveDefaultableModelSelection(config, selection, preferences)).toBeNull();
+      expect(
+        resolveNewTaskModelSelection({
+          draftSelection: selection,
+          projectDefaultSelection: null,
+          stickySelection: null,
+          modelOptions: buildModelOptions(config, selection, preferences),
+        }),
+      ).toEqual(selection);
+      const allHidden = {
+        [instanceId]: { hiddenModels: ["hidden-custom", "visible"], modelOrder: [] },
+      };
+      const options = buildModelOptions(config, selection, allHidden);
+      expect(options).toEqual([]);
+      expect(
+        resolveNewTaskModelSelection({
+          draftSelection: null,
+          projectDefaultSelection: null,
+          stickySelection: null,
+          modelOptions: options,
+        }),
+      ).toBeNull();
+      const refreshed = {
+        ...config,
+        providers: config.providers.map((provider) => ({
+          ...provider,
+          models: [
+            ...provider.models,
+            { slug: "temporarily-absent", name: "Back again", isCustom: false, capabilities: null },
+          ],
+        })),
+      };
+      expect(
+        buildModelOptions(refreshed, null, preferences).map((option) => option.selection.model),
+      ).toEqual(["visible"]);
+    },
+  );
+});

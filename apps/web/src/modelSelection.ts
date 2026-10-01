@@ -1,7 +1,6 @@
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
   DEFAULT_TEXT_GENERATION_MODEL,
-  DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
   type ModelSelection,
   ProviderDriverKind,
@@ -19,17 +18,14 @@ import { getComposerProviderState } from "./components/chat/composerProviderStat
 import { UnifiedSettings } from "@t3tools/contracts/settings";
 import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
-import {
-  getDefaultServerModel,
-  getProviderModels,
-  resolveSelectableProvider,
-} from "./providerModels";
+import { getProviderModels, resolveSelectableProvider } from "./providerModels";
 import { ModelEsque } from "./components/chat/providerIconUtils";
 import {
   type ProviderInstanceEntry,
   deriveProviderInstanceEntries,
   NO_PROVIDER_MODEL_SELECTION,
 } from "./providerInstances";
+import { filterVisibleModels } from "@t3tools/client-runtime/model-preferences";
 import { sortModelsForProviderInstance } from "./modelOrdering";
 
 const MAX_CUSTOM_MODEL_COUNT = 32;
@@ -145,11 +141,9 @@ function applyInstanceModelPreferences(
     readonly modelOrder: ReadonlyArray<string>;
   },
 ): AppModelOption[] {
-  const hiddenModels = new Set(preferences.hiddenModels);
-  return sortModelsForProviderInstance(
-    options.filter((option) => option.isCustom || !hiddenModels.has(option.slug)),
-    { modelOrder: preferences.modelOrder },
-  );
+  return sortModelsForProviderInstance(filterVisibleModels(options, preferences.hiddenModels), {
+    modelOrder: preferences.modelOrder,
+  });
 }
 
 function normalizeCustomModelEntries(
@@ -281,7 +275,9 @@ export function resolveAppModelSelection(
   const options = getAppModelOptions(settings, providers, resolvedProvider, selectedModel);
   return (
     resolveSelectableModel(resolvedProvider, selectedModel, options) ??
-    getDefaultServerModel(providers, resolvedProvider)
+    options.find((option) => option.isDefault)?.slug ??
+    options[0]?.slug ??
+    ""
   );
 }
 
@@ -295,6 +291,13 @@ export function resolveAppModelSelectionForInstance(
   const entry = deriveProviderInstanceEntries(providers).find(
     (candidate) => candidate.instanceId === instanceId,
   );
+  if (
+    resolutionOptions?.preserveUnavailableSelection &&
+    selectedModel?.trim() &&
+    !(entry?.driverKind === "antigravity" && selectedModel === ANTIGRAVITY_DEFAULT_MODEL)
+  ) {
+    return selectedModel;
+  }
   if (!entry) return null;
   const options = getAppModelOptionsForInstance(
     settings,
@@ -369,15 +372,12 @@ export function resolveAppModelSelectionState(
     // When the instance changed due to fallback (e.g. selected instance was disabled),
     // don't carry over the old instance's model — use the fallback instance's default.
     const selectedModel = selectedEntry ? selection.model : null;
-    const model =
-      resolveAppModelSelectionForInstance(
-        entry.instanceId,
-        settings,
-        supportedProviders,
-        selectedModel,
-      ) ??
-      entry.models[0]?.slug ??
-      DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER[entry.driverKind];
+    const model = resolveAppModelSelectionForInstance(
+      entry.instanceId,
+      settings,
+      supportedProviders,
+      selectedModel,
+    );
     if (!model) {
       return createModelSelection(entry.instanceId, "", []);
     }

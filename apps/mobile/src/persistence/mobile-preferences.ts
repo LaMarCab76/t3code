@@ -12,12 +12,16 @@ import {
   type ProviderInstanceId,
   type SidebarProjectGroupingMode,
 } from "@t3tools/contracts";
+import { ClientSettingsSchema, type ClientSettings } from "@t3tools/contracts/settings";
 import type { ComposerEnterBehavior } from "../lib/composerEnterBehavior";
 import { MOBILE_THEME_IDS, type MobileThemeId, type MobileThemeMode } from "../lib/mobileTheme";
 import * as MobileDatabase from "./mobile-database";
 import * as MobileSecureStorage from "./mobile-secure-storage";
 import { MobileStorageDecodeError, MobileStorageEncodeError } from "./mobile-storage";
 
+const decodeModelPreferences = Schema.decodeUnknownOption(
+  ClientSettingsSchema.fields.providerModelPreferences,
+);
 const decodeLastProfileThread = Schema.decodeUnknownOption(ScopedThreadRef);
 const decodeWorkspaceProfiles = Schema.decodeUnknownOption(Schema.Array(WorkspaceProfile));
 const decodeSidebarViewMode = Schema.decodeUnknownOption(SidebarViewMode);
@@ -51,6 +55,7 @@ export interface Preferences {
   /** Device-local counterpart of desktop's `planModeEnabled` legacy flag. */
   readonly planModeEnabled?: boolean;
   /** Model favorites belong to this device, like the web client setting. */
+  readonly providerModelPreferences?: ClientSettings["providerModelPreferences"];
   readonly modelFavorites?: ReadonlyArray<{
     readonly provider: ProviderInstanceId;
     readonly model: string;
@@ -120,6 +125,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     projectGroupingEnabled?: boolean;
     projectGroupingMode?: SidebarProjectGroupingMode;
     planModeEnabled?: boolean;
+    providerModelPreferences?: Preferences["providerModelPreferences"];
     modelFavorites?: Preferences["modelFavorites"];
     threadListSettledShelfExpanded?: boolean;
     threadListSnoozedShelfExpanded?: boolean;
@@ -207,6 +213,9 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   if (typeof parsed.planModeEnabled === "boolean") {
     preferences.planModeEnabled = parsed.planModeEnabled;
   }
+  const modelPreferences = decodeModelPreferences(parsed.providerModelPreferences);
+  if (parsed.providerModelPreferences !== undefined && Option.isSome(modelPreferences))
+    preferences.providerModelPreferences = modelPreferences.value;
   if (Array.isArray(parsed.modelFavorites)) {
     preferences.modelFavorites = parsed.modelFavorites.filter(
       (favorite) =>

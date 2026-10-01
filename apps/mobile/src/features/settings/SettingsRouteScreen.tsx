@@ -148,6 +148,7 @@ function SettingsIndexSections() {
     <>
       <SettingsSection title="Interface">
         <SettingsRow icon="paintbrush" label="Appearance" target="SettingsAppearance" />
+        <SettingsRow icon="slider.horizontal.3" label="Models" target="SettingsModels" />
         <SettingsRow icon="person.crop.circle" label="Profiles" target="SettingsProfiles" />
         {Platform.OS === "ios" ? (
           <SettingsRow icon="keyboard" label="Keyboard" target="SettingsKeyboard" />

@@ -304,7 +304,8 @@
       "types": "./src/device/duoControl.ts",
       "default": "./src/device/duoControl.ts"
     },
-    "./state/documents": "./src/state/documents.ts"
+    "./state/documents": "./src/state/documents.ts",
+    "./model-preferences": "./src/modelPreferences.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

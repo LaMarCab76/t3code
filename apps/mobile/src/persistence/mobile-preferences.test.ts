@@ -96,3 +96,22 @@ describe("mobile profile preference persistence", () => {
       }),
   );
 });
+
+it.effect(
+  "round-trips hidden models for disconnected instances without replacing profiles or favorites",
+  () =>
+    Effect.gen(function* () {
+      const store = yield* memoryStore({ workspaceProfiles: [], baseFontSize: 18 });
+      const preferences = {
+        ["codex_work" as import("@t3tools/contracts").ProviderInstanceId]: {
+          hiddenModels: ["custom", "temporarily-absent"],
+          modelOrder: ["visible"],
+        },
+      };
+      yield* store.savePatch({ providerModelPreferences: preferences });
+      expect((yield* store.load).providerModelPreferences).toEqual(preferences);
+      yield* store.savePatch({ activeWorkspaceProfileId: "work" });
+      expect((yield* store.load).providerModelPreferences).toEqual(preferences);
+      expect((yield* store.load).baseFontSize).toBe(18);
+    }),
+);

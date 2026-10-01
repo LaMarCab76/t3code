@@ -1505,7 +1505,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     activeThreadEnvironmentId: _activeThreadEnvironmentId,
     activeThread,
     promptHistoryMessages,
-    isServerThread: _isServerThread,
+    isServerThread,
     isLocalDraftThread: _isLocalDraftThread,
     forceExpandedOnMobile,
     projectSelectionRequired,
@@ -1932,7 +1932,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     providers: providerStatuses,
     selectedProvider,
     selectedInstanceId,
-    threadModelSelection: activeThreadModelSelection,
+    threadModelSelection: isServerThread ? activeThreadModelSelection : null,
     projectModelSelection: activeProjectDefaultModelSelection,
     settings,
   });
@@ -1942,6 +1942,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   );
   const sendDisabledReason =
     externalSendDisabledReason ??
+    (!selectedModel && multipleModelSelections === null
+      ? "No visible models. Enable a model in Settings → Providers → Models."
+      : null) ??
     (multipleModelSelections?.length === 0 ? "Select at least one model." : null) ??
     (activePendingProgress
       ? attachmentBlockReason

@@ -8,6 +8,12 @@ import {
   getProviderOptionDescriptors,
 } from "@t3tools/shared/model";
 
+import {
+  filterVisibleModels,
+  isModelHidden,
+  type ProviderModelPreferences,
+} from "@t3tools/client-runtime/model-preferences";
+
 export type ModelOption = {
   readonly key: string;
   readonly label: string;
@@ -121,8 +127,10 @@ export function resolveSelectableModelSelection(
 export function resolveDefaultableModelSelection(
   config: T3ServerConfig | null | undefined,
   selection: ModelSelection | null,
+  preferences?: ProviderModelPreferences,
 ): ModelSelection | null {
   const usable = resolveSelectableModelSelection(config, selection);
+  if (usable && isModelHidden(preferences, usable.instanceId, usable.model)) return null;
   if (!usable || !config) {
     return usable;
   }
@@ -150,6 +158,7 @@ export function resolveNewTaskModelSelection(input: {
 export function buildModelOptions(
   config: T3ServerConfig | null | undefined,
   fallbackModelSelection: ModelSelection | null,
+  preferences?: ProviderModelPreferences,
 ): ReadonlyArray<ModelOption> {
   const options = new Map<string, ModelOption>();
 
@@ -164,7 +173,10 @@ export function buildModelOptions(
     }
 
     const providerLabel = providerDisplayLabel(provider);
-    for (const model of provider.models) {
+    for (const model of filterVisibleModels(
+      provider.models,
+      preferences?.[provider.instanceId]?.hiddenModels ?? [],
+    )) {
       const key = `${provider.instanceId}:${model.slug}`;
       options.set(key, {
         key,
@@ -187,7 +199,10 @@ export function buildModelOptions(
     }
   }
 
-  if (fallbackModelSelection) {
+  if (
+    fallbackModelSelection &&
+    !isModelHidden(preferences, fallbackModelSelection.instanceId, fallbackModelSelection.model)
+  ) {
     const key = `${fallbackModelSelection.instanceId}:${fallbackModelSelection.model}`;
     const existing = options.get(key);
     if (existing) {
@@ -253,4 +268,37 @@ export function groupByProvider(options: ReadonlyArray<ModelOption>): ReadonlyAr
     providerLabel: group.providerLabel,
     models: group.models,
   }));
+}
+
+export function getCurrentModelOption(
+  config: T3ServerConfig | null | undefined,
+  selection: ModelSelection | null,
+): ModelOption | null {
+  if (!selection) return null;
+  const provider = config?.providers.find(
+    (candidate) => candidate.instanceId === selection.instanceId,
+  );
+  const instanceConfig = config?.settings?.providerInstances[selection.instanceId];
+  const model = provider?.models.find((candidate) => candidate.slug === selection.model);
+  const providerDriver = provider?.driver ?? instanceConfig?.driver ?? selection.instanceId;
+  return {
+    key: `${selection.instanceId}:${selection.model}`,
+    label: model?.name ?? selection.model,
+    subtitle: model?.subProvider ?? "",
+    providerKey: selection.instanceId,
+    providerLabel: providerDisplayLabel({
+      driver: providerDriver,
+      displayName: provider?.displayName ?? instanceConfig?.displayName,
+      instanceId: selection.instanceId,
+    }),
+    providerDriver,
+    isDefault: model?.isDefault === true,
+    isLegacy: model?.isLegacy === true,
+    ...(isModelSelectionUnavailable(config, selection) ? { isUnavailable: true } : {}),
+    capabilities: model?.capabilities ?? null,
+    selection:
+      model && providerDriver !== "antigravity"
+        ? normalizeSelectionOptions(selection, model.capabilities)
+        : selection,
+  };
 }

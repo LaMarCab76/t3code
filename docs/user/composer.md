@@ -71,6 +71,18 @@ On web and desktop, use Settings → Providers → **Models** to add an unlisted
 name and options. Only options supported by the provider integration affect turns. Antigravity
 uses its account catalog and does not support custom models.
 
+## Visible models
+
+Use **Settings → Providers → Models** on web or desktop, or **Settings → Models**
+on mobile, to hide models you do not want in the pickers. Custom models can also
+be hidden. Search, favorites and model commands use the same visible list.
+Visibility is saved on this device, separately for each provider instance, and
+applies to every profile. Refreshing or reconnecting a provider keeps your choices.
+
+Existing threads and drafts with an explicit model keep it after you hide it.
+New automatic selections use visible models. If you hide every model, enable one
+in Settings before starting a new thread.
+
 ## Model defaults
 
 T3 Code remembers your provider, model, and model options for new threads. A

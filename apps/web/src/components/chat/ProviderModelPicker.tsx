@@ -74,15 +74,12 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   const activeInstanceId = props.activeInstanceId;
   const selectedInstanceOptions = props.modelOptionsByInstance.get(activeInstanceId) ?? [];
   // Account-specific catalogs must keep the selected model label while unavailable.
-  const selectedModel =
+  const selectedModel: ModelEsque | undefined =
     resolveModelPickerSelectedModel({
       driverKind: activeEntry?.driverKind,
       model: props.model,
       options: selectedInstanceOptions,
-    }) ??
-    (activeEntry?.driverKind === "opencode" || activeEntry?.driverKind === "antigravity"
-      ? undefined
-      : selectedInstanceOptions[0]);
+    }) ?? activeEntry?.models.find((option) => option.slug === props.model);
   const triggerTitle = selectedModel
     ? getTriggerDisplayModelName(selectedModel)
     : props.model === ANTIGRAVITY_DEFAULT_MODEL

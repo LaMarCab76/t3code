@@ -1,3 +1,4 @@
+import { useModelPreferences } from "../../state/model-preferences";
 import { ChatGptUsageLimitNotice } from "./ChatGptUsageLimitNotice";
 import type { ComposerTextPaste } from "../../native/T3ComposerEditor.types";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
@@ -84,6 +85,7 @@ import {
 } from "../../lib/composerImages";
 import {
   buildModelOptions,
+  getCurrentModelOption,
   groupByProvider,
   isModelSelectionUnavailable,
 } from "../../lib/modelOptions";
@@ -520,9 +522,10 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
   ]);
 
   // ── Model menu ───────────────────────────────────────────
+  const modelPreferences = useModelPreferences();
   const modelOptions = useMemo(
-    () => buildModelOptions(props.serverConfig, currentModelSelection),
-    [props.serverConfig, currentModelSelection],
+    () => buildModelOptions(props.serverConfig, currentModelSelection, modelPreferences),
+    [props.serverConfig, currentModelSelection, modelPreferences],
   );
   const providerGroups = useMemo(() => groupByProvider(modelOptions), [modelOptions]);
   // An existing thread is bound to its harness: sessions can't move between
@@ -531,12 +534,7 @@ export const ThreadComposer = memo(function ThreadComposer(props: ThreadComposer
     () => providerGroups.filter((group) => group.providerKey === currentModelSelection.instanceId),
     [providerGroups, currentModelSelection.instanceId],
   );
-  const currentModelOption =
-    modelOptions.find(
-      (option) =>
-        option.selection.instanceId === currentModelSelection.instanceId &&
-        option.selection.model === currentModelSelection.model,
-    ) ?? null;
+  const currentModelOption = getCurrentModelOption(props.serverConfig, currentModelSelection);
   const providerOptionDescriptors = useMemo(
     () =>
       resolveProviderOptionDescriptors({

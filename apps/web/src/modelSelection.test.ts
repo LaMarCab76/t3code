@@ -312,7 +312,7 @@ describe("instance-scoped model selection", () => {
         "claude-opus-4-6",
         { preserveUnavailableSelection: true },
       ),
-    ).toBe("claude-sonnet-4-6");
+    ).toBe("claude-opus-4-6");
   });
 
   it("falls back instead of resolving a custom slug against the wrong instance", () => {
@@ -476,7 +476,7 @@ describe("instance-scoped model selection", () => {
         resolveAppModelSelectionForInstance(instanceId, settings, providers, missingModel, {
           preserveUnavailableSelection: true,
         }),
-      ).toBeNull();
+      ).toBe(missingModel);
     });
   });
 
@@ -503,10 +503,10 @@ describe("instance-scoped model selection", () => {
         "gpt-missing",
         { preserveUnavailableSelection: true },
       ),
-    ).toBe("gpt-5.6-sol");
+    ).toBe("gpt-missing");
   });
 
-  it("falls back from an explicit non-OpenCode draft with a missing model", () => {
+  it("keeps an explicit non-OpenCode draft with a missing model", () => {
     const instanceId = ProviderInstanceId.make("codex");
     const driver = ProviderDriverKind.make("codex");
     const providers = [provider({ provider: driver, instanceId, models: ["gpt-5.6-sol"] })];
@@ -534,7 +534,7 @@ describe("instance-scoped model selection", () => {
       planModeEnabled: false,
     });
 
-    expect(state.selectedModel).toBe("gpt-5.6-sol");
+    expect(state.selectedModel).toBe("gpt-missing");
     expect(dispatch.modelOptionsForDispatch).toBeUndefined();
   });
 
@@ -832,4 +832,68 @@ describe("instance-scoped model selection", () => {
       NO_PROVIDER_MODEL_SELECTION,
     );
   });
+});
+
+describe("hidden models across drivers", () => {
+  it.each(["codex", "claudeAgent", "cursor", "grok", "opencode", "antigravity"] as const)(
+    "keeps explicit %s selections and excludes hidden models from new defaults",
+    (kind) => {
+      const instanceId = ProviderInstanceId.make(`${kind}_personal`);
+      const driver = ProviderDriverKind.make(kind);
+      const providers = [provider({ provider: driver, instanceId, models: ["hidden", "visible"] })];
+      const settings: UnifiedSettings = {
+        ...DEFAULT_UNIFIED_SETTINGS,
+        providerInstances: { [instanceId]: { driver, config: { customModels: ["custom"] } } },
+        providerModelPreferences: {
+          [instanceId]: { hiddenModels: ["hidden", "custom"], modelOrder: [] },
+        },
+      };
+      const entry = deriveProviderInstanceEntries(providers)[0]!;
+      expect(
+        getAppModelOptionsForInstance(settings, entry, "hidden").map((option) => option.slug),
+      ).toEqual(["visible"]);
+      expect(resolveAppModelSelectionForInstance(instanceId, settings, providers, "hidden")).toBe(
+        "visible",
+      );
+      expect(
+        resolveAppModelSelectionForInstance(instanceId, settings, providers, "hidden", {
+          preserveUnavailableSelection: true,
+        }),
+      ).toBe("hidden");
+      expect(
+        deriveEffectiveComposerModelState({
+          draft: {
+            activeProvider: instanceId,
+            modelSelectionByProvider: { [instanceId]: createModelSelection(instanceId, "custom") },
+          },
+          providers,
+          selectedProvider: driver,
+          selectedInstanceId: instanceId,
+          threadModelSelection: null,
+          projectModelSelection: null,
+          settings,
+        }).selectedModel,
+      ).toBe("custom");
+      const hiddenSettings = {
+        ...settings,
+        providerModelPreferences: {
+          [instanceId]: { hiddenModels: ["hidden", "visible", "custom"], modelOrder: [] },
+        },
+      };
+      expect(
+        resolveAppModelSelectionForInstance(instanceId, hiddenSettings, providers, null),
+      ).toBeNull();
+      expect(
+        deriveEffectiveComposerModelState({
+          draft: null,
+          providers,
+          selectedProvider: driver,
+          selectedInstanceId: instanceId,
+          threadModelSelection: null,
+          projectModelSelection: createModelSelection(instanceId, "hidden"),
+          settings: hiddenSettings,
+        }).selectedModel,
+      ).toBe("");
+    },
+  );
 });

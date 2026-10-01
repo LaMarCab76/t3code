@@ -773,6 +773,7 @@ function ThreadSettingsMainContent(props: {
   readonly onOpenSubmenu: (submenu: ThreadSettingsSubmenuPage) => void;
 }) {
   const session = useThreadSettingsSession();
+  const navigation = useNavigation();
   const refreshProvidersCommand = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
@@ -827,6 +828,17 @@ function ThreadSettingsMainContent(props: {
                   ? "No matching models"
                   : "No available models"}
             </Text>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() =>
+                navigation.navigate("SettingsSheet", {
+                  screen: "SettingsContent",
+                  params: { screen: "SettingsModels" },
+                })
+              }
+            >
+              <Text className="mt-4 text-foreground">Manage visible models</Text>
+            </Pressable>
           </View>
         );
       } else {
@@ -850,6 +862,7 @@ function ThreadSettingsMainContent(props: {
     },
     [
       animationsReady,
+      navigation,
       hasActiveCatalogFilter,
       props.onOpenSubmenu,
       session.providerFilter,
