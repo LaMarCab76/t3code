@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
+import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeHttp from "node:http";
@@ -145,6 +146,8 @@ async function installFixture(
     await NodeFSP.writeFile(NodePath.join(bundle, "version"), bundle === app ? "old" : "new");
   }
   const token = "fixture-token";
+  const release = NodePath.join(job, "release");
+  await run("/usr/bin/mkfifo", [release]);
   await NodeFSP.writeFile(
     NodePath.join(job, "transaction.json"),
     JSON.stringify({ version, token }),
@@ -153,7 +156,7 @@ async function installFixture(
     NodePath.join(candidate, "Contents", "MacOS", "fixture"),
     mode === "launch-failure"
       ? "#!/bin/sh\nexit 1\n"
-      : `#!/bin/sh\nreceipt=\${1#--t3-fork-update-receipt=}\nprintf '%s' '${version} ${token}' > "$receipt"\n`,
+      : `#!/bin/sh\nreceipt=\${1#--t3-fork-update-receipt=}\nprintf '%s' '${version} ${token}' > "$receipt"\nread -r release < '${release}'\n`,
     { mode: 0o700 },
   );
   const noop = NodePath.join(directory, "noop");
@@ -196,6 +199,13 @@ async function installFixture(
     ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
+  let output = "";
+  helper.stdout.on("data", (chunk) => {
+    output += chunk.toString();
+  });
+  helper.stderr.on("data", (chunk) => {
+    output += chunk.toString();
+  });
   const waiting = new Promise<void>((resolve, reject) => {
     helper.stdout.once("data", () => resolve());
     helper.once("error", reject);
@@ -211,7 +221,7 @@ async function installFixture(
       parent.kill("SIGTERM");
     }
     const [code] = await completion;
-    expect(code).toBe(mode === "success" ? 0 : 1);
+    expect(code, output).toBe(mode === "success" ? 0 : 1);
     expect(await NodeFSP.readFile(NodePath.join(app, "version"), "utf8")).toBe(
       mode === "success" ? "new" : "old",
     );
@@ -229,6 +239,16 @@ async function installFixture(
     );
   } finally {
     parent?.kill("SIGTERM");
+    // Keep the simulated app alive through startup, then release it without
+    // sleeps or looking up processes to terminate.
+    const pipe = await NodeFSP.open(
+      release,
+      NodeFS.constants.O_WRONLY | NodeFS.constants.O_NONBLOCK,
+    ).catch(() => null);
+    if (pipe) {
+      await pipe.write("exit\n");
+      await pipe.close();
+    }
     await NodeFSP.rm(directory, { recursive: true, force: true });
   }
 }
