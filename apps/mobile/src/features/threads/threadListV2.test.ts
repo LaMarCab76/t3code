@@ -2012,6 +2012,77 @@ describe("buildThreadListV2ListItems row-state stamps", () => {
 });
 
 describe("project history views", () => {
+  it.each([
+    { expanded: false, selected: false },
+    { expanded: false, selected: true },
+    { expanded: true, selected: false },
+    { expanded: true, selected: true },
+  ])(
+    "builds combined history with expanded=$expanded and selected=$selected",
+    ({ expanded, selected }) => {
+      const threads = [
+        makeThread({ id: ThreadId.make("active"), title: "Active" }),
+        makeThread({
+          id: ThreadId.make("recent"),
+          title: "Recent",
+          settledOverride: "settled",
+          settledAt: NOW,
+        }),
+        makeThread({
+          id: ThreadId.make("other-project"),
+          title: "Other project",
+          projectId: ProjectId.make("project-2"),
+          settledOverride: "settled",
+          settledAt: "2026-06-01T12:00:00.000Z",
+        }),
+        makeThread({
+          id: ThreadId.make("selected"),
+          title: "Selected",
+          projectId: ProjectId.make("project-3"),
+          settledOverride: "settled",
+          settledAt: "2026-06-01T00:00:00.000Z",
+        }),
+      ];
+      const built = buildThreadListV2Items({
+        threads,
+        environmentId: null,
+        searchQuery: "",
+        now: NOW,
+        settledLimit: 1,
+        settledShelfExpanded: expanded,
+        selectedThreadKey: selected ? `${environmentId}:selected` : null,
+      });
+      const items = buildThreadListV2ListItems({
+        ...built,
+        viewMode: "combined",
+        pendingTasks: [],
+        settledShelfExpanded: expanded,
+        projectTitles: new Map([
+          [`${environmentId}:project-1`, "First project"],
+          [`${environmentId}:project-2`, "Second project"],
+          [`${environmentId}:project-3`, "Selected project"],
+        ]),
+      });
+      const rows = items.filter((item) => item.type === "v2-thread");
+      expect(rows.map((row) => row.item.thread.id)).toEqual([
+        "active",
+        ...(expanded ? ["recent"] : []),
+        ...(selected ? ["selected"] : []),
+      ]);
+      expect(
+        rows.filter((row) => row.item.variant === "slim").map((row) => row.projectHeading),
+      ).toEqual([
+        ...(expanded ? ["First project"] : []),
+        ...(selected ? ["Selected project"] : []),
+      ]);
+      expect(items.find((item) => item.type === "v2-settled-shelf")).toMatchObject({
+        expanded,
+        count: 3,
+      });
+      expect(built.hiddenSettledCount).toBe(selected ? 1 : 2);
+    },
+  );
+
   it.each(["combined", "projects"] as const)(
     "groups %s history while preserving pinned and snoozed rows exactly once",
     (viewMode) => {
@@ -2063,6 +2134,7 @@ describe("project history views", () => {
       expect(new Set(rows.map((item) => item.item.thread.id)).size).toBe(threads.length);
       expect(rows[0]?.item.thread.id).toBe("pinned");
       expect(items.some((item) => item.type === "v2-snoozed-shelf")).toBe(true);
+      expect(items.some((item) => item.type === "v2-settled-shelf")).toBe(viewMode === "combined");
       const settled = rows.filter((item) => item.item.thread.settledOverride === "settled");
       expect(settled.map((item) => item.item.thread.projectId)).toEqual([
         "project-1",

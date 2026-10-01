@@ -2783,12 +2783,11 @@ export default function Sidebar() {
     () => setSettledVisibleCount((count) => count + SETTLED_TAIL_PAGE_COUNT),
     [],
   );
-  const [savedSettledShelfExpanded, setSettledShelfExpanded] = useLocalStorage(
+  const [settledShelfExpanded, setSettledShelfExpanded] = useLocalStorage(
     SETTLED_SHELF_EXPANDED_KEY,
     false,
     Schema.Boolean,
   );
-  const settledShelfExpanded = sidebarViewMode === "combined" || savedSettledShelfExpanded;
   const toggleSettledShelf = useCallback(
     () => setSettledShelfExpanded((value) => !value),
     [setSettledShelfExpanded],
@@ -4996,14 +4995,10 @@ export default function Sidebar() {
                                 }
                                 dragging={from !== null}
                                 isDropTarget={dragTargetSection === "settled"}
-                                {...(sidebarViewMode === "combined"
-                                  ? {}
-                                  : {
-                                      toggle: {
-                                        expanded: settledShelfExpanded,
-                                        onToggle: toggleSettledShelf,
-                                      },
-                                    })}
+                                toggle={{
+                                  expanded: settledShelfExpanded,
+                                  onToggle: toggleSettledShelf,
+                                }}
                               />,
                             );
                             break;

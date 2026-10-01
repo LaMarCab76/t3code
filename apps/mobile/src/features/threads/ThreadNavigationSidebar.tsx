@@ -297,7 +297,7 @@ function ThreadNavigationSidebarPane(
     toggleSnoozedShelf,
   } = useThreadListV2ShelfPreferences();
   const sidebarViewMode = useMobileSidebarViewMode();
-  const settledShelfExpanded = sidebarViewMode !== "status" || savedSettledShelfExpanded;
+  const settledShelfExpanded = sidebarViewMode === "projects" || savedSettledShelfExpanded;
   // The queued-start and snooze helpers need a clock while the pane stays open.
   const [nowMinute, setNowMinute] = useState(() => new Date().toISOString().slice(0, 16));
   // Snooze wake times are second-precise; a counter bumped exactly at the
@@ -823,7 +823,7 @@ function ThreadNavigationSidebarPane(
               count={item.count}
               disabled={item.disabled}
               expanded={item.expanded}
-              onToggle={sidebarViewMode === "status" ? toggleSettledShelf : undefined}
+              onToggle={toggleSettledShelf}
               pane="sidebar"
             />
           );
