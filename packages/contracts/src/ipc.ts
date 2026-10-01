@@ -315,7 +315,7 @@ export const DesktopUpdateReleaseNoteSchema = Schema.Struct({
 });
 
 export const DesktopUpdateStateSchema = Schema.Struct({
-  source: Schema.optional(
+  source: Schema.optionalKey(
     Schema.Struct({
       kind: Schema.Literal("fork"),
       repository: Schema.String,

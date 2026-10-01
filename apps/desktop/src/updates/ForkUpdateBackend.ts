@@ -80,7 +80,7 @@ export async function downloadVerifiedArchive(input: {
   }
 }
 
-export async function verifyMacBundle(
+async function verifyMacBundle(
   bundle: string,
   version: string,
   arch: "arm64" | "x64",
@@ -324,7 +324,7 @@ export async function readForkRecoveryNotice(
 ): Promise<string | null> {
   const jobs = NodePath.join(cachePath, "jobs");
   const directories = await NodeFSP.readdir(jobs).catch(() => [] as string[]);
-  for (const id of directories.slice(-100).reverse()) {
+  for (const id of directories.slice(-100).toReversed()) {
     const job = NodePath.join(jobs, id);
     if (
       await NodeFSP.stat(NodePath.join(job, "noticed")).then(

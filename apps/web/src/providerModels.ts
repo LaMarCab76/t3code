@@ -1,6 +1,4 @@
 import {
-  DEFAULT_MODEL,
-  DEFAULT_MODEL_BY_PROVIDER,
   defaultInstanceIdForDriver,
   ProviderDriverKind,
   type ModelCapabilities,
@@ -62,18 +60,4 @@ export function getProviderModelCapabilities(
   const selectedModel = models.find((candidate) => candidate.slug === slug);
   const caps = selectedModel?.capabilities ?? EMPTY_CAPABILITIES;
   return caps;
-}
-
-export function getDefaultServerModel(
-  providers: ReadonlyArray<ServerProvider>,
-  provider: ProviderDriverKind,
-): string {
-  const models = getProviderModels(providers, provider);
-  return (
-    models.find((model) => model.isDefault && !model.isCustom)?.slug ??
-    models.find((model) => !model.isCustom)?.slug ??
-    models[0]?.slug ??
-    DEFAULT_MODEL_BY_PROVIDER[provider] ??
-    DEFAULT_MODEL
-  );
 }
