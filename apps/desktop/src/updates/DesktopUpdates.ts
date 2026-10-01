@@ -309,7 +309,13 @@ export const make = Effect.gen(function* () {
   const setState = (state: DesktopUpdateState): Effect.Effect<void> =>
     stateMutex
       .withPermits(1)(
-        Ref.set(updateStateRef, state).pipe(Effect.andThen(PubSub.publish(stateChanges, state))),
+        Ref.set(updateStateRef, {
+          ...state,
+          ...(electronUpdater.source ? { source: electronUpdater.source } : {}),
+        }).pipe(
+          Effect.andThen(Ref.get(updateStateRef)),
+          Effect.flatMap((next) => PubSub.publish(stateChanges, next)),
+        ),
       )
       .pipe(Effect.andThen(emitState));
 
@@ -346,7 +352,12 @@ export const make = Effect.gen(function* () {
       : false;
 
   const hasUpdateFeedConfig = Ref.get(appUpdateYmlConfigRef).pipe(
-    Effect.map((appUpdateYmlConfig) => Option.isSome(appUpdateYmlConfig) || config.mockUpdates),
+    Effect.map(
+      (appUpdateYmlConfig) =>
+        Option.isSome(appUpdateYmlConfig) ||
+        config.mockUpdates ||
+        electronUpdater.source?.kind === "fork",
+    ),
   );
 
   const resolveDisabledReason = Effect.gen(function* () {
@@ -924,7 +935,13 @@ export const make = Effect.gen(function* () {
 
       const settings = yield* desktopSettings.get;
       const enabled = yield* shouldEnableAutoUpdates;
-      yield* setState(createBaseUpdateState(settings.updateChannel, enabled, environment));
+      const recoveryNotice = electronUpdater.startupNotice
+        ? yield* electronUpdater.startupNotice
+        : null;
+      yield* setState({
+        ...createBaseUpdateState(settings.updateChannel, enabled, environment),
+        message: recoveryNotice,
+      });
       if (!enabled) {
         return;
       }
@@ -972,6 +989,7 @@ export const make = Effect.gen(function* () {
       nextChannel: DesktopUpdateChannel,
     ) {
       yield* Effect.annotateCurrentSpan({ channel: nextChannel });
+      if (electronUpdater.source?.kind === "fork") return yield* Ref.get(updateStateRef);
       const activeAction = yield* tryStartChannelChange;
       if (Option.isSome(activeAction)) {
         return yield* new DesktopUpdateActionInProgressError({

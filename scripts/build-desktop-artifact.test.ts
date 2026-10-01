@@ -2350,3 +2350,43 @@ it("ignores trailing separators", () => {
     ancestorNodeModulesPaths("C:\\tmp\\probe\\app", "\\"),
   );
 });
+
+it.effect("embeds a personal feed and ad hoc signing only for fork Mac builds", () =>
+  Effect.gen(function* () {
+    const fork = yield* createBuildConfig(
+      "mac",
+      "dmg",
+      "0.0.44-preview.20261001.8",
+      false,
+      false,
+      undefined,
+      undefined,
+    );
+    assert.notProperty(fork, "publish");
+    assert.includeDeepMembers(fork.extraResources as unknown[], [
+      { from: "apps/desktop/resources/fork-update.json", to: "fork-update.json" },
+      { from: "apps/desktop/resources/fork-install.sh", to: "fork-install.sh" },
+    ]);
+    assert.propertyVal(fork.mac, "identity", "-");
+    const windows = yield* createBuildConfig(
+      "win",
+      "nsis",
+      "0.0.44-preview.20261001.8",
+      false,
+      false,
+      undefined,
+      undefined,
+    );
+    assert.notDeepInclude(windows.extraResources as unknown[], {
+      from: "apps/desktop/resources/fork-update.json",
+      to: "fork-update.json",
+    });
+  }).pipe(
+    Effect.provide(
+      Layer.merge(
+        NodeServices.layer,
+        ConfigProvider.layer(ConfigProvider.fromEnv({ env: { T3CODE_FORK_UPDATES: "true" } })),
+      ),
+    ),
+  ),
+);

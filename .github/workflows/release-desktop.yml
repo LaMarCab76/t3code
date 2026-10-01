@@ -109,6 +109,7 @@ jobs:
       T3CODE_CLERK_JWT_TEMPLATE: ${{ inputs.clerk_jwt_template }}
       T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: ${{ inputs.clerk_cli_oauth_client_id }}
       T3CODE_RELAY_URL: ${{ inputs.relay_url }}
+      T3CODE_FORK_UPDATES: ${{ github.repository == 'LaMarCab76/t3code' && inputs.platform == 'mac' && inputs.release_channel == 'preview' && 'true' || 'false' }}
     steps:
       # This repository is public, so Git needs no credentials. checkout's
       # credential cleanup runs submodule foreach even with submodules disabled,
@@ -553,6 +554,23 @@ jobs:
           name: cli-${{ inputs.platform }}-${{ inputs.arch }}
           path: release-cli/*
           if-no-files-found: error
+
+      - name: Verify fork ad hoc signature
+        if: github.repository == 'LaMarCab76/t3code' && inputs.platform == 'mac' && inputs.release_channel == 'preview'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$(find release -name 'T3-Code-${{ inputs.version }}-${{ inputs.arch }}.zip' -print -quit)"
+          test -n "$archive"
+          verification="$RUNNER_TEMP/fork-signature-check"
+          mkdir -p "$verification"
+          ditto -x -k "$archive" "$verification"
+          app="$(find "$verification" -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$app"
+          codesign --verify --deep --strict "$app"
+          codesign -dv --verbose=4 "$app" 2>&1 | grep -Fx 'Signature=adhoc'
+          test -f "$app/Contents/Resources/fork-update.json"
+          test -f "$app/Contents/Resources/fork-install.sh"
 
       - name: Collect release assets
         shell: bash

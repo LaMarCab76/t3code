@@ -276,7 +276,14 @@ export interface DesktopRuntimeInfo {
   runningUnderArm64Translation: boolean;
 }
 
+export interface DesktopUpdateSource {
+  readonly kind: "fork";
+  readonly repository: string;
+  readonly url: string;
+}
+
 export interface DesktopUpdateState {
+  source?: DesktopUpdateSource;
   enabled: boolean;
   status: DesktopUpdateStatus;
   channel: DesktopUpdateChannel;
@@ -308,6 +315,13 @@ export const DesktopUpdateReleaseNoteSchema = Schema.Struct({
 });
 
 export const DesktopUpdateStateSchema = Schema.Struct({
+  source: Schema.optional(
+    Schema.Struct({
+      kind: Schema.Literal("fork"),
+      repository: Schema.String,
+      url: Schema.String,
+    }),
+  ),
   enabled: Schema.Boolean,
   status: DesktopUpdateStatusSchema,
   channel: DesktopUpdateChannelSchema,

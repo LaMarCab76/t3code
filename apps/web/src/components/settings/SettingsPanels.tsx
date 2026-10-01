@@ -443,7 +443,17 @@ function AboutVersionSection() {
           </Tooltip>
         }
       />
-      {hasDesktopBridge ? (
+      {hasDesktopBridge && updateState?.source?.kind === "fork" ? (
+        <SettingsRow
+          title="Update source"
+          description={`Personal Mac builds from ${updateState.source.repository}. Download and restart when you choose.`}
+          control={
+            <a href={updateState.source.url} target="_blank" rel="noreferrer">
+              Download installer
+            </a>
+          }
+        />
+      ) : hasDesktopBridge ? (
         <SettingsRow
           title="Update track"
           description="Use stable releases or nightly builds. Switch back anytime."

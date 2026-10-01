@@ -5,6 +5,22 @@ When a server is behind your web or desktop app, an update notice appears in the
 conversation and **Settings → Connections**. Update the machine named in that
 notice.
 
+## Personal Mac fork builds
+
+Mac installers from [LaMarCab76/t3code](https://github.com/LaMarCab76/t3code/releases)
+check that fork for complete preview releases. In **Settings → About**, use
+**Check for Updates**, download the offered version, then restart to install it.
+Downloads and installation start only when you choose them. The update source
+replaces the Stable/Nightly selector in these builds.
+
+Install the first build with the fork updater manually. Later updates select
+Apple Silicon or Intel for your Mac, verify the download and signed app, and
+keep a backup while replacing the installation. If the new app fails to start,
+the helper restores the previous app. Saved threads, profiles and preferences
+are retained. If the app's folder is not writable, use **Download installer**
+to update it manually. Older fork releases without an update manifest are not
+offered. These personal builds are ad hoc signed, without Apple notarization.
+
 ## Before you update
 
 Server updates restart the connection and can interrupt active agents and

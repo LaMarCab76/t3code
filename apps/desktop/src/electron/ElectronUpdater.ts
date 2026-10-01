@@ -4,6 +4,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 
+import type { DesktopUpdateState } from "@t3tools/contracts";
 import { autoUpdater } from "electron-updater";
 
 type AutoUpdater = typeof autoUpdater;
@@ -44,7 +45,7 @@ export class ElectronUpdaterQuitAndInstallError extends Schema.TaggedError<Elect
   },
 ) {
   override get message(): string {
-    return `Electron updater failed to quit and install the update on channel ${this.channel ?? "default"} (silent: ${this.isSilent}, force run after: ${this.isForceRunAfter}).`;
+    return `Electron updater failed to quit and install the update on channel ${this.channel ?? "default"} (silent: ${this.isSilent}, force run after: ${this.isForceRunAfter}).${this.channel === null && this.cause instanceof Error ? ` ${this.cause.message}` : ""}`;
   }
 }
 
@@ -58,6 +59,9 @@ export type ElectronUpdaterError = typeof ElectronUpdaterError.Type;
 export class ElectronUpdater extends Context.Service<
   ElectronUpdater,
   {
+    readonly source?: DesktopUpdateState["source"];
+    readonly acknowledgeStartup?: Effect.Effect<void>;
+    readonly startupNotice?: Effect.Effect<string | null>;
     readonly setFeedURL: (options: ElectronUpdaterFeedUrl) => Effect.Effect<void>;
     readonly setAutoDownload: (value: boolean) => Effect.Effect<void>;
     readonly setAutoInstallOnAppQuit: (value: boolean) => Effect.Effect<void>;

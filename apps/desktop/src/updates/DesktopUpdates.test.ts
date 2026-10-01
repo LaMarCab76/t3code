@@ -879,3 +879,30 @@ describe("DesktopUpdates", () => {
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
 });
+
+it.effect(
+  "enables the fork feed without app-update.yml and keeps source metadata while checking",
+  () => {
+    const source = {
+      kind: "fork" as const,
+      repository: "LaMarCab76/t3code",
+      url: "https://github.com/LaMarCab76/t3code/releases",
+    };
+    const harness = makeHarness({ source, env: { T3CODE_DESKTOP_MOCK_UPDATES: "false" } });
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+        const state = yield* updates.getState;
+        assert.equal(state.enabled, true);
+        assert.deepEqual(state.source, source);
+        yield* updates.setChannel("nightly");
+        assert.equal((yield* updates.getState).channel, state.channel);
+        yield* updates.check("manual");
+        assert.deepEqual((yield* updates.getState).source, source);
+        assert.equal(harness.downloadCount(), 0);
+        assert.equal(harness.quitAndInstalls(), 0);
+      }),
+    ).pipe(Effect.provide(harness.layer));
+  },
+);

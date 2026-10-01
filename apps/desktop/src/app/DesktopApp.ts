@@ -7,6 +7,7 @@ import * as Schema from "effect/Schema";
 
 import * as NetService from "@t3tools/shared/Net";
 import * as Crypto from "effect/Crypto";
+import * as ElectronUpdater from "../electron/ElectronUpdater.ts";
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronDialog from "../electron/ElectronDialog.ts";
 import * as ElectronProtocol from "../electron/ElectronProtocol.ts";
@@ -328,6 +329,8 @@ const startup = Effect.gen(function* () {
   yield* DesktopRemoteUpdates.listen;
   yield* linuxUrlHandler.register;
   yield* bootstrap.pipe(Effect.catchCause((cause) => fatalStartupCause("bootstrap", cause)));
+  const updater = yield* ElectronUpdater.ElectronUpdater;
+  if (updater.acknowledgeStartup) yield* updater.acknowledgeStartup;
 }).pipe(Effect.withSpan("desktop.startup"));
 
 const scopedProgram = Effect.scoped(

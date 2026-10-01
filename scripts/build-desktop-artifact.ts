@@ -2668,6 +2668,15 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       ...(platform === "win" && wslRuntimeBundled ? WSL_RUNTIME_EXTRA_RESOURCES : []),
     ],
   };
+  const forkUpdates =
+    platform === "mac" &&
+    (yield* Config.Boolean("T3CODE_FORK_UPDATES").pipe(Config.withDefault(false)));
+  if (forkUpdates) {
+    (buildConfig.extraResources as Array<unknown>).push(
+      { from: "apps/desktop/resources/fork-update.json", to: "fork-update.json" },
+      { from: "apps/desktop/resources/fork-install.sh", to: "fork-install.sh" },
+    );
+  }
   const updateChannel = resolveDesktopUpdateChannel(version);
   if (!isDesktopPreviewVersion(version)) {
     const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);
@@ -2700,7 +2709,22 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
           schemes: ["t3code", "t3code-dev"],
         },
       ],
-      ...(signed ? { sign: path.join(repoRoot, "scripts/sign-macos.ts") } : {}),
+      ...(signed
+        ? { sign: path.join(repoRoot, "scripts/sign-macos.ts") }
+        : forkUpdates
+          ? {
+              identity: "-",
+              hardenedRuntime: false,
+              entitlements: path.join(
+                repoRoot,
+                "apps/desktop/resources/entitlements.fork.mac.plist",
+              ),
+              entitlementsInherit: path.join(
+                repoRoot,
+                "apps/desktop/resources/entitlements.fork.mac.plist",
+              ),
+            }
+          : {}),
       ...(macPasskeySigning
         ? {
             entitlements: macPasskeySigning.entitlementsPath,
