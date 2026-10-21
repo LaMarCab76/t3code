@@ -13,8 +13,15 @@ import { FontSizeSliderRow } from "../components/FontSizeSliderRow";
 import { SettingsSwitchRow } from "../../components/SettingsSwitchRow";
 
 export function TextAppearanceSection() {
-  const { isReady, appearance, setBaseFontSize, mathRenderingEnabled, setMathRenderingEnabled } =
-    useAppearancePreferences();
+  const {
+    isReady,
+    appearance,
+    setBaseFontSize,
+    mathRenderingEnabled,
+    setMathRenderingEnabled,
+    assistantInsightsCollapsed,
+    setAssistantInsightsCollapsed,
+  } = useAppearancePreferences();
 
   return (
     <SettingsSection title="Text">
@@ -37,6 +44,14 @@ export function TextAppearanceSection() {
         label="Render math"
         value={mathRenderingEnabled}
         onValueChange={setMathRenderingEnabled}
+      />
+      <SettingsSwitchRow
+        disabled={!isReady}
+        icon="star"
+        label="Collapse insights"
+        subtitle="Start Claude's ★ Insight asides collapsed in replies"
+        value={assistantInsightsCollapsed}
+        onValueChange={setAssistantInsightsCollapsed}
       />
     </SettingsSection>
   );

@@ -376,6 +376,32 @@ export function AppearanceSettingsPanel() {
             />
           }
         />
+        <SettingsRow
+          {...searchableSetting("collapse-insights")}
+          description="Start Claude's ★ Insight asides collapsed in messages. Open any one to read it."
+          resetAction={
+            settings.assistantInsightsCollapsed !==
+            DEFAULT_UNIFIED_SETTINGS.assistantInsightsCollapsed ? (
+              <SettingResetButton
+                label="collapse insights"
+                onClick={() =>
+                  updateSettings({
+                    assistantInsightsCollapsed: DEFAULT_UNIFIED_SETTINGS.assistantInsightsCollapsed,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.assistantInsightsCollapsed}
+              onCheckedChange={(checked) =>
+                updateSettings({ assistantInsightsCollapsed: Boolean(checked) })
+              }
+              aria-label="Collapse insights"
+            />
+          }
+        />
       </SettingsSection>
 
       <SettingsSection id="motion" title="Motion">

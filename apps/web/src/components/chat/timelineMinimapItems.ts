@@ -1,3 +1,4 @@
+import { splitAssistantInsights } from "@t3tools/shared/assistantInsights";
 import type { Nodes } from "mdast";
 import remarkGfm from "remark-gfm";
 import remarkParse from "remark-parse";
@@ -85,6 +86,15 @@ function markdownNodeText(node: Nodes): string {
   return node.children.map(markdownNodeText).join(separator);
 }
 
+/** The preview summarizes the answer, so insight asides are left out unless nothing else remains. */
+function withoutInsights(text: string): string {
+  const segments = splitAssistantInsights(text);
+  const answer = segments.filter((segment) => segment.kind === "markdown");
+  return (answer.some((segment) => segment.markdown.trim()) ? answer : segments)
+    .map((segment) => segment.markdown)
+    .join("\n\n");
+}
+
 function compactMinimapPreview(text: string | null | undefined) {
   const compact = text?.replace(/\s+/g, " ").trim() ?? "";
   return compact.length > 0 ? compact : null;
@@ -102,7 +112,9 @@ export function resolveTimelineMinimapPreview(
         assistantText: compactMinimapPreview(
           item.assistantText === null
             ? null
-            : markdownNodeText(markdownPreviewParser.parse(item.assistantText.slice(0, 1_500))),
+            : markdownNodeText(
+                markdownPreviewParser.parse(withoutInsights(item.assistantText).slice(0, 1_500)),
+              ),
         ),
       };
 }

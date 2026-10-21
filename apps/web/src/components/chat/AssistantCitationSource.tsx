@@ -83,6 +83,23 @@ export function observeAssistantCitationCommentSource({
   return dispose;
 }
 
+/**
+ * Citation text skips hidden elements, so a quote inside a collapsed insight cannot
+ * resolve until that block opens. The block listens for `beforematch`, like find.
+ */
+function revealFoldedQuote(root: HTMLElement, quote: string): boolean {
+  const compact = (text: string) => text.replace(/\s+/g, "");
+  const needle = compact(quote);
+  if (needle.length === 0) return false;
+  let revealed = false;
+  for (const fold of root.querySelectorAll("[hidden]")) {
+    if (!compact(fold.textContent ?? "").includes(needle)) continue;
+    fold.dispatchEvent(new Event("beforematch"));
+    revealed = true;
+  }
+  return revealed;
+}
+
 export interface AssistantCitationRequest {
   citation: AssistantCitation;
   key: string;
@@ -164,6 +181,8 @@ export function observeAssistantCitationSource({
     const index = state.indexByKey(itemKey);
     if (index === undefined || !(state.sizeAtIndex(index) > 0)) return;
     const range = resolveAssistantCitationRange(root, request.citation);
+    // Opening resizes the row, and the resize observer runs this again.
+    if (!range && revealFoldedQuote(root, request.citation.text)) return;
     const rect = (range ?? root).getBoundingClientRect();
     if (rect.height <= 0 || scrollNode.clientHeight <= 0) {
       clear();

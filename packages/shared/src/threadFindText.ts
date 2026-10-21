@@ -25,11 +25,11 @@ import { parseComposerContextHref } from "./composerContextReferences.ts";
 import { assistantCitationLabel, parseAssistantCitationHref } from "./assistantCitations.ts";
 import type { OrchestrationV2ConversationMessage } from "@t3tools/contracts";
 import { proposedPlanTitle, stripDisplayedPlanMarkdown } from "./proposedPlanText.ts";
+import { splitAssistantInsights } from "./assistantInsights.ts";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import remarkRehype from "remark-rehype";
 import {
-  shouldPreserveAssistantLineBreaks,
   CHAT_MARKDOWN_REHYPE_PLUGINS,
   CHAT_MARKDOWN_REMARK_PLUGINS,
   CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS,
@@ -220,11 +220,9 @@ export function searchableMessageSegments(
     return markdownThreadFindText(text, true, cwd, skills);
   }
   if (message.role !== "assistant") return null;
-  return markdownThreadFindText(
-    message.text || (message.streaming ? "" : "(empty response)"),
-    false,
-    cwd,
-    skills,
-    shouldPreserveAssistantLineBreaks(message.text),
+  const text = message.text || (message.streaming ? "" : "(empty response)");
+  // Insight bodies render with their line breaks kept, and the block header is not indexed.
+  return splitAssistantInsights(text, { streaming: message.streaming }).flatMap((segment) =>
+    markdownThreadFindText(segment.markdown, false, cwd, skills, segment.kind === "insight"),
   );
 }

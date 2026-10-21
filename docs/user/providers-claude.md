@@ -84,6 +84,15 @@ To show Claude task lists in the web and desktop apps, add
 **Environment** section in **Settings > Providers**. Unfinished tasks stay visible
 between turns in the same Claude session.
 
+## Insights
+
+Claude's Explanatory and Learning output styles add `★ Insight` asides to
+replies. T3 Code shows each one as a separate block that starts collapsed, with
+its first point as a preview. Turn off **Collapse insights** in
+**Settings > Appearance** to start them open. The mobile app has the same
+setting under **Settings > Appearance > Text**. An aside that Claude never
+closes shows as plain text.
+
 ## OpenRouter
 
 Create a Claude instance with its own config directory, such as

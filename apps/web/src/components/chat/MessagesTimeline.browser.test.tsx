@@ -164,6 +164,43 @@ describe("MessagesTimeline messages", () => {
   });
 });
 
+describe("MessagesTimeline Claude insights", () => {
+  const response = [
+    "Intro",
+    "",
+    "`★ Insight ─────────────────────────────────────`",
+    "- **First** point",
+    "- Second point",
+    "`─────────────────────────────────────────────────`",
+    "Done: the answer continues.",
+  ].join("\n");
+
+  it("folds an insight behind its first point and keeps the answer after it outside", async () => {
+    await using screen = await renderTimeline([message(response, { role: "assistant" })]);
+    const trigger = screen.button(/^Insight/);
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    expect(trigger.textContent).toContain("First point");
+    expect(screen.text()).not.toContain("★ Insight");
+    const answer = [...screen.container.querySelectorAll("p")].find(
+      (paragraph) => paragraph.textContent === "Done: the answer continues.",
+    );
+    expect(answer?.closest("[data-markdown-insight], li")).toBeNull();
+
+    await click(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+    expect(trigger.textContent).not.toContain("First point");
+  });
+
+  it("opens a folded insight when find reveals a match inside it", async () => {
+    await using screen = await renderTimeline([message(response, { role: "assistant" })]);
+    const panel = screen.container.querySelector("[data-markdown-insight] [hidden]");
+    expect(panel?.textContent).toContain("Second point");
+
+    await act(async () => panel?.dispatchEvent(new Event("beforematch")));
+    expect(screen.button(/^Insight/).getAttribute("aria-expanded")).toBe("true");
+  });
+});
+
 describe("compact reasoning math", () => {
   it("keeps formulas while flattening compact reasoning previews", () => {
     const tree = parseMarkdownWithMath("## Reasoning\n\nUse **norm** $|x|$ and \\[x^2\\]");

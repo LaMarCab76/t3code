@@ -1,4 +1,4 @@
-import { shouldPreserveAssistantLineBreaks } from "@t3tools/shared/markdownPipeline";
+import { splitAssistantInsights } from "@t3tools/shared/assistantInsights";
 import { type RunId } from "@t3tools/contracts";
 import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thread-workflows";
 import { memo, use, useState } from "react";
@@ -8,6 +8,7 @@ import { GitForkIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import { ProposedPlanCard } from "./ProposedPlanCard";
 import { HtmlRenderFrame } from "./HtmlRenderFrame";
+import { MarkdownInsight } from "./MarkdownInsight";
 import { McpAppFrame } from "./McpAppFrame";
 import { ChangedFilesCard } from "./ChangedFilesTree";
 import { useFileContextMenuHandler } from "../../fileContextMenu";
@@ -25,7 +26,9 @@ import { MESSAGE_HEADING_LEVEL, MessageAuthorHeading } from "./TimelineRowParts"
 
 export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "message" }> }) {
   const ctx = use(TimelineRowCtx);
-  const messageText = row.message.text || (row.message.streaming ? "" : "(empty response)");
+  const streaming = Boolean(row.message.streaming);
+  const messageText = row.message.text || (streaming ? "" : "(empty response)");
+  const segments = splitAssistantInsights(messageText, { streaming });
 
   return (
     <>
@@ -39,18 +42,32 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
             request={ctx.citationRequest}
             listRef={ctx.listRef}
           >
-            <ChatMarkdown
-              text={messageText}
-              cwd={ctx.markdownCwd}
-              threadRef={ctx.threadRef ?? undefined}
-              isStreaming={Boolean(row.message.streaming)}
-              lineBreaks={shouldPreserveAssistantLineBreaks(messageText)}
-              skills={ctx.skills}
-              headingLevelOffset={MESSAGE_HEADING_LEVEL}
-              onUseArtifactTemplate={ctx.onUseArtifactTemplate}
-              onRunShellCommand={ctx.onRunShellCommand}
-              onImageExpand={ctx.onImageExpand}
-            />
+            {segments.map((segment, index) => {
+              const key = `${segment.kind}:${segment.sourceOffset}`;
+              const markdown = (
+                <ChatMarkdown
+                  key={key}
+                  text={segment.markdown}
+                  cwd={ctx.markdownCwd}
+                  threadRef={ctx.threadRef ?? undefined}
+                  // Only the trailing segment can still change.
+                  isStreaming={streaming && index === segments.length - 1}
+                  lineBreaks={segment.kind === "insight"}
+                  skills={ctx.skills}
+                  headingLevelOffset={MESSAGE_HEADING_LEVEL}
+                  onUseArtifactTemplate={ctx.onUseArtifactTemplate}
+                  onRunShellCommand={ctx.onRunShellCommand}
+                  onImageExpand={ctx.onImageExpand}
+                />
+              );
+              return segment.kind === "insight" ? (
+                <MarkdownInsight key={key} markdown={segment.markdown}>
+                  {markdown}
+                </MarkdownInsight>
+              ) : (
+                markdown
+              );
+            })}
           </AssistantCitationSource>
         </div>
         <AssistantChangedFilesSection

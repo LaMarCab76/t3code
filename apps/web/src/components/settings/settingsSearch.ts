@@ -245,6 +245,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["latex tex katex equations formulas markdown"],
   },
   {
+    id: "collapse-insights",
+    title: "Collapse insights",
+    to: "/settings/appearance",
+    searchTerms: ["claude explanatory learning output style star aside fold expand messages"],
+  },
+  {
     id: "panel-animations",
     title: "Panel animations",
     to: "/settings/appearance",

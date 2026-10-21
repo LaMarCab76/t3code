@@ -77,6 +77,14 @@ it("keeps fence paths literal and indexes file-chip labels in user messages", ()
   ).toEqual(["file.ts · L42"]);
 });
 
+it("indexes insight bodies line by line without their marker lines", () => {
+  expect(
+    assistantSegments(
+      "Before\n\n`★ Insight ─────`\nFirst line\nSecond line\n`─────`\nAfter without a gap",
+    ),
+  ).toEqual(["Before", "First line", " Second line", "After without a gap"]);
+});
+
 it("indexes nested disclosure summaries and bodies in rendered order", () => {
   expect(
     assistantSegments(

@@ -74,6 +74,7 @@ import {
   renderCodexInlineDirectivesAsMarkdown,
   splitCodexArtifactTemplateMarkdown,
 } from "@t3tools/shared/codexMarkdownDirectives";
+import { splitAssistantInsights } from "@t3tools/shared/assistantInsights";
 import { CHAT_LIST_ANCHOR_OFFSET, resolveChatListAnchoredEndSpace } from "@t3tools/shared/chatList";
 import { imageMimeType } from "@t3tools/shared/image";
 import { videoMimeType } from "@t3tools/shared/video";
@@ -85,6 +86,7 @@ import { useDeviceType } from "../../native/native-layout-metrics";
 import { isDuoDevice } from "../../lib/device-type";
 import {
   createContext,
+  Fragment,
   memo,
   useCallback,
   useContext,
@@ -213,6 +215,7 @@ import {
   ThreadWorkLog,
   WORK_GROUP_TOGGLE_HEIGHT,
 } from "./thread-work-log";
+import { ThreadInsightBlock } from "./ThreadInsightBlock";
 import { appendPendingThreadMessages, type PendingThreadFeedEntry } from "./pending-thread-feed";
 import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
 import { resolveThreadFeedFixedItemSize } from "./thread-feed-item-size";
@@ -821,6 +824,7 @@ function ArtifactTemplateCard(props: {
 
 const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
   readonly markdown: string;
+  readonly streaming?: boolean;
   readonly environmentId: EnvironmentId;
   readonly markdownStyles: MarkdownStyleSet;
   readonly linkHandlers: MarkdownLinkHandlers;
@@ -829,32 +833,57 @@ const AssistantMarkdownContent = memo(function AssistantMarkdownContent(props: {
   readonly skills?: ReadonlyArray<SelectableMarkdownSkill> | undefined;
 }) {
   const liveMarkdown = useLiveThreadLinkLabels(props.markdown, props.environmentId);
-  const segments = useMemo(() => splitCodexArtifactTemplateMarkdown(liveMarkdown), [liveMarkdown]);
+  const segments = useMemo(
+    () =>
+      splitAssistantInsights(liveMarkdown, { streaming: props.streaming === true }).map(
+        (segment) => ({ ...segment, parts: splitCodexArtifactTemplateMarkdown(segment.markdown) }),
+      ),
+    [liveMarkdown, props.streaming],
+  );
 
-  return segments.map((segment) => {
-    if (segment.kind === "artifact-template") {
+  const renderParts = (
+    parts: (typeof segments)[number]["parts"],
+    sourceOffset: number,
+    preserveSoftBreaks: boolean,
+  ) =>
+    parts.map((segment) => {
+      const offset = sourceOffset + segment.sourceOffset;
+      if (segment.kind === "artifact-template") {
+        return (
+          <ArtifactTemplateCard
+            key={`artifact-template:${offset}`}
+            template={segment.template}
+            onUse={props.onUseArtifactTemplate}
+          />
+        );
+      }
+      if (segment.markdown.trim().length === 0) return null;
+
+      const markdown = renderCodexInlineDirectivesAsMarkdown(segment.markdown);
       return (
-        <ArtifactTemplateCard
-          key={`artifact-template:${segment.sourceOffset}`}
-          template={segment.template}
-          onUse={props.onUseArtifactTemplate}
+        <SelectableMarkdownText
+          key={`markdown:${offset}`}
+          markdown={markdown}
+          skills={props.skills}
+          textStyle={props.markdownStyles.nativeTextStyle}
+          preserveSoftBreaks={preserveSoftBreaks}
+          {...props.linkHandlers}
+          renderImage={props.renderImage}
         />
       );
-    }
-    if (segment.markdown.trim().length === 0) return null;
+    });
 
-    const markdown = renderCodexInlineDirectivesAsMarkdown(segment.markdown);
-    return (
-      <SelectableMarkdownText
-        key={`markdown:${segment.sourceOffset}`}
-        markdown={markdown}
-        skills={props.skills}
-        textStyle={props.markdownStyles.nativeTextStyle}
-        {...props.linkHandlers}
-        renderImage={props.renderImage}
-      />
-    );
-  });
+  return segments.map((segment) =>
+    segment.kind === "insight" ? (
+      <ThreadInsightBlock key={`insight:${segment.sourceOffset}`} markdown={segment.markdown}>
+        {renderParts(segment.parts, segment.sourceOffset, true)}
+      </ThreadInsightBlock>
+    ) : (
+      <Fragment key={`markdown:${segment.sourceOffset}`}>
+        {renderParts(segment.parts, segment.sourceOffset, false)}
+      </Fragment>
+    ),
+  );
 });
 
 function useMarkdownStyles(): MarkdownStyleSets {
@@ -1415,6 +1444,7 @@ function renderFeedEntry(
           <MarkdownImageAvailableWidthContext value={props.markdownContentWidth}>
             <AssistantMarkdownContent
               markdown={renderedText}
+              streaming={message.streaming}
               environmentId={props.environmentId}
               markdownStyles={styles}
               linkHandlers={props.markdownLinkHandlers}
