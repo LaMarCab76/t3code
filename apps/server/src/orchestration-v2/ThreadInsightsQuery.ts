@@ -78,7 +78,13 @@ const make = Effect.gen(function* () {
           unavailableThreadIds.push(target.threadId);
           continue;
         }
-        const ownTurns = yield* readTurns(target.threadId);
+        const ownTurns = yield* readTurns(target.threadId).pipe(
+          Effect.catch((cause) => {
+            if (target.threadId === input.threadId) return Effect.fail(cause);
+            unavailableThreadIds.push(target.threadId);
+            return Effect.succeed([]);
+          }),
+        );
         const plan = yield* store.getLatestTodoList(target.threadId);
         const latestRun = snapshot.runs.reduce<(typeof snapshot.runs)[number] | null>(
           (held, run) => (held === null || run.ordinal > held.ordinal ? run : held),

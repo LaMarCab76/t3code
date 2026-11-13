@@ -21,6 +21,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as UsageService from "../usage/UsageService.ts";
@@ -354,6 +355,35 @@ it.layer(layer)("ThreadInsightsQuery", (it) => {
       expect(result.rows[0]?.usage.inputTokens).toBe(50);
       expect(result.rows[0]?.usage.status).toBe("partial");
       expect(result.unavailableThreadIds).toEqual([child]);
+    }),
+  );
+  it.effect("retains valid family rows when a descendant has a malformed provider turn", () =>
+    Effect.gen(function* () {
+      const root = yield* thread("failure-root");
+      const broken = yield* thread("failure-child", root, "subagent");
+      const healthy = yield* thread("healthy-child", root, "subagent");
+      yield* agent(root, broken);
+      yield* agent(root, healthy);
+      yield* plan(yield* run(root, 1), "root-task", true);
+      yield* plan(yield* run(broken, 1), "child-task", false);
+      yield* turn(root, "valid-root-turn", root, usage(100));
+      yield* turn(broken, "malformed-turn", broken, usage(50));
+      yield* turn(healthy, "valid-child-turn", healthy, usage(25));
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE orchestration_v2_projection_provider_turns
+        SET payload_json = '{}' WHERE provider_turn_id = 'malformed-turn'`;
+      const query = yield* ThreadInsightsQuery.ThreadInsightsQuery;
+      const result = yield* query.read({ threadId: root });
+      expect(result.rows.find((row) => row.threadId === root)?.usage.inputTokens).toBe(100);
+      expect(result.rows.find((row) => row.threadId === root)?.steps?.[0]?.text).toBe("root-task");
+      expect(result.rows.find((row) => row.threadId === healthy)?.usage.inputTokens).toBe(25);
+      expect(result.rows.find((row) => row.threadId === broken)?.usage.status).toBe("unavailable");
+      expect(result.rows.find((row) => row.threadId === broken)?.steps?.[0]?.text).toBe(
+        "child-task",
+      );
+      expect(result.unavailableThreadIds).toEqual([broken]);
+      const error = yield* query.read({ threadId: broken }).pipe(Effect.flip);
+      expect(error._tag).toBe("OrchestrationV2GetThreadProjectionError");
     }),
   );
   it.effect("bounds wide families and reports omitted children", () =>
