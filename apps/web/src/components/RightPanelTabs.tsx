@@ -911,7 +911,15 @@ function RightPanelTab(
       ? scopeThreadRef(props.environmentId, surface.threadId)
       : null,
   );
-  const title = sideChatShell?.title ?? props.title;
+  const insightsShell = useQuietThreadShell(
+    surface.kind === "thread-insights"
+      ? scopeThreadRef(surface.environmentId, surface.threadId)
+      : null,
+  );
+  const title =
+    surface.kind === "thread-insights"
+      ? `Tasks & usage: ${insightsShell?.title ?? surface.threadId}`
+      : (sideChatShell?.title ?? props.title);
   const sideChatState = sideChatTabState(sideChatShell);
   const content = (
     <>

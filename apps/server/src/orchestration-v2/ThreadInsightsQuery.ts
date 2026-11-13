@@ -4,6 +4,7 @@ import {
   type OrchestrationV2ThreadInsightsRow,
   type OrchestrationV2ProviderTurn,
   type ThreadId,
+  type ProviderThreadId,
 } from "@t3tools/contracts";
 import { combinedStatus, sumOf } from "@t3tools/shared/turnTokenUsage";
 import * as Context from "effect/Context";
@@ -48,15 +49,26 @@ const make = Effect.gen(function* () {
       const turns = new Map<string, { turn: OrchestrationV2ProviderTurn; owner: ThreadId }>();
       const childOwners = new Map<string, ThreadId>();
       let truncated = false;
+      let remainingTurns = MAX_TURNS;
+      const readTurns = Effect.fn("ThreadInsightsQuery.readTurns")(function* (
+        threadId: ThreadId,
+        providerThreadIds?: readonly ProviderThreadId[],
+      ) {
+        const result = yield* store.getThreadProviderTurns(threadId, {
+          limit: remainingTurns,
+          ...(providerThreadIds === undefined ? {} : { providerThreadIds }),
+        });
+        remainingTurns -= result.providerTurns.length;
+        truncated ||= result.truncated;
+        return result.providerTurns;
+      });
       for (let index = 0; index < queue.length; index++) {
         const target = queue[index]!;
         const snapshot = yield* store
-          .getThreadRecords(target.threadId, [
-            "runs",
-            "subagents",
-            "providerTurns",
-            "providerThreads",
-          ])
+          .getThreadRecords(target.threadId, ["runs", "subagents", "providerThreads"], {
+            runStatuses: [],
+            includeLatestRun: true,
+          })
           .pipe(
             Effect.catch((cause) =>
               target.threadId === input.threadId ? Effect.fail(cause) : Effect.succeed(null),
@@ -66,6 +78,7 @@ const make = Effect.gen(function* () {
           unavailableThreadIds.push(target.threadId);
           continue;
         }
+        const ownTurns = yield* readTurns(target.threadId);
         const plan = yield* store.getLatestTodoList(target.threadId);
         const latestRun = snapshot.runs.reduce<(typeof snapshot.runs)[number] | null>(
           (held, run) => (held === null || run.ordinal > held.ordinal ? run : held),
@@ -134,26 +147,21 @@ const make = Effect.gen(function* () {
           const parent = yield* store
             .getThreadRecords(parentId, ["subagents"])
             .pipe(Effect.orElseSucceed(() => null));
+          if (parent === null) unavailableThreadIds.push(target.threadId);
           const nativeOwner = parent?.subagents.find(
             (agent) =>
               agent.childThreadId === target.threadId && agent.origin === "provider_native",
           );
           if (nativeOwner?.providerThreadId != null) {
-            const recorded = yield* store
-              .getThreadRecords(parentId, ["providerTurns"], {
-                providerTurnThreadIds: [nativeOwner.providerThreadId],
-              })
-              .pipe(Effect.orElseSucceed(() => null));
+            const recorded = yield* readTurns(parentId, [nativeOwner.providerThreadId]).pipe(
+              Effect.orElseSucceed(() => null),
+            );
             if (recorded === null) unavailableThreadIds.push(target.threadId);
-            else inheritedNativeTurns = recorded.providerTurns;
+            else inheritedNativeTurns = recorded;
           }
         }
-        for (const turn of [...snapshot.providerTurns, ...inheritedNativeTurns]) {
+        for (const turn of [...ownTurns, ...inheritedNativeTurns]) {
           const held = turns.get(turn.id);
-          if (held === undefined && turns.size >= MAX_TURNS) {
-            truncated = true;
-            continue;
-          }
           // Copies are routed between parent and child projections. Prefer the final counters.
           const rank = (value: OrchestrationV2ProviderTurn) =>
             value.turnTokenUsage?.usageStatus === "complete"
@@ -196,7 +204,7 @@ const make = Effect.gen(function* () {
           speed: "standard",
         });
       }
-      const costs = yield* pricing.priceRecords(priced);
+      const costs = yield* pricing.priceTurnRecords(priced);
       const byTurn = new Map(priceIds.map((id, index) => [id, costs[index] ?? null]));
       const resultRows = rows.map((row) => {
         const rowTurns = owned.get(row.threadId) ?? [];
@@ -204,8 +212,12 @@ const make = Effect.gen(function* () {
         const measured = usages.filter((usage) => usage !== undefined);
         const costValues = rowTurns.map((turn) => byTurn.get(turn.id) ?? null);
         const knownCosts = costValues.filter((cost) => cost !== null);
+        const status = combinedStatus(usages);
         const usage = {
-          status: combinedStatus(usages),
+          status:
+            unavailableThreadIds.includes(row.threadId) && status === "complete"
+              ? ("partial" as const)
+              : status,
           turns: rowTurns.length,
           measuredTurns: measured.filter((value) => value.usageStatus !== "unavailable").length,
           costUsd: knownCosts.length === 0 ? null : knownCosts.reduce((a, b) => a + b, 0),

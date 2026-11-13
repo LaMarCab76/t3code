@@ -35,7 +35,7 @@ const layer = ThreadInsightsQuery.layer.pipe(
   Layer.provideMerge(layerStore),
   Layer.provide(
     Layer.mock(UsageService.UsageService)({
-      priceRecords: (records) => Effect.succeed(records.map(() => 0.1)),
+      priceTurnRecords: (records) => Effect.succeed(records.map(() => 0.1)),
     }),
   ),
 );
@@ -197,10 +197,11 @@ const turn = Effect.fn("test.insights.turn")(function* (
   });
 });
 const plan = Effect.fn("test.insights.plan")(function* (
-  owner: OrchestrationV2Run,
+  owner: { readonly threadId: ThreadId; readonly id: RunId | null },
   name: string,
   completed: boolean,
   status: "active" | "superseded" = "active",
+  ordinal = name === "z-first" ? 1 : 2,
 ) {
   const planId = PlanId.make(name);
   const nodeId = NodeId.make(`${name}:node`);
@@ -239,7 +240,7 @@ const plan = Effect.fn("test.insights.plan")(function* (
       startedAt: now,
       completedAt: now,
       parentItemId: null,
-      ordinal: name === "z-first" ? 1 : 2,
+      ordinal,
       title: name,
       updatedAt: now,
       type: "todo_list",
@@ -302,6 +303,57 @@ it.layer(layer)("ThreadInsightsQuery", (it) => {
       });
       expect(result.rows[0]?.steps?.[0]?.text).toBe("a-second");
       expect(result.rows[0]?.steps?.[0]?.status).toBe("completed");
+    }),
+  );
+  it.effect("includes the latest runless native-child list in direct and family reads", () =>
+    Effect.gen(function* () {
+      const root = yield* thread("native-plans-root");
+      const child = yield* thread("native-plans-child", root, "subagent");
+      yield* agent(root, child, "provider_native");
+      const owner = { threadId: child, id: null };
+      yield* plan(owner, "z-first", false, "active", 1);
+      yield* plan(owner, "a-latest", true, "active", 2);
+      yield* plan(owner, "superseded-native", false, "superseded", 3);
+      const query = yield* ThreadInsightsQuery.ThreadInsightsQuery;
+      for (const threadId of [root, child]) {
+        const result = yield* query.read({ threadId });
+        expect(result.rows.find((row) => row.threadId === child)?.steps).toEqual([
+          { id: "step", text: "a-latest", status: "completed" },
+        ]);
+      }
+    }),
+  );
+  it.effect("bounds provider-turn reads and exposes omitted rows before decoding", () =>
+    Effect.gen(function* () {
+      const root = yield* thread("bounded-turns");
+      const child = yield* thread("bounded-child", root, "subagent");
+      yield* turn(root, "first", root, usage(10));
+      yield* turn(root, "second", child, usage(20));
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const bounded = yield* store.getThreadProviderTurns(root, { limit: 1 });
+      expect(bounded.providerTurns.map((item) => item.id)).toEqual(["second"]);
+      expect(bounded.truncated).toBe(true);
+      const filtered = yield* store.getThreadProviderTurns(root, {
+        limit: 1,
+        providerThreadIds: [ProviderThreadId.make(`${root}:provider`)],
+      });
+      expect(filtered.providerTurns.map((item) => item.id)).toEqual(["first"]);
+      expect(filtered.truncated).toBe(false);
+      const exhausted = yield* store.getThreadProviderTurns(root, { limit: 0 });
+      expect(exhausted.providerTurns).toEqual([]);
+      expect(exhausted.truncated).toBe(true);
+    }),
+  );
+  it.effect("preserves native-child counters but marks a failed parent lookup partial", () =>
+    Effect.gen(function* () {
+      const child = yield* thread("orphan-native", ThreadId.make("missing-parent"), "subagent");
+      yield* turn(child, "local-native-turn", child, usage(50));
+      const result = yield* (yield* ThreadInsightsQuery.ThreadInsightsQuery).read({
+        threadId: child,
+      });
+      expect(result.rows[0]?.usage.inputTokens).toBe(50);
+      expect(result.rows[0]?.usage.status).toBe("partial");
+      expect(result.unavailableThreadIds).toEqual([child]);
     }),
   );
   it.effect("bounds wide families and reports omitted children", () =>

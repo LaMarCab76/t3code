@@ -70,7 +70,8 @@ large families are marked as partial. Input includes cache tokens, and output in
 Extra provider usage that may overlap child turns is shown without adding it again.
 
 Cost is an estimate at standard API rates for turns with one reported model. Missing cache
-breakdowns are treated as uncached input; mixed or unknown models stay unpriced. This estimate
+breakdowns are treated as uncached input. Mixed or unknown models and turns whose aggregate
+cannot establish the context pricing tier stay unpriced. This estimate
 can differ from Usage's transcript-based history and does not represent a subscription charge.
 Subscription limits are account-wide across threads and devices. Providers do not report how
 much of a subscription's quota an individual thread consumed.

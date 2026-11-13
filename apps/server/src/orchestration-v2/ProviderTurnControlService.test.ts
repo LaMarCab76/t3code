@@ -233,6 +233,7 @@ it.effect(
           getTurnStartHistory: () => Effect.die("unused"),
           getRuntimeRecoveryProjection: () => Effect.die("unused getRuntimeRecoveryProjection"),
           getLatestTodoList: () => Effect.undefined,
+          getThreadProviderTurns: () => Effect.succeed({ providerTurns: [], truncated: false }),
           getPlan: () => Effect.die("unused"),
           hasUnpairedRunInterruptRequest: () => Effect.die("unused interrupt read"),
           getThreadAttachmentIds: () => Effect.die("Unused attachment lookup"),

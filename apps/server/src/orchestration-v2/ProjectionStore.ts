@@ -534,6 +534,14 @@ export interface ProjectionStoreV2Shape {
     filter?: ProjectionRecordFilter,
   ) => Effect.Effect<ProjectionRecords<K>, ProjectionStoreV2Error>;
 
+  readonly getThreadProviderTurns: (
+    threadId: ThreadId,
+    options: { readonly limit: number; readonly providerThreadIds?: readonly ProviderThreadId[] },
+  ) => Effect.Effect<
+    { readonly providerTurns: readonly OrchestrationV2ProviderTurn[]; readonly truncated: boolean },
+    ProjectionStoreV2Error
+  >;
+
   readonly apply: (
     event: OrchestrationV2DomainEvent,
   ) => Effect.Effect<void, ProjectionStoreV2Error>;
@@ -5553,9 +5561,25 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
     )(
       function* (threadId) {
         const owners = yield* latestTodoOwner(threadId);
-        return owners[0] === undefined
+        if (owners[0] !== undefined)
+          return yield* getPlan(threadId, PlanId.make(owners[0].plan_id));
+        // Native children have provider turns and items but no orchestration run.
+        const runless = yield* sql<{ readonly plan_id: string }>`
+          SELECT plan.plan_id
+          FROM orchestration_v2_projection_plans AS plan
+          INNER JOIN orchestration_v2_projection_turn_items AS item
+            ON item.thread_id = plan.thread_id
+              AND json_extract(item.payload_json, '$.planId') = plan.plan_id
+          WHERE plan.thread_id = ${threadId} AND plan.run_id IS NULL
+            AND plan.kind = 'todo_list' AND plan.status <> 'superseded'
+            AND item.type = 'todo_list' AND item.run_id IS NULL
+          ORDER BY json_extract(item.payload_json, '$.startedAt') DESC,
+            item.ordinal DESC, plan.plan_id DESC
+          LIMIT 1
+        `;
+        return runless[0] === undefined
           ? undefined
-          : yield* getPlan(threadId, PlanId.make(owners[0].plan_id));
+          : yield* getPlan(threadId, PlanId.make(runless[0].plan_id));
       },
       (effect, threadId) => effect.pipe(Effect.mapError(controlReadError(threadId))),
     );
@@ -6323,6 +6347,34 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         ),
         Effect.mapError(controlReadError(threadId)),
       );
+
+    const getThreadProviderTurns: ProjectionStoreV2Shape["getThreadProviderTurns"] = Effect.fn(
+      "ProjectionStore.getThreadProviderTurns",
+    )(
+      function* (threadId, options) {
+        yield* requireThread(threadId);
+        // Limit IDs before fetching bodies so historical payloads never enter the sort.
+        const rows = yield* sql<PayloadRow>`
+          SELECT payload_json FROM orchestration_v2_projection_provider_turns
+          WHERE rowid IN (
+            SELECT rowid FROM orchestration_v2_projection_provider_turns
+            WHERE thread_id = ${threadId}
+              ${options.providerThreadIds === undefined ? sql`` : sql`AND provider_thread_id IN (SELECT value FROM json_each(${encodeIdList(options.providerThreadIds)}))`}
+            ORDER BY provider_thread_id ASC, ordinal ASC
+            LIMIT ${options.limit + 1}
+          )
+          ORDER BY provider_thread_id ASC, ordinal ASC
+        `;
+        return {
+          providerTurns: yield* decodeRows(
+            decodeProviderTurnPayload,
+            threadId,
+          )(rows.slice(0, options.limit)),
+          truncated: rows.length > options.limit,
+        };
+      },
+      (effect, threadId) => effect.pipe(Effect.mapError(controlReadError(threadId))),
+    );
 
     const getThreadSnapshot: ProjectionStoreV2Shape["getThreadSnapshot"] = (threadId) =>
       sql
@@ -9033,6 +9085,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getNextTurnItemOrdinal: readOnReader(getNextTurnItemOrdinal),
       getTurnItem: readOnReader(getTurnItem),
       getMessagesById: readOnReader(getMessagesById),
+      getThreadProviderTurns: readOnReader(getThreadProviderTurns),
       getThreadRecords: (threadId, fields, filter) =>
         getThreadRecords(threadId, fields, filter).pipe(NodeSqliteClient.readOnly),
       getRuntimeRequest: readOnReader(getRuntimeRequest),
