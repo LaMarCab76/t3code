@@ -165,6 +165,9 @@ export async function reopenClosedView(
         surface.section,
       );
       break;
+    case "issue":
+      panels.openIssue(ref, surface);
+      break;
     case "side-chat":
       panels.openSideChat(ref, surface.threadId);
       break;

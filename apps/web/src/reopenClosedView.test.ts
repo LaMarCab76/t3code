@@ -156,6 +156,47 @@ describe("reopenClosedView", () => {
     },
   );
 
+  it.each([
+    {
+      kind: "thread-insights",
+      id: "thread-insights:remote:thread-2",
+      environmentId: "remote" as ScopedThreadRef["environmentId"],
+      threadId: "thread-2" as ScopedThreadRef["threadId"],
+      section: "tasks",
+    },
+    {
+      kind: "thread-insights",
+      id: "thread-insights:remote:thread-2",
+      environmentId: "remote" as ScopedThreadRef["environmentId"],
+      threadId: "thread-2" as ScopedThreadRef["threadId"],
+      section: "usage",
+    },
+    {
+      kind: "issue",
+      id: "issue:remote:project-2:linear:linear.app:team:ENG-42",
+      environmentId: "remote",
+      projectId: "project-2",
+      tracker: "linear",
+      host: "linear.app",
+      scope: "team",
+      key: "ENG-42",
+      url: "https://linear.app/team/issue/ENG-42",
+    },
+  ] as const)("restores a closed $kind tab with its target", async (surface) => {
+    const openPreview = vi.fn();
+    expect(
+      await reopenClosedView(
+        { kind: "panel-tab", threadRef, surface },
+        { openPreview, workspaceAvailable: false },
+      ),
+    ).toBe(true);
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, threadRef);
+    expect(state.isOpen).toBe(true);
+    expect(state.activeSurfaceId).toBe(surface.id);
+    expect(state.surfaces).toEqual([surface]);
+    expect(openPreview).not.toHaveBeenCalled();
+  });
+
   it("does not reopen workspace tabs without an available project", async () => {
     const options = {
       openPreview: vi.fn(),
