@@ -5,6 +5,7 @@ import type {
   OrchestrationV2SearchThreadResult,
   OrchestrationV2ThreadHistoryPage,
   ProjectId,
+  ServerSettingsError,
 } from "@t3tools/contracts";
 import {
   latestExecutedRun,
@@ -428,7 +429,9 @@ export interface OrchestratorV2Shape {
     readonly commandId: CommandId;
     readonly threadId: ThreadId;
     readonly runId: RunId;
-    readonly nextRun: (now: DateTime.Utc) => Effect.Effect<DateTime.Utc | null, SqlError>;
+    readonly nextRun: (
+      now: DateTime.Utc,
+    ) => Effect.Effect<DateTime.Utc | null, SqlError | ServerSettingsError>;
   }) => Effect.Effect<void, OrchestratorV2Error>;
   readonly searchThreadStream: (
     input: OrchestrationV2SearchThreadInput,

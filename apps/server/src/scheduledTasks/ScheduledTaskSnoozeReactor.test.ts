@@ -17,6 +17,9 @@ import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
+import * as Ref from "effect/Ref";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
@@ -25,6 +28,7 @@ import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
@@ -40,10 +44,18 @@ const adapter = {
   openSession: () => Effect.die("No provider process needed"),
 } as ProviderAdapter.ProviderAdapterV2["Service"];
 const layerDatabase = SqlitePersistence.layerMemory;
+const replayLayer = ProviderReplayHarness.layerWithRegistry(
+  { name: "scheduled-task-snooze" },
+  ProviderAdapterRegistry.layerFromAdapters([adapter]),
+  { databaseLayer: layerDatabase, runEffectWorker: false },
+);
 const layerTest = (
   snoozeThreadsUntilScheduledTask: boolean,
   pendingDispatch: ScheduledTaskService.ScheduledTaskService["Service"]["pendingDispatch"] = () =>
     Effect.undefined,
+  wrapOrchestrator: (
+    engine: Orchestrator.OrchestratorV2["Service"],
+  ) => Orchestrator.OrchestratorV2["Service"] = (engine) => engine,
 ) =>
   ScheduledTaskSnoozeReactor.layer.pipe(
     Layer.provideMerge(
@@ -52,11 +64,10 @@ const layerTest = (
         ProjectionStore.layer.pipe(Layer.provide(layerDatabase)),
         ServerSettings.layerTest({ snoozeThreadsUntilScheduledTask }),
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({ pendingDispatch }),
-        ProviderReplayHarness.layerWithRegistry(
-          { name: "scheduled-task-snooze" },
-          ProviderAdapterRegistry.layerFromAdapters([adapter]),
-          { databaseLayer: layerDatabase, runEffectWorker: false },
-        ),
+        Layer.effect(
+          Orchestrator.OrchestratorV2,
+          Effect.map(Orchestrator.OrchestratorV2, wrapOrchestrator),
+        ).pipe(Layer.provideMerge(replayLayer)),
       ),
     ),
   );
@@ -91,10 +102,13 @@ const insertTask = (
     run_count: 0,
   })}`;
 
-/** Starts a turn from `message`, writes its completion, and lets the reactor see it. */
+/** Starts a turn from `message`, writes its completion, and optionally hands it to the reactor. */
 const completeTurn = Effect.fn("test.completeTurn")(function* (
   message: { scheduledTaskId?: ScheduledTaskId } = {},
   options: {
+    threadId?: ThreadId;
+    ordinal?: number;
+    observe?: boolean;
     queueAnother?: boolean;
     pendingQuestion?: boolean;
     sendBeforeHandle?: boolean;
@@ -105,25 +119,29 @@ const completeTurn = Effect.fn("test.completeTurn")(function* (
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const eventSink = yield* EventSink.EventSinkV2;
   const reactor = yield* ScheduledTaskSnoozeReactor.ScheduledTaskSnoozeReactor;
-  yield* orchestrator.dispatch({
-    type: "thread.create",
-    commandId: CommandId.make("create-scheduled-snooze"),
-    threadId,
-    projectId: ProjectId.make("project:scheduled-snooze"),
-    title: "Scheduled snooze",
-    modelSelection,
-    runtimeMode: "full-access",
-    interactionMode: "default",
-    branch: null,
-    worktreePath: null,
-    createdBy: "user",
-    creationSource: "web",
-  });
+  const targetThreadId = options.threadId ?? threadId;
+  const ordinal = options.ordinal ?? 1;
+  const turnKey = `${targetThreadId}:${ordinal}`;
+  if (ordinal === 1)
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      commandId: CommandId.make(`create-scheduled-snooze:${targetThreadId}`),
+      threadId: targetThreadId,
+      projectId: ProjectId.make("project:scheduled-snooze"),
+      title: "Scheduled snooze",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdBy: "user",
+      creationSource: "web",
+    });
   yield* orchestrator.dispatch({
     type: "message.dispatch",
-    commandId: CommandId.make("send-scheduled-snooze"),
-    threadId,
-    messageId: MessageId.make("message:scheduled-snooze"),
+    commandId: CommandId.make(`send-scheduled-snooze:${turnKey}`),
+    threadId: targetThreadId,
+    messageId: MessageId.make(`message:scheduled-snooze:${turnKey}`),
     text: "Schedule a daily check",
     attachments: [],
     dispatchMode: { type: "start_immediately" },
@@ -135,7 +153,7 @@ const completeTurn = Effect.fn("test.completeTurn")(function* (
     yield* orchestrator.dispatch({
       type: "message.dispatch",
       commandId: CommandId.make("queue-scheduled-snooze"),
-      threadId,
+      threadId: targetThreadId,
       messageId: MessageId.make("message:scheduled-snooze-queued"),
       text: "And another thing",
       attachments: [],
@@ -144,14 +162,14 @@ const completeTurn = Effect.fn("test.completeTurn")(function* (
       creationSource: "web",
     });
   }
-  const { runs } = yield* projections.getThreadRecords(threadId, ["runs"]);
-  const run = runs.find((candidate) => candidate.ordinal === 1)!;
+  const { runs } = yield* projections.getThreadRecords(targetThreadId, ["runs"]);
+  const run = runs.find((candidate) => candidate.ordinal === ordinal)!;
   const now = yield* DateTime.now;
   if (options.snoozeBeforeComplete) {
     yield* orchestrator.dispatch({
       type: "thread.snooze",
       commandId: CommandId.make("manual-scheduled-snooze"),
-      threadId,
+      threadId: targetThreadId,
       snoozedUntil: "2031-01-01T00:00:00.000Z",
     });
   }
@@ -160,7 +178,7 @@ const completeTurn = Effect.fn("test.completeTurn")(function* (
     events.push({
       id: EventId.make("event:scheduled-snooze-question"),
       type: "runtime-request.updated",
-      threadId,
+      threadId: targetThreadId,
       runId: run.id,
       occurredAt: now,
       payload: {
@@ -177,9 +195,9 @@ const completeTurn = Effect.fn("test.completeTurn")(function* (
     });
   }
   const completed = {
-    id: EventId.make("event:scheduled-snooze-completed"),
+    id: EventId.make(`event:scheduled-snooze-completed:${turnKey}`),
     type: "run.updated",
-    threadId,
+    threadId: targetThreadId,
     runId: run.id,
     occurredAt: now,
     payload: { ...run, status: "completed", startedAt: now, completedAt: now },
@@ -190,7 +208,7 @@ const completeTurn = Effect.fn("test.completeTurn")(function* (
     yield* orchestrator.dispatch({
       type: "message.dispatch",
       commandId: CommandId.make("follow-up-scheduled-snooze"),
-      threadId,
+      threadId: targetThreadId,
       messageId: MessageId.make("message:scheduled-snooze-follow-up"),
       text: "One more thing",
       attachments: [],
@@ -199,7 +217,7 @@ const completeTurn = Effect.fn("test.completeTurn")(function* (
       creationSource: "web",
     });
   }
-  yield* reactor.handle(completed);
+  if (options.observe !== false) yield* reactor.handle(completed);
   return completed;
 });
 
@@ -307,6 +325,103 @@ it.effect.each([
           );
           return scenario.pending ? Effect.succeed(reached) : reached.pipe(Effect.as(undefined));
         }),
+      ),
+    );
+  }),
+);
+
+it.effect("reacts to newer turns and other threads while a scheduled dispatch is pending", () =>
+  Effect.gen(function* () {
+    const input = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
+    const dispatchStarted = yield* Deferred.make<void>();
+    const releaseDispatch = yield* Deferred.make<void>();
+    const waits = yield* Ref.make(0);
+    yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const events = yield* EventSink.EventSinkV2;
+      const reactor = yield* ScheduledTaskSnoozeReactor.ScheduledTaskSnoozeReactor;
+      const otherThreadId = ThreadId.make("thread:other");
+      const waitForSnooze = (threadId: ThreadId) =>
+        events
+          .stream({ threadId, eventType: "thread.snoozed", afterSequence: 0 })
+          .pipe(Stream.runHead);
+
+      yield* insertTask(sql, { id: "same-thread-next", threadId, next: NEXT_RUN });
+      yield* insertTask(sql, { id: "other-next", threadId: otherThreadId, next: NEXT_RUN });
+      yield* reactor.start();
+      const scheduled = yield* completeTurn(
+        { scheduledTaskId: ScheduledTaskId.make("dispatch-in-progress") },
+        { observe: false },
+      );
+      yield* Queue.offer(input, scheduled);
+      yield* Deferred.await(dispatchStarted);
+      yield* Queue.offer(input, { ...scheduled, id: EventId.make("event:re-emitted-completion") });
+
+      const other = yield* completeTurn({}, { threadId: otherThreadId, observe: false });
+      yield* Queue.offer(input, other);
+      yield* waitForSnooze(otherThreadId);
+      assert.strictEqual(yield* snoozedUntil, null);
+
+      const newer = yield* completeTurn({}, { ordinal: 2, observe: false });
+      yield* Queue.offer(input, newer);
+      yield* waitForSnooze(threadId);
+      assert.strictEqual(yield* snoozedUntil, NEXT_RUN);
+      assert.strictEqual(yield* Ref.get(waits), 1);
+      yield* Deferred.succeed(releaseDispatch, undefined);
+    }).pipe(
+      Effect.provide(
+        layerTest(
+          true,
+          () =>
+            Effect.succeed(
+              Ref.update(waits, (count) => count + 1).pipe(
+                Effect.andThen(Deferred.succeed(dispatchStarted, undefined)),
+                Effect.andThen(Deferred.await(releaseDispatch)),
+              ),
+            ),
+          (engine) => ({ ...engine, streamDomainEvents: Stream.fromQueue(input) }),
+        ),
+      ),
+    );
+  }),
+);
+
+it.effect("keeps the thread awake when disabled while the snooze waits for its lock", () =>
+  Effect.gen(function* () {
+    const lockAcquired = yield* Deferred.make<void>();
+    const beforeSnoozeLock = yield* Deferred.make<void>();
+    const releaseLock = yield* Deferred.make<void>();
+    yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const settings = yield* ServerSettings.ServerSettingsService;
+      const locks = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+      const reactor = yield* ScheduledTaskSnoozeReactor.ScheduledTaskSnoozeReactor;
+      yield* insertTask(sql, { id: "next", threadId, next: NEXT_RUN });
+      const completed = yield* completeTurn({}, { observe: false });
+      yield* locks
+        .withLock(
+          threadId,
+          Deferred.succeed(lockAcquired, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseLock)),
+          ),
+        )
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(lockAcquired);
+      const attempt = yield* reactor.handle(completed).pipe(Effect.forkScoped);
+      yield* Deferred.await(beforeSnoozeLock);
+      yield* settings.updateSettings({ snoozeThreadsUntilScheduledTask: false });
+      yield* Deferred.succeed(releaseLock, undefined);
+      yield* Fiber.join(attempt);
+      assert.strictEqual(yield* snoozedUntil, null);
+    }).pipe(
+      Effect.provide(
+        layerTest(true, undefined, (engine) => ({
+          ...engine,
+          autoSnoozeAfterRun: (input) =>
+            Deferred.succeed(beforeSnoozeLock, undefined).pipe(
+              Effect.andThen(engine.autoSnoozeAfterRun(input)),
+            ),
+        })),
       ),
     );
   }),

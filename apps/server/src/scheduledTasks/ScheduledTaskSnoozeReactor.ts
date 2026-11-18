@@ -1,13 +1,8 @@
-import {
-  CommandId,
-  type OrchestrationV2DomainEvent,
-  type RunId,
-  type ThreadId,
-} from "@t3tools/contracts";
-import * as KeyedLock from "@t3tools/shared/KeyedLock";
+import { CommandId, type OrchestrationV2DomainEvent, type RunId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FiberMap from "effect/FiberMap";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Scope from "effect/Scope";
@@ -70,7 +65,18 @@ const make = Effect.gen(function* () {
         commandId: CommandId.make(`server:scheduled-task-snooze:${run.id}`),
         threadId: event.threadId,
         runId: run.id,
-        nextRun,
+        nextRun: (now) =>
+          nextRun(now).pipe(
+            Effect.flatMap((wakeAt) =>
+              wakeAt === null
+                ? Effect.succeed(null)
+                : settings.getSettings.pipe(
+                    Effect.map(({ snoozeThreadsUntilScheduledTask }) =>
+                      snoozeThreadsUntilScheduledTask ? wakeAt : null,
+                    ),
+                  ),
+            ),
+          ),
       });
     },
     (effect, event) =>
@@ -85,17 +91,11 @@ const make = Effect.gen(function* () {
   );
 
   const start = Effect.fn("ScheduledTaskSnoozeReactor.start")(function* () {
-    const threadReactions = yield* KeyedLock.makeRunner<ThreadId>();
-    const inFlight = new Set<RunId>();
+    const inFlight = yield* FiberMap.make<RunId, void, never>();
     yield* forkParked(
       Stream.runForEach(engine.streamDomainEvents, (event) => {
-        if (!isCompletedRun(event) || inFlight.has(event.payload.id)) return Effect.void;
-        const runId = event.payload.id;
-        inFlight.add(runId);
-        return threadReactions.run(
-          event.threadId,
-          handle(event).pipe(Effect.ensuring(Effect.sync(() => void inFlight.delete(runId)))),
-        );
+        if (!isCompletedRun(event)) return Effect.void;
+        return FiberMap.run(inFlight, event.payload.id, handle(event), { onlyIfMissing: true });
       }).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("scheduled task snooze event stream failed", { cause }),
