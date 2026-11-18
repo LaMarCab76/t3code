@@ -13,6 +13,8 @@ import {
 } from "@t3tools/contracts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -25,6 +27,7 @@ import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterReg
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as ScheduledTaskService from "./ScheduledTaskService.ts";
 import * as ScheduledTaskSnoozeReactor from "./ScheduledTaskSnoozeReactor.ts";
 
 const instanceId = ProviderInstanceId.make("codex");
@@ -37,13 +40,18 @@ const adapter = {
   openSession: () => Effect.die("No provider process needed"),
 } as ProviderAdapter.ProviderAdapterV2["Service"];
 const layerDatabase = SqlitePersistence.layerMemory;
-const layerTest = (snoozeThreadsUntilScheduledTask: boolean) =>
+const layerTest = (
+  snoozeThreadsUntilScheduledTask: boolean,
+  awaitDispatch: ScheduledTaskService.ScheduledTaskService["Service"]["awaitDispatch"] = () =>
+    Effect.void,
+) =>
   ScheduledTaskSnoozeReactor.layer.pipe(
     Layer.provideMerge(
       Layer.mergeAll(
         layerDatabase,
         ProjectionStore.layer.pipe(Layer.provide(layerDatabase)),
         ServerSettings.layerTest({ snoozeThreadsUntilScheduledTask }),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({ awaitDispatch }),
         ProviderReplayHarness.layerWithRegistry(
           { name: "scheduled-task-snooze" },
           ProviderAdapterRegistry.layerFromAdapters([adapter]),
@@ -243,7 +251,6 @@ it.effect.each([false, true])(
 
 it.effect.each([
   { name: "the setting is off", setting: false },
-  { name: "the run is the task's own", setting: true, fromTask: true },
   { name: "another run is still queued", setting: true, queueAnother: true },
   { name: "the turn ended on a question", setting: true, pendingQuestion: true },
   { name: "a message arrives before the snooze", setting: true, sendBeforeHandle: true },
@@ -251,10 +258,48 @@ it.effect.each([
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* insertTask(sql, { id: "soonest", threadId, next: NEXT_RUN });
-    yield* completeTurn(
-      scenario.fromTask === true ? { scheduledTaskId: ScheduledTaskId.make("soonest") } : {},
-      scenario,
-    );
+    yield* completeTurn({}, scenario);
     assert.strictEqual(yield* snoozedUntil, null);
   }).pipe(Effect.provide(layerTest(scenario.setting))),
+);
+
+it.effect.each([
+  { next: NEXT_RUN, taskId: "current", expected: NEXT_RUN },
+  { next: NEXT_RUN, taskId: "follow-up", expected: NEXT_RUN },
+  { next: null, taskId: "current", expected: null },
+])("uses the remaining schedule after a task runs: $taskId / $next", (scenario) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* insertTask(sql, { id: scenario.taskId, threadId, next: scenario.next });
+    yield* completeTurn({ scheduledTaskId: ScheduledTaskId.make("current") });
+    assert.strictEqual(yield* snoozedUntil, scenario.expected);
+  }).pipe(Effect.provide(layerTest(true))),
+);
+
+it.effect("waits for the scheduler to commit the next occurrence after a fast turn", () =>
+  Effect.gen(function* () {
+    const awaitingDispatch = yield* Deferred.make<ScheduledTaskId>();
+    const dispatchCommitted = yield* Deferred.make<void>();
+    yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const current = ScheduledTaskId.make("current");
+      yield* insertTask(sql, { id: current, threadId, next: null });
+      yield* insertTask(sql, { id: "later", threadId, next: "2030-02-01T00:00:00.000Z" });
+      const completion = yield* completeTurn({ scheduledTaskId: current }).pipe(Effect.forkScoped);
+      assert.strictEqual(yield* Deferred.await(awaitingDispatch), current);
+      assert.strictEqual(yield* snoozedUntil, null);
+      yield* sql`UPDATE scheduled_tasks SET next_run_at = ${NEXT_RUN} WHERE task_id = ${current}`;
+      yield* Deferred.succeed(dispatchCommitted, undefined);
+      yield* Fiber.join(completion);
+      assert.strictEqual(yield* snoozedUntil, NEXT_RUN);
+    }).pipe(
+      Effect.provide(
+        layerTest(true, (id) =>
+          Deferred.succeed(awaitingDispatch, id).pipe(
+            Effect.andThen(Deferred.await(dispatchCommitted)),
+          ),
+        ),
+      ),
+    );
+  }),
 );

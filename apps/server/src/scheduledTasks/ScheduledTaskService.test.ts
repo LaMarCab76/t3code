@@ -1110,16 +1110,17 @@ it.effect("a run interrupted right after it reserves the task does not block the
         interactionMode: "default",
       });
 
-      // The reservation is the first Set.add of the task id; interrupt the run right there.
-      const add = Set.prototype.add;
+      // Interrupt the run as soon as it reserves the task.
+      const set = Map.prototype.set;
       let interrupted = false;
       const first = yield* Effect.gen(function* () {
-        using _reserve = vi.spyOn(Set.prototype, "add").mockImplementation(function (
-          this: Set<unknown>,
+        using _reserve = vi.spyOn(Map.prototype, "set").mockImplementation(function (
+          this: Map<unknown, unknown>,
+          key: unknown,
           value: unknown,
         ) {
-          const result = add.call(this, value);
-          if (value === task.id && !interrupted) {
+          const result = set.call(this, key, value);
+          if (key === task.id && !interrupted) {
             interrupted = true;
             Fiber.getCurrent()?.interruptUnsafe();
           }

@@ -34,6 +34,7 @@ import * as Digest from "effect/crypto/Digest";
 import * as Mac from "effect/crypto/Mac";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Exit from "effect/Exit";
@@ -259,6 +260,7 @@ export class ScheduledTaskService extends Context.Service<
   {
     readonly list: () => Effect.Effect<ScheduledTaskListResult, ScheduledTaskError>;
     readonly subscribeList: () => Stream.Stream<ScheduledTaskListResult, ScheduledTaskError>;
+    readonly awaitDispatch: (id: ScheduledTaskId) => Effect.Effect<void>;
     readonly upsert: (
       input: ScheduledTaskUpsertInput,
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
@@ -530,7 +532,15 @@ export const layer = Layer.effect(
     const webhookFilteredLogWindows = yield* Ref.make<
       ReadonlyMap<ScheduledTaskId, ReadonlyArray<number>>
     >(new Map());
-    const activeRuns = yield* Ref.make<ReadonlySet<ScheduledTaskId>>(new Set());
+    const activeRuns = yield* Ref.make<ReadonlyMap<ScheduledTaskId, Deferred.Deferred<void>>>(
+      new Map(),
+    );
+    const awaitDispatch = Effect.fn("ScheduledTaskService.awaitDispatch")(function* (
+      id: ScheduledTaskId,
+    ) {
+      const dispatch = (yield* Ref.get(activeRuns)).get(id);
+      if (dispatch !== undefined) yield* Deferred.await(dispatch);
+    });
     // Notifications re-emit the full list; slow subscribers need only the newest dirty signal.
     const changesPubSub = yield* PubSub.sliding<void>(1);
     const dueTasks = DueHint.make();
@@ -1222,11 +1232,12 @@ export const layer = Layer.effect(
       );
 
       // Reserve and release as one bracket so an interrupt cannot leave the task marked busy.
+      const dispatched = yield* Deferred.make<void>();
       return yield* Effect.acquireUseRelease(
         Ref.modify(activeRuns, (active) => {
           if (active.has(task.id)) return [false, active] as const;
-          const next = new Set(active);
-          next.add(task.id);
+          const next = new Map(active);
+          next.set(task.id, dispatched);
           return [true, next] as const;
         }),
         (reserved) =>
@@ -1238,10 +1249,10 @@ export const layer = Layer.effect(
         (reserved) =>
           reserved
             ? Ref.update(activeRuns, (active) => {
-                const next = new Set(active);
+                const next = new Map(active);
                 next.delete(task.id);
                 return next;
-              })
+              }).pipe(Effect.andThen(Deferred.succeed(dispatched, undefined)))
             : Effect.void,
       );
     });
@@ -2656,6 +2667,7 @@ export const layer = Layer.effect(
     return ScheduledTaskService.of({
       list,
       subscribeList,
+      awaitDispatch,
       upsert,
       setEnabled,
       delete: deleteTask,

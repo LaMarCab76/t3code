@@ -11,7 +11,12 @@ import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { nextRunForThread } from "./ScheduledTaskService.ts";
+import * as ScheduledTasks from "./ScheduledTaskService.ts";
+
+const isCompletedRun = (
+  event: OrchestrationV2DomainEvent,
+): event is Extract<OrchestrationV2DomainEvent, { readonly type: "run.updated" }> =>
+  event.type === "run.updated" && event.payload.status === "completed";
 
 export class ScheduledTaskSnoozeReactor extends Context.Service<
   ScheduledTaskSnoozeReactor,
@@ -26,29 +31,31 @@ const make = Effect.gen(function* () {
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const settings = yield* ServerSettings.ServerSettingsService;
   const sql = yield* SqlClient.SqlClient;
+  const tasks = yield* ScheduledTasks.ScheduledTaskService;
 
   // Runs for every domain event; most events return before any work is needed.
   const handle: ScheduledTaskSnoozeReactor["Service"]["handle"] = Effect.fnUntraced(
     function* (event) {
-      if (event.type !== "run.updated" || event.payload.status !== "completed") return;
+      if (!isCompletedRun(event)) return;
       const { snoozeThreadsUntilScheduledTask } = yield* settings.getSettings;
       if (!snoozeThreadsUntilScheduledTask) return;
       const run = event.payload;
-      // The task's own run and its automatic follow-ups leave their result visible.
       const { messages } = yield* projections.getThreadRecords(event.threadId, ["messages"], {
         messageIds: [run.userMessageId],
       });
       const message = messages.find((candidate) => candidate.id === run.userMessageId);
-      if (
-        message?.scheduledTaskId !== undefined ||
-        message?.notification !== undefined ||
-        message?.delegatedCompletion !== undefined
-      ) {
+      if (message?.notification !== undefined || message?.delegatedCompletion !== undefined) {
         return;
       }
-      const nextRun = yield* nextRunForThread(event.threadId, yield* DateTime.now).pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
-      );
+      if (message?.scheduledTaskId !== undefined) {
+        // A fast turn can finish before the scheduler commits the next occurrence.
+        yield* tasks.awaitDispatch(message.scheduledTaskId);
+        if (!(yield* settings.getSettings).snoozeThreadsUntilScheduledTask) return;
+      }
+      const nextRun = yield* ScheduledTasks.nextRunForThread(
+        event.threadId,
+        yield* DateTime.now,
+      ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
       if (nextRun === null) return;
       // Completion is re-emitted (checkpoints, delegated rewrites); one id per run keeps a
       // later manual wake from being undone.
@@ -72,7 +79,10 @@ const make = Effect.gen(function* () {
 
   const start: ScheduledTaskSnoozeReactor["Service"]["start"] = () =>
     forkParked(
-      Stream.runForEach(engine.streamDomainEvents, handle).pipe(
+      engine.streamDomainEvents.pipe(
+        Stream.filter(isCompletedRun),
+        Stream.mapEffect(handle, { concurrency: 8, unordered: true }),
+        Stream.runDrain,
         Effect.catchCause((cause) =>
           Effect.logWarning("scheduled task snooze event stream failed", { cause }),
         ),
