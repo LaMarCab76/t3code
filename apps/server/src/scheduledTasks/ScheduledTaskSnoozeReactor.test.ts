@@ -258,6 +258,11 @@ it.effect.each([false, true])(
         enabled: 0,
       });
       yield* insertTask(sql, { id: "overdue", threadId, next: "1969-01-01T00:00:00.000Z" });
+      yield* insertTask(sql, {
+        id: "overdue-with-offset",
+        threadId,
+        next: "1970-01-01T01:00:00.000+03:00",
+      });
       yield* insertTask(sql, { id: "webhook", threadId, next: null });
       yield* insertTask(sql, {
         id: "other",
@@ -559,16 +564,27 @@ it.effect("keeps a question committed before the SQLite writer visible", () =>
   }),
 );
 
-it.effect.each([true, false])(
-  "handles a deadline expiring during validation with another date: %s",
-  (hasLaterDate) =>
+it.effect.each([
+  { expiring: 1, hasLaterDate: true },
+  { expiring: 1, hasLaterDate: false },
+  { expiring: 2, hasLaterDate: true },
+  { expiring: 2, hasLaterDate: false },
+])(
+  "handles $expiring deadlines expiring during validation with another date: $hasLaterDate",
+  ({ expiring, hasLaterDate }) =>
     Effect.gen(function* () {
       const outcomes = yield* Ref.make<ReadonlyArray<string>>([]);
-      const expiresAt = DateTime.add(yield* DateTime.now, { milliseconds: 1 });
-      const expiresAtIso = DateTime.formatIso(expiresAt);
+      const now = yield* DateTime.now;
+      const expiringDates = Array.from({ length: expiring }, (_, index) =>
+        DateTime.formatIso(DateTime.add(now, { milliseconds: index + 1 })),
+      );
       yield* Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        yield* insertTask(sql, { id: "expiring", threadId, next: expiresAtIso });
+        yield* Effect.forEach(
+          expiringDates,
+          (next, index) => insertTask(sql, { id: `expiring-${index}`, threadId, next }),
+          { discard: true },
+        );
         if (hasLaterDate) yield* insertTask(sql, { id: "later", threadId, next: NEXT_RUN });
         const completed = yield* completeTurn();
         assert.deepEqual(yield* Ref.get(outcomes), [hasLaterDate ? "snoozed" : "no-next-run"]);
@@ -593,7 +609,8 @@ it.effect.each([true, false])(
                       .nextRun(now)
                       .pipe(
                         Effect.tap((candidate) =>
-                          candidate !== null && DateTime.formatIso(candidate) === expiresAtIso
+                          candidate !== null &&
+                          expiringDates.includes(DateTime.formatIso(candidate))
                             ? TestClock.adjust(1)
                             : Effect.void,
                         ),

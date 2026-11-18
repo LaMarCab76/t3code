@@ -461,10 +461,12 @@ export const nextRunForThread = Effect.fn("ScheduledTaskService.nextRunForThread
       AND next_run_at IS NOT NULL AND next_run_at > ${iso(now)}
     ORDER BY next_run_at ASC
   `.pipe(NodeSqliteClient.readOnly);
-  // next_run_at is freeform; the soonest parseable value wins.
+  // An offset can sort after the UTC bound even though the instant is already past.
   for (const row of rows) {
     const parsed = DateTime.make(row.next_run_at);
-    if (Option.isSome(parsed)) return DateTime.toUtc(parsed.value);
+    if (Option.isSome(parsed) && DateTime.isGreaterThan(parsed.value, now)) {
+      return DateTime.toUtc(parsed.value);
+    }
   }
   return null;
 });

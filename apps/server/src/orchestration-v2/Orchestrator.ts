@@ -4603,21 +4603,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         turnItemTypes: [],
       });
       const resolveNextRun = yield* AutomaticSnoozeNextRun;
-      const validationTime = resolveNextRun === undefined ? now : yield* DateTime.now;
-      const candidate = Option.getOrNull(DateTime.make(command.snoozedUntil));
-      if (candidate !== null && DateTime.isGreaterThan(candidate, validationTime)) {
-        snoozedUntil = candidate;
-      } else if (resolveNextRun !== undefined) {
-        snoozedUntil = yield* resolveNextRun(validationTime).pipe(mapDispatchError(command));
+      let validationTime = resolveNextRun === undefined ? now : yield* DateTime.now;
+      let candidate = Option.getOrNull(DateTime.make(command.snoozedUntil));
+      if (resolveNextRun !== undefined) {
+        while (candidate === null || !DateTime.isGreaterThan(candidate, validationTime)) {
+          candidate = yield* resolveNextRun(validationTime).pipe(mapDispatchError(command));
+          if (candidate === null) return yield* new AutomaticSnoozeNoOccurrence();
+          validationTime = yield* DateTime.now;
+        }
       }
-      if (snoozedUntil === null) {
-        if (resolveNextRun !== undefined) return yield* new AutomaticSnoozeNoOccurrence();
+      if (candidate === null || !DateTime.isGreaterThan(candidate, validationTime)) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
           cause: `Thread ${command.threadId} snooze wake time ${command.snoozedUntil} is not in the future.`,
         });
       }
+      snoozedUntil = candidate;
       if (
         projection.runtimeRequests.some(
           (request) => request.status === "pending" && request.kind !== "user_input",
