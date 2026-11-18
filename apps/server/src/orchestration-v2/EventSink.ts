@@ -1084,7 +1084,9 @@ const layerBase: Layer.Layer<
           started = true;
         }).pipe(Effect.andThen(Effect.provideService(effect, CurrentProviderBatch, batch))),
         () => Effect.forEach(batch.publish, (publish) => publish, { discard: true }),
-        beforeCommit,
+        beforeCommit === undefined
+          ? undefined
+          : (result) => Effect.provideService(beforeCommit(result), CurrentProviderBatch, batch),
       ).pipe(
         // Normalization mutates run-local state, so only retry before its transaction body starts.
         Effect.retry({

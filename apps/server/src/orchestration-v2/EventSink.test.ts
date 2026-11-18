@@ -10,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 
 import * as Sqlite from "../persistence/Sqlite.ts";
@@ -105,5 +106,19 @@ it.effect("rejects a planned fork whose source was deleted before it committed",
     assert.isFalse(replayed.committed);
     const missing = yield* projections.getThread(targetId).pipe(Effect.flip);
     assert.instanceOf(missing, ProjectionStore.ProjectionStoreThreadNotFoundError);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("shares the batch with writes made by its pre-commit check", () =>
+  Effect.gen(function* () {
+    const sink = yield* EventSink.EventSinkV2;
+    const result = yield* sink.withProviderBatch(Effect.succeed("committed"), () =>
+      Effect.gen(function* () {
+        yield* sink.write({ events: [] });
+        const nested = yield* Effect.exit(sink.withProviderBatch(Effect.void, () => Effect.void));
+        assert.isTrue(Exit.isFailure(nested));
+      }),
+    );
+    assert.strictEqual(result, "committed");
   }).pipe(Effect.provide(layer)),
 );

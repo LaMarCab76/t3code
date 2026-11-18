@@ -94,7 +94,7 @@ const NEXT_RUN = "2030-01-01T09:00:00.000Z";
 
 const insertTask = (
   sql: SqlClient.SqlClient,
-  task: { id: string; threadId: string; next: string | null; enabled?: number },
+  task: { id: string; threadId: string; next: string | null; enabled?: number; running?: boolean },
 ) =>
   sql`INSERT INTO scheduled_tasks ${sql.insert({
     task_id: task.id,
@@ -114,7 +114,7 @@ const insertTask = (
     updated_at: "2026-01-01T00:00:00.000Z",
     next_run_at: task.next,
     last_run_at: null,
-    last_run_status: "never",
+    last_run_status: task.running === true ? "running" : "never",
     last_run_error: null,
     run_count: 0,
   })}`;
@@ -352,7 +352,7 @@ it.effect.each([
   }),
 );
 
-it.effect.each(["committed", "pending", "paused before write"] as const)(
+it.effect.each(["committed", "pending", "replacing", "paused before write"] as const)(
   "reacts to newer turns and other threads when the next occurrence is %s",
   (schedule) =>
     Effect.gen(function* () {
@@ -381,7 +381,13 @@ it.effect.each(["committed", "pending", "paused before write"] as const)(
         yield* insertTask(sql, {
           id: activeTaskId,
           threadId,
-          next: schedule === "committed" ? NEXT_RUN : null,
+          next:
+            schedule === "committed"
+              ? NEXT_RUN
+              : schedule === "replacing"
+                ? "2029-01-01T00:00:00.000Z"
+                : null,
+          running: schedule === "pending" || schedule === "replacing",
         });
         if (schedule === "paused before write") {
           yield* insertTask(sql, { id: "paused-candidate", threadId, next: NEXT_RUN });
@@ -424,12 +430,17 @@ it.effect.each(["committed", "pending", "paused before write"] as const)(
         if (schedule === "paused before write") {
           yield* Deferred.await(beforeWriter);
           yield* sql`UPDATE scheduled_tasks SET enabled = 0 WHERE task_id = 'paused-candidate'`;
+          yield* sql`UPDATE scheduled_tasks SET last_run_status = 'running' WHERE task_id = ${activeTaskId}`;
           yield* Deferred.succeed(allowWriter, undefined);
         }
         if (schedule !== "committed") {
-          yield* Deferred.await(newerWaitStarted);
+          const waiting = yield* Effect.raceFirst(
+            Deferred.await(newerWaitStarted).pipe(Effect.as(true)),
+            waitForSnooze(threadId).pipe(Effect.as(false)),
+          );
+          assert.isTrue(waiting);
           assert.strictEqual(yield* snoozedUntil, null);
-          yield* sql`UPDATE scheduled_tasks SET next_run_at = ${NEXT_RUN} WHERE task_id = ${activeTaskId}`;
+          yield* sql`UPDATE scheduled_tasks SET next_run_at = ${NEXT_RUN}, last_run_status = 'succeeded' WHERE task_id = ${activeTaskId}`;
           yield* Ref.set(dispatches, new Map());
           yield* Deferred.succeed(releaseDispatch, undefined);
         }
@@ -565,20 +576,21 @@ it.effect("keeps a question committed before the SQLite writer visible", () =>
 );
 
 it.effect.each([
-  { expiring: 1, hasLaterDate: true, atCommit: false },
-  { expiring: 1, hasLaterDate: false, atCommit: false },
-  { expiring: 2, hasLaterDate: true, atCommit: false },
-  { expiring: 2, hasLaterDate: false, atCommit: false },
-  { expiring: 1, hasLaterDate: true, atCommit: true },
-  { expiring: 1, hasLaterDate: false, atCommit: true },
+  { expiring: 1, hasLaterDate: true, expires: "during lookup" },
+  { expiring: 1, hasLaterDate: false, expires: "during lookup" },
+  { expiring: 2, hasLaterDate: true, expires: "during lookup" },
+  { expiring: 2, hasLaterDate: false, expires: "during lookup" },
+  { expiring: 1, hasLaterDate: true, expires: "before commit" },
+  { expiring: 1, hasLaterDate: false, expires: "before commit" },
+  { expiring: 1, hasLaterDate: true, expires: "after commit" },
 ])(
-  "handles $expiring expiring deadlines with another date: $hasLaterDate, at commit: $atCommit",
-  ({ expiring, hasLaterDate, atCommit }) =>
+  "handles $expiring expiring deadlines with another date: $hasLaterDate, expires $expires",
+  ({ expiring, hasLaterDate, expires }) =>
     Effect.gen(function* () {
       const outcomes = yield* Ref.make<ReadonlyArray<string>>([]);
-      const now = yield* DateTime.now;
+      const initialTime = yield* DateTime.now;
       const expiringDates = Array.from({ length: expiring }, (_, index) =>
-        DateTime.formatIso(DateTime.add(now, { milliseconds: index + 1 })),
+        DateTime.formatIso(DateTime.add(initialTime, { milliseconds: index + 1 })),
       );
       yield* Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -625,7 +637,7 @@ it.effect.each([
                         .nextRun(now)
                         .pipe(
                           Effect.tap((candidate) =>
-                            !atCommit &&
+                            expires === "during lookup" &&
                             candidate !== null &&
                             expiringDates.includes(DateTime.formatIso(candidate))
                               ? TestClock.adjust(1)
@@ -633,17 +645,35 @@ it.effect.each([
                           ),
                         ),
                   })
-                  .pipe(Effect.tap((result) => Ref.update(outcomes, (all) => [...all, result]))),
+                  .pipe(
+                    Effect.tap(({ outcome }) => Ref.update(outcomes, (all) => [...all, outcome])),
+                  ),
             }),
             undefined,
             (sink) => ({
               ...sink,
+              withProviderBatch: (write, beforeCommit) =>
+                sink
+                  .withProviderBatch(write, beforeCommit)
+                  .pipe(
+                    Effect.tap(() =>
+                      expires === "after commit"
+                        ? DateTime.now.pipe(
+                            Effect.flatMap((now) =>
+                              DateTime.formatIso(now) === DateTime.formatIso(initialTime)
+                                ? TestClock.adjust(1)
+                                : Effect.void,
+                            ),
+                          )
+                        : Effect.void,
+                    ),
+                  ),
               commitCommand: (command) =>
                 sink
                   .commitCommand(command)
                   .pipe(
                     Effect.tap(({ storedEvents }) =>
-                      atCommit &&
+                      expires === "before commit" &&
                       storedEvents.some(
                         ({ event }) =>
                           event.type === "thread.snoozed" &&

@@ -101,8 +101,11 @@ it.effect.each([
         insertRow(sql, { id: `offset-${index}`, enabled: 1, status: "never", next, threadId }, now),
       { discard: true },
     );
-    const next = yield* ScheduledTaskService.nextRunForThread(threadId, DateTime.makeUnsafe(now));
-    assert.equal(next === null ? null : DateTime.formatIso(next), expected);
+    const { nextRun } = yield* ScheduledTaskService.readThreadSchedule(
+      threadId,
+      DateTime.makeUnsafe(now),
+    );
+    assert.equal(nextRun === null ? null : DateTime.formatIso(nextRun), expected);
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 

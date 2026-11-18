@@ -444,7 +444,11 @@ export interface OrchestratorV2Shape {
     readonly threadId: ThreadId;
     readonly runId: RunId;
     readonly nextRun: (now: DateTime.Utc) => Effect.Effect<DateTime.Utc | null, SqlError>;
-  }) => Effect.Effect<"snoozed" | "no-next-run" | "skipped", OrchestratorV2Error>;
+  }) => Effect.Effect<
+    | { readonly outcome: "snoozed" | "skipped" }
+    | { readonly outcome: "no-next-run"; readonly commandId: CommandId },
+    OrchestratorV2Error
+  >;
   readonly searchThreadStream: (
     input: OrchestrationV2SearchThreadInput,
   ) => Stream.Stream<OrchestrationV2SearchThreadResult, OrchestratorV2Error>;
@@ -16318,92 +16322,106 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return threadDispatch.withLock(
         input.threadId,
         Effect.gen(function* () {
-          const { thread, runs, runtimeRequests } = yield* projectionStore
-            .getThreadRecords(input.threadId, ["runs", "runtimeRequests"])
-            .pipe(
-              Effect.mapError(
-                (cause) =>
-                  new OrchestratorProjectionError({
-                    threadId: input.threadId,
-                    cause,
-                  }),
-              ),
-            );
-          const now = yield* DateTime.now;
-          const latest = runs.reduce<OrchestrationV2Run | undefined>(
-            (found, run) => (found === undefined || run.ordinal > found.ordinal ? run : found),
-            undefined,
-          );
-          if (
-            latest?.id !== input.runId ||
-            latest.status !== "completed" ||
-            runs.some((run) => run.status === "queued" || isActiveRun(run)) ||
-            runtimeRequests.some((request) => request.status === "pending") ||
-            thread.archivedAt !== null ||
-            thread.deletedAt !== null ||
-            thread.settledOverride === "settled" ||
-            (thread.lastSnoozeWakeAt != null &&
-              latest.completedAt !== null &&
-              DateTime.toEpochMillis(thread.lastSnoozeWakeAt) >=
-                DateTime.toEpochMillis(latest.completedAt)) ||
-            (thread.snoozedUntil != null &&
-              DateTime.toEpochMillis(thread.snoozedUntil) > DateTime.toEpochMillis(now))
-          )
-            return "skipped" as const;
-          const commit = eventSink
-            .withProviderBatch(
-              Effect.gen(function* () {
-                // Provider events can commit questions without taking the thread lock.
-                const { runtimeRequests } = yield* projectionStore.getThreadRecords(
-                  input.threadId,
-                  ["runtimeRequests"],
-                );
-                if (runtimeRequests.some((request) => request.status === "pending")) {
-                  return { outcome: "skipped" as const, deadline: null };
-                }
-                const snoozedUntil = yield* input.nextRun(yield* DateTime.now);
-                if (snoozedUntil === null) {
-                  return { outcome: "no-next-run" as const, deadline: null };
-                }
-                const result = yield* dispatchWithReceiptEffect({
-                  type: "thread.snooze",
-                  commandId: input.commandId,
-                  threadId: input.threadId,
-                  snoozedUntil: DateTime.formatIso(snoozedUntil),
-                }).pipe(Effect.provideService(AutomaticSnoozeNextRun, input.nextRun));
-                const snooze = result.replayed
-                  ? undefined
-                  : result.storedEvents.find(({ event }) => event.type === "thread.snoozed")?.event;
-                return {
-                  outcome: "snoozed" as const,
-                  deadline: snooze?.type === "thread.snoozed" ? snooze.payload.snoozedUntil : null,
-                };
-              }),
-              ({ deadline }) =>
-                deadline == null
-                  ? Effect.void
-                  : DateTime.now.pipe(
-                      Effect.flatMap((now) =>
-                        DateTime.isGreaterThan(deadline, now)
-                          ? Effect.void
-                          : Effect.fail(new AutomaticSnoozeDeadlineElapsed()),
+          const attempt = (commandId: CommandId) =>
+            eventSink
+              .withProviderBatch(
+                Effect.gen(function* () {
+                  // Provider events can update the turn and its questions without the thread lock.
+                  const { thread, runs, runtimeRequests } = yield* projectionStore
+                    .getThreadRecords(input.threadId, ["runs", "runtimeRequests"])
+                    .pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new OrchestratorProjectionError({
+                            threadId: input.threadId,
+                            cause,
+                          }),
                       ),
-                    ),
-            )
-            .pipe(
-              Effect.retry({ while: (cause) => cause._tag === "AutomaticSnoozeDeadlineElapsed" }),
-              Effect.map(({ outcome }) => outcome),
-              Effect.catchTags({
-                AutomaticSnoozeNoOccurrence: () => Effect.succeed("no-next-run" as const),
-              }),
-            );
+                    );
+                  const now = yield* DateTime.now;
+                  const latest = runs.reduce<OrchestrationV2Run | undefined>(
+                    (found, run) =>
+                      found === undefined || run.ordinal > found.ordinal ? run : found,
+                    undefined,
+                  );
+                  if (
+                    latest?.id !== input.runId ||
+                    latest.status !== "completed" ||
+                    runs.some((run) => run.status === "queued" || isActiveRun(run)) ||
+                    runtimeRequests.some((request) => request.status === "pending") ||
+                    thread.archivedAt !== null ||
+                    thread.deletedAt !== null ||
+                    thread.settledOverride === "settled" ||
+                    (thread.lastSnoozeWakeAt != null &&
+                      latest.completedAt !== null &&
+                      DateTime.toEpochMillis(thread.lastSnoozeWakeAt) >=
+                        DateTime.toEpochMillis(latest.completedAt)) ||
+                    (thread.snoozedUntil != null &&
+                      DateTime.toEpochMillis(thread.snoozedUntil) > DateTime.toEpochMillis(now))
+                  )
+                    return { outcome: "skipped" as const, deadline: null };
+                  const snoozedUntil = yield* input.nextRun(yield* DateTime.now);
+                  if (snoozedUntil === null) {
+                    return { outcome: "no-next-run" as const, deadline: null };
+                  }
+                  const result = yield* dispatchWithReceiptEffect({
+                    type: "thread.snooze",
+                    commandId,
+                    threadId: input.threadId,
+                    snoozedUntil: DateTime.formatIso(snoozedUntil),
+                  }).pipe(Effect.provideService(AutomaticSnoozeNextRun, input.nextRun));
+                  const snooze = result.replayed
+                    ? undefined
+                    : result.storedEvents.find(({ event }) => event.type === "thread.snoozed")
+                        ?.event;
+                  return {
+                    outcome: "snoozed" as const,
+                    deadline:
+                      snooze?.type === "thread.snoozed" ? snooze.payload.snoozedUntil : null,
+                  };
+                }),
+                ({ deadline }) =>
+                  deadline == null
+                    ? Effect.void
+                    : DateTime.now.pipe(
+                        Effect.flatMap((now) =>
+                          DateTime.isGreaterThan(deadline, now)
+                            ? Effect.void
+                            : Effect.fail(new AutomaticSnoozeDeadlineElapsed()),
+                        ),
+                      ),
+              )
+              .pipe(
+                Effect.retry({ while: (cause) => cause._tag === "AutomaticSnoozeDeadlineElapsed" }),
+                Effect.catchTags({
+                  AutomaticSnoozeNoOccurrence: () =>
+                    Effect.succeed({ outcome: "no-next-run" as const, deadline: null }),
+                }),
+              );
+          const commit = Effect.gen(function* () {
+            let commandId = input.commandId;
+            while (true) {
+              const { outcome, deadline } = yield* attempt(commandId);
+              if (outcome === "no-next-run") return { outcome, commandId };
+              if (deadline == null || DateTime.isGreaterThan(deadline, yield* DateTime.now)) {
+                return { outcome };
+              }
+              // COMMIT can finish after the deadline. Its accepted receipt cannot be retried.
+              commandId = CommandId.make(
+                `server:scheduled-task-snooze:${input.runId}:after:${DateTime.toEpochMillis(deadline)}`,
+              );
+            }
+          });
           // Take settings before the SQLite writer; a settings reload can also need that writer.
           return yield* serverSettings
             .withSettingsSnapshot(
               (settings) =>
-                settings.snoozeThreadsUntilScheduledTask
-                  ? commit
-                  : Effect.succeed("skipped" as const),
+                Effect.gen(function* () {
+                  if (!settings.snoozeThreadsUntilScheduledTask) {
+                    return { outcome: "skipped" as const };
+                  }
+                  return yield* commit;
+                }),
               { materializeSecrets: false },
             )
             .pipe(

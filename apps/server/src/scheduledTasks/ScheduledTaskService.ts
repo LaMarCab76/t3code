@@ -449,28 +449,38 @@ const decodeRow = Effect.fnUntraced(
     ),
 );
 
-/** The soonest future run of an enabled task bound to this thread, or null. */
-export const nextRunForThread = Effect.fn("ScheduledTaskService.nextRunForThread")(function* (
+export const readThreadSchedule = Effect.fn("ScheduledTaskService.readThreadSchedule")(function* (
   threadId: ThreadId,
   now: DateTime.DateTime,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ next_run_at: string }>`
-    SELECT next_run_at FROM scheduled_tasks
-    WHERE thread_id = ${threadId} AND enabled = 1 AND next_run_at IS NOT NULL
+  const rows = yield* sql<{
+    task_id: ScheduledTaskId;
+    next_run_at: string | null;
+    last_run_status: string;
+  }>`
+    SELECT task_id, next_run_at, last_run_status FROM scheduled_tasks
+    WHERE thread_id = ${threadId} AND enabled = 1
+      AND (next_run_at IS NOT NULL OR last_run_status = 'running')
   `.pipe(NodeSqliteClient.readOnly);
-  let next: DateTime.Utc | null = null;
+  const runningTaskIds: ScheduledTaskId[] = [];
+  let nextRun: DateTime.Utc | null = null;
   for (const row of rows) {
+    if (row.last_run_status === "running") {
+      runningTaskIds.push(row.task_id);
+      continue;
+    }
+    if (row.next_run_at === null) continue;
     const parsed = DateTime.make(row.next_run_at);
     if (
       Option.isSome(parsed) &&
       DateTime.isGreaterThan(parsed.value, now) &&
-      (next === null || DateTime.isLessThan(parsed.value, next))
+      (nextRun === null || DateTime.isLessThan(parsed.value, nextRun))
     ) {
-      next = DateTime.toUtc(parsed.value);
+      nextRun = DateTime.toUtc(parsed.value);
     }
   }
-  return next;
+  return { nextRun, runningTaskIds };
 });
 
 export const listDueTasks = Effect.fn("ScheduledTaskService.listDueTasks")(function* (
