@@ -5,7 +5,6 @@ import type {
   OrchestrationV2SearchThreadResult,
   OrchestrationV2ThreadHistoryPage,
   ProjectId,
-  ServerSettingsError,
 } from "@t3tools/contracts";
 import {
   latestExecutedRun,
@@ -429,9 +428,7 @@ export interface OrchestratorV2Shape {
     readonly commandId: CommandId;
     readonly threadId: ThreadId;
     readonly runId: RunId;
-    readonly nextRun: (
-      now: DateTime.Utc,
-    ) => Effect.Effect<DateTime.Utc | null, SqlError | ServerSettingsError>;
+    readonly nextRun: (now: DateTime.Utc) => Effect.Effect<DateTime.Utc | null, SqlError>;
   }) => Effect.Effect<void, OrchestratorV2Error>;
   readonly searchThreadStream: (
     input: OrchestrationV2SearchThreadInput,
@@ -16328,19 +16325,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               DateTime.toEpochMillis(thread.snoozedUntil) > DateTime.toEpochMillis(now))
           )
             return;
-          // Read the schedule on the writer so a committed pause wins before the snooze.
-          yield* eventSink
-            .withProviderBatch(
-              Effect.gen(function* () {
-                const snoozedUntil = yield* input.nextRun(yield* DateTime.now);
-                if (snoozedUntil === null) return;
-                yield* dispatchWithReceiptEffect({
-                  type: "thread.snooze",
-                  commandId: input.commandId,
-                  threadId: input.threadId,
-                  snoozedUntil: DateTime.formatIso(snoozedUntil),
-                });
-              }),
+          // Take settings before the SQLite writer; a settings reload can also need that writer.
+          yield* serverSettings
+            .withSettingsSnapshot(
+              (settings) =>
+                settings.snoozeThreadsUntilScheduledTask
+                  ? eventSink.withProviderBatch(
+                      Effect.gen(function* () {
+                        const snoozedUntil = yield* input.nextRun(yield* DateTime.now);
+                        if (snoozedUntil === null) return;
+                        yield* dispatchWithReceiptEffect({
+                          type: "thread.snooze",
+                          commandId: input.commandId,
+                          threadId: input.threadId,
+                          snoozedUntil: DateTime.formatIso(snoozedUntil),
+                        });
+                      }),
+                    )
+                  : Effect.void,
+              { materializeSecrets: false },
             )
             .pipe(
               Effect.mapError(

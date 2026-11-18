@@ -44,11 +44,6 @@ const adapter = {
   openSession: () => Effect.die("No provider process needed"),
 } as ProviderAdapter.ProviderAdapterV2["Service"];
 const layerDatabase = SqlitePersistence.layerMemory;
-const replayLayer = ProviderReplayHarness.layerWithRegistry(
-  { name: "scheduled-task-snooze" },
-  ProviderAdapterRegistry.layerFromAdapters([adapter]),
-  { databaseLayer: layerDatabase, runEffectWorker: false },
-);
 const layerTest = (
   snoozeThreadsUntilScheduledTask: boolean,
   pendingDispatch: ScheduledTaskService.ScheduledTaskService["Service"]["pendingDispatch"] = () =>
@@ -56,14 +51,28 @@ const layerTest = (
   wrapOrchestrator: (
     engine: Orchestrator.OrchestratorV2["Service"],
   ) => Orchestrator.OrchestratorV2["Service"] = (engine) => engine,
-) =>
-  ScheduledTaskSnoozeReactor.layer.pipe(
+  pendingDispatches: ScheduledTaskService.ScheduledTaskService["Service"]["pendingDispatches"] = Effect.succeed(
+    new Map(),
+  ),
+) => {
+  const settingsLayer = ServerSettings.layerTest({ snoozeThreadsUntilScheduledTask }).pipe(
+    Layer.orDie,
+  );
+  const replayLayer = ProviderReplayHarness.layerWithRegistry(
+    { name: "scheduled-task-snooze" },
+    ProviderAdapterRegistry.layerFromAdapters([adapter]),
+    { databaseLayer: layerDatabase, runEffectWorker: false, settingsLayer },
+  );
+  return ScheduledTaskSnoozeReactor.layer.pipe(
     Layer.provideMerge(
       Layer.mergeAll(
         layerDatabase,
         ProjectionStore.layer.pipe(Layer.provide(layerDatabase)),
-        ServerSettings.layerTest({ snoozeThreadsUntilScheduledTask }),
-        Layer.mock(ScheduledTaskService.ScheduledTaskService)({ pendingDispatch }),
+        settingsLayer,
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({
+          pendingDispatch,
+          pendingDispatches,
+        }),
         Layer.effect(
           Orchestrator.OrchestratorV2,
           Effect.map(Orchestrator.OrchestratorV2, wrapOrchestrator),
@@ -71,6 +80,7 @@ const layerTest = (
       ),
     ),
   );
+};
 
 const threadId = ThreadId.make("thread:scheduled-snooze");
 const NEXT_RUN = "2030-01-01T09:00:00.000Z";
@@ -330,60 +340,96 @@ it.effect.each([
   }),
 );
 
-it.effect("reacts to newer turns and other threads while a scheduled dispatch is pending", () =>
-  Effect.gen(function* () {
-    const input = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
-    const dispatchStarted = yield* Deferred.make<void>();
-    const releaseDispatch = yield* Deferred.make<void>();
-    const waits = yield* Ref.make(0);
-    yield* Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      const events = yield* EventSink.EventSinkV2;
-      const reactor = yield* ScheduledTaskSnoozeReactor.ScheduledTaskSnoozeReactor;
-      const otherThreadId = ThreadId.make("thread:other");
-      const waitForSnooze = (threadId: ThreadId) =>
-        events
-          .stream({ threadId, eventType: "thread.snoozed", afterSequence: 0 })
-          .pipe(Stream.runHead);
-
-      yield* insertTask(sql, { id: "same-thread-next", threadId, next: NEXT_RUN });
-      yield* insertTask(sql, { id: "other-next", threadId: otherThreadId, next: NEXT_RUN });
-      yield* reactor.start();
-      const scheduled = yield* completeTurn(
-        { scheduledTaskId: ScheduledTaskId.make("dispatch-in-progress") },
-        { observe: false },
+it.effect.each([true, false])(
+  "reacts to newer turns and other threads with a committed next occurrence: %s",
+  (committed) =>
+    Effect.gen(function* () {
+      const input = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
+      const dispatchStarted = yield* Deferred.make<void>();
+      const releaseDispatch = yield* Deferred.make<void>();
+      const waits = yield* Ref.make(0);
+      const newerWaitStarted = yield* Deferred.make<void>();
+      const activeTaskId = ScheduledTaskId.make("dispatch-in-progress");
+      const dispatches = yield* Ref.make(
+        new Map<ScheduledTaskId, { messageId: MessageId; settled: Effect.Effect<void> }>(),
       );
-      yield* Queue.offer(input, scheduled);
-      yield* Deferred.await(dispatchStarted);
-      yield* Queue.offer(input, { ...scheduled, id: EventId.make("event:re-emitted-completion") });
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const events = yield* EventSink.EventSinkV2;
+        const reactor = yield* ScheduledTaskSnoozeReactor.ScheduledTaskSnoozeReactor;
+        const otherThreadId = ThreadId.make("thread:other");
+        const waitForSnooze = (threadId: ThreadId) =>
+          events
+            .stream({ threadId, eventType: "thread.snoozed", afterSequence: 0 })
+            .pipe(Stream.runHead);
 
-      const other = yield* completeTurn({}, { threadId: otherThreadId, observe: false });
-      yield* Queue.offer(input, other);
-      yield* waitForSnooze(otherThreadId);
-      assert.strictEqual(yield* snoozedUntil, null);
+        yield* insertTask(sql, {
+          id: activeTaskId,
+          threadId,
+          next: committed ? NEXT_RUN : null,
+        });
+        yield* insertTask(sql, { id: "other-next", threadId: otherThreadId, next: NEXT_RUN });
+        yield* reactor.start();
+        const scheduled = yield* completeTurn(
+          { scheduledTaskId: activeTaskId },
+          { observe: false },
+        );
+        yield* Ref.set(
+          dispatches,
+          new Map([
+            [
+              activeTaskId,
+              {
+                messageId: scheduled.payload.userMessageId,
+                settled: Deferred.succeed(newerWaitStarted, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseDispatch)),
+                ),
+              },
+            ],
+          ]),
+        );
+        yield* Queue.offer(input, scheduled);
+        yield* Deferred.await(dispatchStarted);
+        yield* Queue.offer(input, {
+          ...scheduled,
+          id: EventId.make("event:re-emitted-completion"),
+        });
 
-      const newer = yield* completeTurn({}, { ordinal: 2, observe: false });
-      yield* Queue.offer(input, newer);
-      yield* waitForSnooze(threadId);
-      assert.strictEqual(yield* snoozedUntil, NEXT_RUN);
-      assert.strictEqual(yield* Ref.get(waits), 1);
-      yield* Deferred.succeed(releaseDispatch, undefined);
-    }).pipe(
-      Effect.provide(
-        layerTest(
-          true,
-          () =>
-            Effect.succeed(
-              Ref.update(waits, (count) => count + 1).pipe(
-                Effect.andThen(Deferred.succeed(dispatchStarted, undefined)),
-                Effect.andThen(Deferred.await(releaseDispatch)),
+        const other = yield* completeTurn({}, { threadId: otherThreadId, observe: false });
+        yield* Queue.offer(input, other);
+        yield* waitForSnooze(otherThreadId);
+        assert.strictEqual(yield* snoozedUntil, null);
+
+        const newer = yield* completeTurn({}, { ordinal: 2, observe: false });
+        yield* Queue.offer(input, newer);
+        if (!committed) {
+          yield* Deferred.await(newerWaitStarted);
+          assert.strictEqual(yield* snoozedUntil, null);
+          yield* sql`UPDATE scheduled_tasks SET next_run_at = ${NEXT_RUN} WHERE task_id = ${activeTaskId}`;
+          yield* Ref.set(dispatches, new Map());
+          yield* Deferred.succeed(releaseDispatch, undefined);
+        }
+        yield* waitForSnooze(threadId);
+        assert.strictEqual(yield* snoozedUntil, NEXT_RUN);
+        assert.strictEqual(yield* Ref.get(waits), 1);
+        yield* Deferred.succeed(releaseDispatch, undefined);
+      }).pipe(
+        Effect.provide(
+          layerTest(
+            true,
+            () =>
+              Effect.succeed(
+                Ref.update(waits, (count) => count + 1).pipe(
+                  Effect.andThen(Deferred.succeed(dispatchStarted, undefined)),
+                  Effect.andThen(Deferred.await(releaseDispatch)),
+                ),
               ),
-            ),
-          (engine) => ({ ...engine, streamDomainEvents: Stream.fromQueue(input) }),
+            (engine) => ({ ...engine, streamDomainEvents: Stream.fromQueue(input) }),
+            Ref.get(dispatches),
+          ),
         ),
-      ),
-    );
-  }),
+      );
+    }),
 );
 
 it.effect("keeps the thread awake when disabled while the snooze waits for its lock", () =>

@@ -38,8 +38,11 @@ const make = Effect.gen(function* () {
   const handle: ScheduledTaskSnoozeReactor["Service"]["handle"] = Effect.fnUntraced(
     function* (event) {
       if (!isCompletedRun(event)) return;
-      const { snoozeThreadsUntilScheduledTask } = yield* settings.getSettings;
-      if (!snoozeThreadsUntilScheduledTask) return;
+      const enabled = yield* settings.withSettingsSnapshot(
+        (snapshot) => Effect.succeed(snapshot.snoozeThreadsUntilScheduledTask),
+        { materializeSecrets: false },
+      );
+      if (!enabled) return;
       const run = event.payload;
       const { messages } = yield* projections.getThreadRecords(event.threadId, ["messages"], {
         messageIds: [run.userMessageId],
@@ -57,26 +60,35 @@ const make = Effect.gen(function* () {
         ScheduledTasks.nextRunForThread(event.threadId, now).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
         );
-      if ((yield* nextRun(yield* DateTime.now)) === null) return;
-      if (!(yield* settings.getSettings).snoozeThreadsUntilScheduledTask) return;
+      // Capture dispatches before the read so a commit between lookup and wait cannot be missed.
+      const dispatches = yield* tasks.pendingDispatches;
+      if ((yield* nextRun(yield* DateTime.now)) === null) {
+        if (dispatches.size === 0) return;
+        const { messages } = yield* projections.getThreadRecords(event.threadId, ["messages"], {
+          messageIds: Array.from(dispatches.values(), (dispatch) => dispatch.messageId),
+        });
+        const waits = messages.flatMap((message) => {
+          if (message.scheduledTaskId === undefined) return [];
+          const dispatch = dispatches.get(message.scheduledTaskId);
+          return dispatch?.messageId === message.id ? [dispatch.settled] : [];
+        });
+        let upcoming: DateTime.Utc | null = null;
+        while (waits.length > 0 && upcoming === null) {
+          const settled = yield* Effect.raceAll(
+            waits.map((wait, index) => wait.pipe(Effect.as(index))),
+          );
+          waits.splice(settled, 1);
+          upcoming = yield* nextRun(yield* DateTime.now);
+        }
+        if (upcoming === null) return;
+      }
 
       // Completion can be re-emitted by checkpoints and delegated rewrites.
       yield* engine.autoSnoozeAfterRun({
         commandId: CommandId.make(`server:scheduled-task-snooze:${run.id}`),
         threadId: event.threadId,
         runId: run.id,
-        nextRun: (now) =>
-          nextRun(now).pipe(
-            Effect.flatMap((wakeAt) =>
-              wakeAt === null
-                ? Effect.succeed(null)
-                : settings.getSettings.pipe(
-                    Effect.map(({ snoozeThreadsUntilScheduledTask }) =>
-                      snoozeThreadsUntilScheduledTask ? wakeAt : null,
-                    ),
-                  ),
-            ),
-          ),
+        nextRun,
       });
     },
     (effect, event) =>

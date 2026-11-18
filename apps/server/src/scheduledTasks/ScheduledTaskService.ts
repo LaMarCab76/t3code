@@ -255,6 +255,11 @@ interface WebhookDeliveryRow {
   readonly error: string | null;
 }
 
+interface PendingScheduledDispatch {
+  readonly messageId: MessageId;
+  readonly settled: Effect.Effect<void>;
+}
+
 export class ScheduledTaskService extends Context.Service<
   ScheduledTaskService,
   {
@@ -264,6 +269,9 @@ export class ScheduledTaskService extends Context.Service<
       id: ScheduledTaskId,
       messageId: MessageId,
     ) => Effect.Effect<Effect.Effect<void> | undefined>;
+    readonly pendingDispatches: Effect.Effect<
+      ReadonlyMap<ScheduledTaskId, PendingScheduledDispatch>
+    >;
     readonly upsert: (
       input: ScheduledTaskUpsertInput,
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
@@ -535,15 +543,15 @@ export const layer = Layer.effect(
     const webhookFilteredLogWindows = yield* Ref.make<
       ReadonlyMap<ScheduledTaskId, ReadonlyArray<number>>
     >(new Map());
-    const activeRuns = yield* Ref.make<
-      ReadonlyMap<ScheduledTaskId, { messageId: MessageId; released: Deferred.Deferred<void> }>
-    >(new Map());
+    const activeRuns = yield* Ref.make<ReadonlyMap<ScheduledTaskId, PendingScheduledDispatch>>(
+      new Map(),
+    );
     const pendingDispatch = Effect.fn("ScheduledTaskService.pendingDispatch")(function* (
       id: ScheduledTaskId,
       messageId: MessageId,
     ) {
       const dispatch = (yield* Ref.get(activeRuns)).get(id);
-      return dispatch?.messageId === messageId ? Deferred.await(dispatch.released) : undefined;
+      return dispatch?.messageId === messageId ? dispatch.settled : undefined;
     });
     // Notifications re-emit the full list; slow subscribers need only the newest dirty signal.
     const changesPubSub = yield* PubSub.sliding<void>(1);
@@ -1241,7 +1249,7 @@ export const layer = Layer.effect(
         Ref.modify(activeRuns, (active) => {
           if (active.has(task.id)) return [false, active] as const;
           const next = new Map(active);
-          next.set(task.id, { messageId, released: dispatched });
+          next.set(task.id, { messageId, settled: Deferred.await(dispatched) });
           return [true, next] as const;
         }),
         (reserved) =>
@@ -2672,6 +2680,7 @@ export const layer = Layer.effect(
       list,
       subscribeList,
       pendingDispatch,
+      pendingDispatches: Ref.get(activeRuns),
       upsert,
       setEnabled,
       delete: deleteTask,
