@@ -337,7 +337,7 @@ const layerBase: Layer.Layer<
             Effect.tap(restore(transaction), (result) =>
               beforeCommit === undefined
                 ? takeLane
-                : takeLane.pipe(Effect.andThen(() => beforeCommit(result))),
+                : takeLane.pipe(Effect.andThen(() => restore(beforeCommit(result)))),
             ),
           )
           .pipe(

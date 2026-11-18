@@ -46,9 +46,11 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
+import type { SqlError } from "effect/sql/SqlError";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
@@ -265,10 +267,11 @@ export class ScheduledTaskService extends Context.Service<
   {
     readonly list: () => Effect.Effect<ScheduledTaskListResult, ScheduledTaskError>;
     readonly subscribeList: () => Stream.Stream<ScheduledTaskListResult, ScheduledTaskError>;
+    readonly subscribeChanges: Effect.Effect<Effect.Effect<void>, never, Scope.Scope>;
     readonly pendingDispatch: (
       id: ScheduledTaskId,
       messageId: MessageId,
-    ) => Effect.Effect<Effect.Effect<void> | undefined>;
+    ) => Effect.Effect<Effect.Effect<void> | undefined, SqlError>;
     readonly pendingDispatches: Effect.Effect<
       ReadonlyMap<ScheduledTaskId, PendingScheduledDispatch>
     >;
@@ -449,6 +452,9 @@ const decodeRow = Effect.fnUntraced(
     ),
 );
 
+const timedSchedule = (sql: SqlClient.SqlClient) =>
+  sql`CASE WHEN json_valid(schedule_json) THEN json_extract(schedule_json, '$.type') END <> 'webhook'`;
+
 export const readThreadSchedule = Effect.fn("ScheduledTaskService.readThreadSchedule")(function* (
   threadId: ThreadId,
   now: DateTime.DateTime,
@@ -462,6 +468,7 @@ export const readThreadSchedule = Effect.fn("ScheduledTaskService.readThreadSche
     SELECT task_id, next_run_at, last_run_status FROM scheduled_tasks
     WHERE thread_id = ${threadId} AND enabled = 1
       AND (next_run_at IS NOT NULL OR last_run_status = 'running')
+      AND ${timedSchedule(sql)}
   `.pipe(NodeSqliteClient.readOnly);
   const runningTaskIds: ScheduledTaskId[] = [];
   let nextRun: DateTime.Utc | null = null;
@@ -565,7 +572,13 @@ export const layer = Layer.effect(
       messageId: MessageId,
     ) {
       const dispatch = (yield* Ref.get(activeRuns)).get(id);
-      return dispatch?.messageId === messageId ? dispatch.settled : undefined;
+      if (dispatch?.messageId !== messageId) return;
+      const rows = yield* sql`
+        SELECT 1 FROM scheduled_tasks
+        WHERE task_id = ${id} AND enabled = 1 AND last_run_status = 'running'
+          AND ${timedSchedule(sql)}
+      `.pipe(NodeSqliteClient.readOnly);
+      if (rows.length > 0) return dispatch.settled;
     });
     // Notifications re-emit the full list; slow subscribers need only the newest dirty signal.
     const changesPubSub = yield* PubSub.sliding<void>(1);
@@ -2693,6 +2706,7 @@ export const layer = Layer.effect(
     return ScheduledTaskService.of({
       list,
       subscribeList,
+      subscribeChanges: PubSub.subscribe(changesPubSub).pipe(Effect.map(PubSub.take)),
       pendingDispatch,
       pendingDispatches: Ref.get(activeRuns),
       upsert,

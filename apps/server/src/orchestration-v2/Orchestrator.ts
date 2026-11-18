@@ -16322,7 +16322,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return threadDispatch.withLock(
         input.threadId,
         Effect.gen(function* () {
-          const attempt = (commandId: CommandId) =>
+          const attempt = (commandId: CommandId, expired: DateTime.Utc | null) =>
             eventSink
               .withProviderBatch(
                 Effect.gen(function* () {
@@ -16339,6 +16339,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                       ),
                     );
                   const now = yield* DateTime.now;
+                  const clearExpiredSnooze =
+                    expired !== null &&
+                    thread.snoozedUntil != null &&
+                    DateTime.Equivalence(thread.snoozedUntil, expired)
+                      ? writeSystemEvents([
+                          {
+                            type: "thread.unsnoozed",
+                            threadId: thread.id,
+                            providerInstanceId: thread.providerInstanceId,
+                            occurredAt: now,
+                            payload: {
+                              ...thread,
+                              snoozedUntil: null,
+                              snoozedAt: null,
+                              updatedAt: now,
+                            },
+                          },
+                        ])
+                      : Effect.void;
                   const latest = runs.reduce<OrchestrationV2Run | undefined>(
                     (found, run) =>
                       found === undefined || run.ordinal > found.ordinal ? run : found,
@@ -16358,18 +16377,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                         DateTime.toEpochMillis(latest.completedAt)) ||
                     (thread.snoozedUntil != null &&
                       DateTime.toEpochMillis(thread.snoozedUntil) > DateTime.toEpochMillis(now))
-                  )
+                  ) {
+                    yield* clearExpiredSnooze;
                     return { outcome: "skipped" as const, deadline: null };
+                  }
                   const snoozedUntil = yield* input.nextRun(yield* DateTime.now);
-                  if (snoozedUntil === null) {
+                  const result =
+                    snoozedUntil === null
+                      ? null
+                      : yield* dispatchWithReceiptEffect({
+                          type: "thread.snooze",
+                          commandId,
+                          threadId: input.threadId,
+                          snoozedUntil: DateTime.formatIso(snoozedUntil),
+                        }).pipe(
+                          Effect.provideService(AutomaticSnoozeNextRun, input.nextRun),
+                          Effect.catchTags({
+                            AutomaticSnoozeNoOccurrence: () => Effect.succeed(null),
+                          }),
+                        );
+                  if (result === null) {
+                    yield* clearExpiredSnooze;
                     return { outcome: "no-next-run" as const, deadline: null };
                   }
-                  const result = yield* dispatchWithReceiptEffect({
-                    type: "thread.snooze",
-                    commandId,
-                    threadId: input.threadId,
-                    snoozedUntil: DateTime.formatIso(snoozedUntil),
-                  }).pipe(Effect.provideService(AutomaticSnoozeNextRun, input.nextRun));
                   const snooze = result.replayed
                     ? undefined
                     : result.storedEvents.find(({ event }) => event.type === "thread.snoozed")
@@ -16377,7 +16407,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   return {
                     outcome: "snoozed" as const,
                     deadline:
-                      snooze?.type === "thread.snoozed" ? snooze.payload.snoozedUntil : null,
+                      snooze?.type === "thread.snoozed"
+                        ? (snooze.payload.snoozedUntil ?? null)
+                        : null,
                   };
                 }),
                 ({ deadline }) =>
@@ -16393,20 +16425,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               )
               .pipe(
                 Effect.retry({ while: (cause) => cause._tag === "AutomaticSnoozeDeadlineElapsed" }),
-                Effect.catchTags({
-                  AutomaticSnoozeNoOccurrence: () =>
-                    Effect.succeed({ outcome: "no-next-run" as const, deadline: null }),
-                }),
               );
           const commit = Effect.gen(function* () {
             let commandId = input.commandId;
+            let expired: DateTime.Utc | null = null;
             while (true) {
-              const { outcome, deadline } = yield* attempt(commandId);
+              const {
+                outcome,
+                deadline,
+              }: {
+                outcome: "snoozed" | "no-next-run" | "skipped";
+                deadline: DateTime.Utc | null;
+              } = yield* attempt(commandId, expired);
               if (outcome === "no-next-run") return { outcome, commandId };
               if (deadline == null || DateTime.isGreaterThan(deadline, yield* DateTime.now)) {
                 return { outcome };
               }
               // COMMIT can finish after the deadline. Its accepted receipt cannot be retried.
+              expired = deadline;
               commandId = CommandId.make(
                 `server:scheduled-task-snooze:${input.runId}:after:${DateTime.toEpochMillis(deadline)}`,
               );

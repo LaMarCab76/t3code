@@ -184,6 +184,7 @@ const layerUnusedScheduledTaskStub = Layer.succeed(
   ScheduledTaskService.ScheduledTaskService.of({
     list: () => Effect.succeed({ tasks: [] }),
     subscribeList: () => Stream.succeed({ tasks: [] }),
+    subscribeChanges: Effect.succeed(Effect.never),
     pendingDispatch: () => Effect.undefined,
     pendingDispatches: Effect.succeed(new Map()),
     upsert: () => Effect.die("ScheduledTaskService.upsert is unused in this test"),

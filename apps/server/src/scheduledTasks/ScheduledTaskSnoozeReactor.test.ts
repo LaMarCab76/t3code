@@ -17,6 +17,7 @@ import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
@@ -56,6 +57,9 @@ const layerTest = (
     new Map(),
   ),
   wrapEventSink?: (sink: EventSink.EventSinkV2Shape) => EventSink.EventSinkV2Shape,
+  subscribeChanges: ScheduledTaskService.ScheduledTaskService["Service"]["subscribeChanges"] = Effect.succeed(
+    Effect.never,
+  ),
 ) => {
   const settingsLayer = ServerSettings.layerTest({ snoozeThreadsUntilScheduledTask }).pipe(
     Layer.orDie,
@@ -79,6 +83,7 @@ const layerTest = (
         Layer.mock(ScheduledTaskService.ScheduledTaskService)({
           pendingDispatch,
           pendingDispatches,
+          subscribeChanges,
         }),
         Layer.effect(
           Orchestrator.OrchestratorV2,
@@ -94,14 +99,22 @@ const NEXT_RUN = "2030-01-01T09:00:00.000Z";
 
 const insertTask = (
   sql: SqlClient.SqlClient,
-  task: { id: string; threadId: string; next: string | null; enabled?: number; running?: boolean },
+  task: {
+    id: string;
+    threadId: string;
+    next: string | null;
+    enabled?: number;
+    running?: boolean;
+    webhook?: boolean;
+  },
 ) =>
   sql`INSERT INTO scheduled_tasks ${sql.insert({
     task_id: task.id,
     title: "task",
     prompt: "Run task",
     enabled: task.enabled ?? 1,
-    schedule_json: '{"type":"interval","everyMs":60000}',
+    schedule_json:
+      task.webhook === true ? '{"type":"webhook"}' : '{"type":"interval","everyMs":60000}',
     project_id: "project:scheduled-snooze",
     thread_id: task.threadId,
     workspace_strategy_json: '{"type":"root"}',
@@ -352,133 +365,152 @@ it.effect.each([
   }),
 );
 
-it.effect.each(["committed", "pending", "replacing", "paused before write"] as const)(
-  "reacts to newer turns and other threads when the next occurrence is %s",
-  (schedule) =>
-    Effect.gen(function* () {
-      const input = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
-      const dispatchStarted = yield* Deferred.make<void>();
-      const releaseDispatch = yield* Deferred.make<void>();
-      const waits = yield* Ref.make(0);
-      const newerWaitStarted = yield* Deferred.make<void>();
-      const beforeWriter = yield* Deferred.make<void>();
-      const gateNextWriter = yield* Ref.make(false);
-      const allowWriter = yield* Deferred.make<void>();
-      const activeTaskId = ScheduledTaskId.make("dispatch-in-progress");
-      const dispatches = yield* Ref.make(
-        new Map<ScheduledTaskId, { messageId: MessageId; settled: Effect.Effect<void> }>(),
+it.effect.each([
+  "committed",
+  "pending",
+  "replacing",
+  "paused before write",
+  "paused while waiting",
+  "running webhook",
+] as const)("reacts to newer turns and other threads when the next occurrence is %s", (schedule) =>
+  Effect.gen(function* () {
+    const input = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
+    const changes = yield* PubSub.sliding<void>(1);
+    const dispatchStarted = yield* Deferred.make<void>();
+    const releaseDispatch = yield* Deferred.make<void>();
+    const paused = yield* Ref.make(false);
+    const waits = yield* Ref.make(0);
+    const newerWaitStarted = yield* Deferred.make<void>();
+    const beforeWriter = yield* Deferred.make<void>();
+    const gateNextWriter = yield* Ref.make(false);
+    const allowWriter = yield* Deferred.make<void>();
+    const activeTaskId = ScheduledTaskId.make("dispatch-in-progress");
+    const dispatches = yield* Ref.make(
+      new Map<ScheduledTaskId, { messageId: MessageId; settled: Effect.Effect<void> }>(),
+    );
+    yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const events = yield* EventSink.EventSinkV2;
+      const reactor = yield* ScheduledTaskSnoozeReactor.ScheduledTaskSnoozeReactor;
+      const otherThreadId = ThreadId.make("thread:other");
+      const waitForSnooze = (threadId: ThreadId) =>
+        events
+          .stream({ threadId, eventType: "thread.snoozed", afterSequence: 0 })
+          .pipe(Stream.runHead);
+
+      yield* insertTask(sql, {
+        id: activeTaskId,
+        threadId,
+        next:
+          schedule === "committed"
+            ? NEXT_RUN
+            : schedule === "replacing"
+              ? "2029-01-01T00:00:00.000Z"
+              : null,
+        running: schedule !== "committed" && schedule !== "paused before write",
+        webhook: schedule === "running webhook",
+      });
+      if (schedule === "paused before write") {
+        yield* insertTask(sql, { id: "paused-candidate", threadId, next: NEXT_RUN });
+      }
+      if (schedule === "paused while waiting" || schedule === "running webhook") {
+        yield* insertTask(sql, { id: "timed-candidate", threadId, next: NEXT_RUN });
+      }
+      yield* insertTask(sql, { id: "other-next", threadId: otherThreadId, next: NEXT_RUN });
+      yield* reactor.start();
+      const scheduled = yield* completeTurn({ scheduledTaskId: activeTaskId }, { observe: false });
+      yield* Ref.set(
+        dispatches,
+        new Map([
+          [
+            activeTaskId,
+            {
+              messageId: scheduled.payload.userMessageId,
+              settled: Deferred.succeed(newerWaitStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseDispatch)),
+              ),
+            },
+          ],
+        ]),
       );
-      yield* Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        const events = yield* EventSink.EventSinkV2;
-        const reactor = yield* ScheduledTaskSnoozeReactor.ScheduledTaskSnoozeReactor;
-        const otherThreadId = ThreadId.make("thread:other");
-        const waitForSnooze = (threadId: ThreadId) =>
-          events
-            .stream({ threadId, eventType: "thread.snoozed", afterSequence: 0 })
-            .pipe(Stream.runHead);
+      yield* Queue.offer(input, scheduled);
+      yield* Deferred.await(dispatchStarted);
+      yield* Queue.offer(input, {
+        ...scheduled,
+        id: EventId.make("event:re-emitted-completion"),
+      });
 
-        yield* insertTask(sql, {
-          id: activeTaskId,
-          threadId,
-          next:
-            schedule === "committed"
-              ? NEXT_RUN
-              : schedule === "replacing"
-                ? "2029-01-01T00:00:00.000Z"
-                : null,
-          running: schedule === "pending" || schedule === "replacing",
-        });
-        if (schedule === "paused before write") {
-          yield* insertTask(sql, { id: "paused-candidate", threadId, next: NEXT_RUN });
-        }
-        yield* insertTask(sql, { id: "other-next", threadId: otherThreadId, next: NEXT_RUN });
-        yield* reactor.start();
-        const scheduled = yield* completeTurn(
-          { scheduledTaskId: activeTaskId },
-          { observe: false },
+      const other = yield* completeTurn({}, { threadId: otherThreadId, observe: false });
+      yield* Queue.offer(input, other);
+      yield* waitForSnooze(otherThreadId);
+      assert.strictEqual(yield* snoozedUntil, null);
+
+      const newer = yield* completeTurn({}, { ordinal: 2, observe: false });
+      if (schedule === "paused before write") yield* Ref.set(gateNextWriter, true);
+      yield* Queue.offer(input, newer);
+      if (schedule === "paused before write") {
+        yield* Deferred.await(beforeWriter);
+        yield* sql`UPDATE scheduled_tasks SET enabled = 0 WHERE task_id = 'paused-candidate'`;
+        yield* sql`UPDATE scheduled_tasks SET last_run_status = 'running' WHERE task_id = ${activeTaskId}`;
+        yield* Deferred.succeed(allowWriter, undefined);
+      }
+      if (schedule !== "committed") {
+        const waiting = yield* Effect.raceFirst(
+          Deferred.await(newerWaitStarted).pipe(Effect.as(true)),
+          waitForSnooze(threadId).pipe(Effect.as(false)),
         );
-        yield* Ref.set(
-          dispatches,
-          new Map([
-            [
-              activeTaskId,
-              {
-                messageId: scheduled.payload.userMessageId,
-                settled: Deferred.succeed(newerWaitStarted, undefined).pipe(
-                  Effect.andThen(Deferred.await(releaseDispatch)),
-                ),
-              },
-            ],
-          ]),
-        );
-        yield* Queue.offer(input, scheduled);
-        yield* Deferred.await(dispatchStarted);
-        yield* Queue.offer(input, {
-          ...scheduled,
-          id: EventId.make("event:re-emitted-completion"),
-        });
-
-        const other = yield* completeTurn({}, { threadId: otherThreadId, observe: false });
-        yield* Queue.offer(input, other);
-        yield* waitForSnooze(otherThreadId);
-        assert.strictEqual(yield* snoozedUntil, null);
-
-        const newer = yield* completeTurn({}, { ordinal: 2, observe: false });
-        if (schedule === "paused before write") yield* Ref.set(gateNextWriter, true);
-        yield* Queue.offer(input, newer);
-        if (schedule === "paused before write") {
-          yield* Deferred.await(beforeWriter);
-          yield* sql`UPDATE scheduled_tasks SET enabled = 0 WHERE task_id = 'paused-candidate'`;
-          yield* sql`UPDATE scheduled_tasks SET last_run_status = 'running' WHERE task_id = ${activeTaskId}`;
-          yield* Deferred.succeed(allowWriter, undefined);
-        }
-        if (schedule !== "committed") {
-          const waiting = yield* Effect.raceFirst(
-            Deferred.await(newerWaitStarted).pipe(Effect.as(true)),
-            waitForSnooze(threadId).pipe(Effect.as(false)),
-          );
-          assert.isTrue(waiting);
+        assert.strictEqual(waiting, schedule !== "running webhook");
+        if (schedule === "paused while waiting") {
+          yield* sql`UPDATE scheduled_tasks SET enabled = 0 WHERE task_id = ${activeTaskId}`;
+          yield* Ref.set(paused, true);
+          yield* PubSub.publish(changes, undefined);
+        } else if (waiting) {
           assert.strictEqual(yield* snoozedUntil, null);
           yield* sql`UPDATE scheduled_tasks SET next_run_at = ${NEXT_RUN}, last_run_status = 'succeeded' WHERE task_id = ${activeTaskId}`;
           yield* Ref.set(dispatches, new Map());
           yield* Deferred.succeed(releaseDispatch, undefined);
         }
-        yield* waitForSnooze(threadId);
-        assert.strictEqual(yield* snoozedUntil, NEXT_RUN);
-        assert.strictEqual(yield* Ref.get(waits), 1);
-        yield* Deferred.succeed(releaseDispatch, undefined);
-      }).pipe(
-        Effect.provide(
-          layerTest(
-            true,
-            () =>
-              Effect.succeed(
-                Ref.update(waits, (count) => count + 1).pipe(
-                  Effect.andThen(Deferred.succeed(dispatchStarted, undefined)),
-                  Effect.andThen(Deferred.await(releaseDispatch)),
-                ),
+      }
+      yield* waitForSnooze(threadId);
+      assert.strictEqual(yield* snoozedUntil, NEXT_RUN);
+      assert.strictEqual(yield* Ref.get(waits), 1);
+      yield* Deferred.succeed(releaseDispatch, undefined);
+    }).pipe(
+      Effect.provide(
+        layerTest(
+          true,
+          () =>
+            Ref.get(paused).pipe(
+              Effect.map((paused) =>
+                paused
+                  ? undefined
+                  : Ref.update(waits, (count) => count + 1).pipe(
+                      Effect.andThen(Deferred.succeed(dispatchStarted, undefined)),
+                      Effect.andThen(Deferred.await(releaseDispatch)),
+                    ),
               ),
-            (engine) => ({ ...engine, streamDomainEvents: Stream.fromQueue(input) }),
-            Ref.get(dispatches),
-            (sink) => ({
-              ...sink,
-              withProviderBatch: (write, beforeCommit) =>
-                Ref.getAndSet(gateNextWriter, false).pipe(
-                  Effect.flatMap((gate) =>
-                    gate
-                      ? Deferred.succeed(beforeWriter, undefined).pipe(
-                          Effect.andThen(Deferred.await(allowWriter)),
-                        )
-                      : Effect.void,
-                  ),
-                  Effect.andThen(sink.withProviderBatch(write, beforeCommit)),
+            ),
+          (engine) => ({ ...engine, streamDomainEvents: Stream.fromQueue(input) }),
+          Ref.get(dispatches),
+          (sink) => ({
+            ...sink,
+            withProviderBatch: (write, beforeCommit) =>
+              Ref.getAndSet(gateNextWriter, false).pipe(
+                Effect.flatMap((gate) =>
+                  gate
+                    ? Deferred.succeed(beforeWriter, undefined).pipe(
+                        Effect.andThen(Deferred.await(allowWriter)),
+                      )
+                    : Effect.void,
                 ),
-            }),
-          ),
+                Effect.andThen(sink.withProviderBatch(write, beforeCommit)),
+              ),
+          }),
+          PubSub.subscribe(changes).pipe(Effect.map(PubSub.take)),
         ),
-      );
-    }),
+      ),
+    );
+  }),
 );
 
 it.effect("keeps the thread awake when disabled while the snooze waits for its lock", () =>
@@ -583,6 +615,7 @@ it.effect.each([
   { expiring: 1, hasLaterDate: true, expires: "before commit" },
   { expiring: 1, hasLaterDate: false, expires: "before commit" },
   { expiring: 1, hasLaterDate: true, expires: "after commit" },
+  { expiring: 1, hasLaterDate: false, expires: "after commit" },
 ])(
   "handles $expiring expiring deadlines with another date: $hasLaterDate, expires $expires",
   ({ expiring, hasLaterDate, expires }) =>
@@ -612,8 +645,14 @@ it.effect.each([
             Stream.filter(({ event }) => event.type === "thread.snoozed"),
             Stream.runCount,
           );
-        assert.strictEqual(yield* snoozes, hasLaterDate ? 1 : 0);
-        if (!hasLaterDate) {
+        assert.strictEqual(yield* snoozes, hasLaterDate || expires === "after commit" ? 1 : 0);
+        if (!hasLaterDate && expires === "after commit") {
+          const projections = yield* ProjectionStore.ProjectionStoreV2;
+          const thread = yield* projections.getThread(threadId);
+          assert.isNull(thread.snoozedAt);
+          assert.isNull(thread.lastSnoozeWakeAt ?? null);
+        }
+        if (!hasLaterDate && expires !== "after commit") {
           const reactor = yield* ScheduledTaskSnoozeReactor.ScheduledTaskSnoozeReactor;
           yield* insertTask(sql, { id: "later", threadId, next: NEXT_RUN });
           yield* reactor.handle(completed);

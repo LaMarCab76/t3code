@@ -51,43 +51,58 @@ const make = Effect.gen(function* () {
       if (message?.notification !== undefined || message?.delegatedCompletion !== undefined) {
         return;
       }
-      if (message?.scheduledTaskId !== undefined) {
-        // A fast turn can finish before the scheduler commits the next occurrence.
-        const pending = yield* tasks.pendingDispatch(message.scheduledTaskId, run.userMessageId);
-        if (pending !== undefined) yield* pending;
-      }
-      const readSchedule = (now: DateTime.Utc) =>
-        ScheduledTasks.readThreadSchedule(event.threadId, now).pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-        );
-      const upcoming = yield* readSchedule(yield* DateTime.now);
-      if (upcoming.nextRun === null && upcoming.runningTaskIds.length === 0) return;
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const scheduleChanged = yield* tasks.subscribeChanges;
+          if (message?.scheduledTaskId !== undefined) {
+            // A first launch can complete before its task is bound to the new thread.
+            while (true) {
+              const pending = yield* tasks.pendingDispatch(
+                message.scheduledTaskId,
+                run.userMessageId,
+              );
+              if (pending === undefined) break;
+              const settled = yield* Effect.raceFirst(
+                pending.pipe(Effect.as(true)),
+                scheduleChanged.pipe(Effect.as(false)),
+              );
+              if (settled) break;
+            }
+          }
+          const readSchedule = (now: DateTime.Utc) =>
+            ScheduledTasks.readThreadSchedule(event.threadId, now).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            );
+          const upcoming = yield* readSchedule(yield* DateTime.now);
+          if (upcoming.nextRun === null && upcoming.runningTaskIds.length === 0) return;
 
-      let waits: ReadonlyArray<Effect.Effect<void>> = [];
-      const nextRun = Effect.fn("ScheduledTaskSnoozeReactor.nextRun")(function* (
-        now: DateTime.Utc,
-      ) {
-        const schedule = yield* readSchedule(now);
-        const dispatches = yield* tasks.pendingDispatches;
-        waits = schedule.runningTaskIds.flatMap((id) => {
-          const dispatch = dispatches.get(id);
-          return dispatch === undefined ? [] : [dispatch.settled];
-        });
-        return waits.length === 0 ? schedule.nextRun : null;
-      });
-      // Completion can be re-emitted by checkpoints and delegated rewrites.
-      let commandId = CommandId.make(`server:scheduled-task-snooze:${run.id}`);
-      while (true) {
-        const result = yield* engine.autoSnoozeAfterRun({
-          commandId,
-          threadId: event.threadId,
-          runId: run.id,
-          nextRun,
-        });
-        if (result.outcome !== "no-next-run" || waits.length === 0) return;
-        commandId = result.commandId;
-        yield* Effect.raceAll(waits);
-      }
+          let waits: ReadonlyArray<Effect.Effect<void>> = [];
+          const nextRun = Effect.fn("ScheduledTaskSnoozeReactor.nextRun")(function* (
+            now: DateTime.Utc,
+          ) {
+            const schedule = yield* readSchedule(now);
+            const dispatches = yield* tasks.pendingDispatches;
+            waits = schedule.runningTaskIds.flatMap((id) => {
+              const dispatch = dispatches.get(id);
+              return dispatch === undefined ? [] : [dispatch.settled];
+            });
+            return waits.length === 0 ? schedule.nextRun : null;
+          });
+          // Completion can be re-emitted by checkpoints and delegated rewrites.
+          let commandId = CommandId.make(`server:scheduled-task-snooze:${run.id}`);
+          while (true) {
+            const result = yield* engine.autoSnoozeAfterRun({
+              commandId,
+              threadId: event.threadId,
+              runId: run.id,
+              nextRun,
+            });
+            if (result.outcome !== "no-next-run" || waits.length === 0) return;
+            commandId = result.commandId;
+            yield* Effect.raceAll([...waits, scheduleChanged]);
+          }
+        }),
+      );
     },
     (effect, event) =>
       effect.pipe(
