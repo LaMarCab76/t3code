@@ -218,7 +218,10 @@ const AutomaticSnoozeNextRun = Context.Reference<
   ((now: DateTime.Utc) => Effect.Effect<DateTime.Utc | null, SqlError>) | undefined
 >("t3/orchestration-v2/AutomaticSnoozeNextRun", { defaultValue: () => undefined });
 
-const noAutomaticSnoozeOccurrence = Symbol("no-automatic-snooze-occurrence");
+class AutomaticSnoozeNoOccurrence extends Schema.TaggedError<AutomaticSnoozeNoOccurrence>()(
+  "AutomaticSnoozeNoOccurrence",
+  {},
+) {}
 
 export class OrchestratorDispatchError extends Schema.TaggedError<OrchestratorDispatchError>()(
   "OrchestratorDispatchError",
@@ -376,6 +379,7 @@ export class OrchestratorCommandIdConflictError extends Schema.TaggedError<Orche
 }
 
 export const OrchestratorV2Error = Schema.Union([
+  AutomaticSnoozeNoOccurrence,
   OrchestratorDispatchError,
   OrchestratorThreadAlreadyExistsError,
   OrchestratorCommandRejectedError,
@@ -4607,13 +4611,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         snoozedUntil = yield* resolveNextRun(validationTime).pipe(mapDispatchError(command));
       }
       if (snoozedUntil === null) {
+        if (resolveNextRun !== undefined) return yield* new AutomaticSnoozeNoOccurrence();
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
-          cause:
-            resolveNextRun === undefined
-              ? `Thread ${command.threadId} snooze wake time ${command.snoozedUntil} is not in the future.`
-              : noAutomaticSnoozeOccurrence,
+          cause: `Thread ${command.threadId} snooze wake time ${command.snoozedUntil} is not in the future.`,
         });
       }
       if (
@@ -15531,8 +15533,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
       Effect.catch((cause) =>
         Effect.gen(function* () {
-          // Refusals depend on modes the user can change; a recorded rejection would block the retry.
+          // A recorded rejection would block a retry after the schedule or permissions change.
           if (
+            cause._tag === "AutomaticSnoozeNoOccurrence" ||
             cause._tag === "OrchestratorThreadAboveModeLimitError" ||
             cause._tag === "OrchestratorRuntimeModeAboveCeilingError"
           ) {
@@ -16363,12 +16366,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               }),
             )
             .pipe(
-              Effect.catchIf(
-                (cause) =>
-                  cause._tag === "OrchestratorDispatchError" &&
-                  cause.cause === noAutomaticSnoozeOccurrence,
-                () => Effect.succeed("no-next-run" as const),
-              ),
+              Effect.catchTags({
+                AutomaticSnoozeNoOccurrence: () => Effect.succeed("no-next-run" as const),
+              }),
             );
           // Take settings before the SQLite writer; a settings reload can also need that writer.
           return yield* serverSettings

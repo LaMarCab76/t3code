@@ -563,6 +563,7 @@ it.effect.each([true, false])(
   "handles a deadline expiring during validation with another date: %s",
   (hasLaterDate) =>
     Effect.gen(function* () {
+      const outcomes = yield* Ref.make<ReadonlyArray<string>>([]);
       const expiresAt = DateTime.add(yield* DateTime.now, { milliseconds: 1 });
       const expiresAtIso = DateTime.formatIso(expiresAt);
       yield* Effect.gen(function* () {
@@ -570,11 +571,13 @@ it.effect.each([true, false])(
         yield* insertTask(sql, { id: "expiring", threadId, next: expiresAtIso });
         if (hasLaterDate) yield* insertTask(sql, { id: "later", threadId, next: NEXT_RUN });
         const completed = yield* completeTurn();
+        assert.deepEqual(yield* Ref.get(outcomes), [hasLaterDate ? "snoozed" : "no-next-run"]);
         assert.strictEqual(yield* snoozedUntil, hasLaterDate ? NEXT_RUN : null);
         if (!hasLaterDate) {
           const reactor = yield* ScheduledTaskSnoozeReactor.ScheduledTaskSnoozeReactor;
           yield* insertTask(sql, { id: "later", threadId, next: NEXT_RUN });
           yield* reactor.handle(completed);
+          assert.deepEqual(yield* Ref.get(outcomes), ["no-next-run", "snoozed"]);
           assert.strictEqual(yield* snoozedUntil, NEXT_RUN);
         }
       }).pipe(
@@ -582,19 +585,21 @@ it.effect.each([true, false])(
           layerTest(true, undefined, (engine) => ({
             ...engine,
             autoSnoozeAfterRun: (attempt) =>
-              engine.autoSnoozeAfterRun({
-                ...attempt,
-                nextRun: (now) =>
-                  attempt
-                    .nextRun(now)
-                    .pipe(
-                      Effect.tap((candidate) =>
-                        candidate !== null && DateTime.formatIso(candidate) === expiresAtIso
-                          ? TestClock.adjust(1)
-                          : Effect.void,
+              engine
+                .autoSnoozeAfterRun({
+                  ...attempt,
+                  nextRun: (now) =>
+                    attempt
+                      .nextRun(now)
+                      .pipe(
+                        Effect.tap((candidate) =>
+                          candidate !== null && DateTime.formatIso(candidate) === expiresAtIso
+                            ? TestClock.adjust(1)
+                            : Effect.void,
+                        ),
                       ),
-                    ),
-              }),
+                })
+                .pipe(Effect.tap((result) => Ref.update(outcomes, (all) => [...all, result]))),
           })),
         ),
       );
