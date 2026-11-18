@@ -340,15 +340,17 @@ it.effect.each([
   }),
 );
 
-it.effect.each([true, false])(
-  "reacts to newer turns and other threads with a committed next occurrence: %s",
-  (committed) =>
+it.effect.each(["committed", "pending", "paused before write"] as const)(
+  "reacts to newer turns and other threads when the next occurrence is %s",
+  (schedule) =>
     Effect.gen(function* () {
       const input = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
       const dispatchStarted = yield* Deferred.make<void>();
       const releaseDispatch = yield* Deferred.make<void>();
       const waits = yield* Ref.make(0);
       const newerWaitStarted = yield* Deferred.make<void>();
+      const beforeWriter = yield* Deferred.make<void>();
+      const allowWriter = yield* Deferred.make<void>();
       const activeTaskId = ScheduledTaskId.make("dispatch-in-progress");
       const dispatches = yield* Ref.make(
         new Map<ScheduledTaskId, { messageId: MessageId; settled: Effect.Effect<void> }>(),
@@ -366,8 +368,11 @@ it.effect.each([true, false])(
         yield* insertTask(sql, {
           id: activeTaskId,
           threadId,
-          next: committed ? NEXT_RUN : null,
+          next: schedule === "committed" ? NEXT_RUN : null,
         });
+        if (schedule === "paused before write") {
+          yield* insertTask(sql, { id: "paused-candidate", threadId, next: NEXT_RUN });
+        }
         yield* insertTask(sql, { id: "other-next", threadId: otherThreadId, next: NEXT_RUN });
         yield* reactor.start();
         const scheduled = yield* completeTurn(
@@ -402,7 +407,12 @@ it.effect.each([true, false])(
 
         const newer = yield* completeTurn({}, { ordinal: 2, observe: false });
         yield* Queue.offer(input, newer);
-        if (!committed) {
+        if (schedule === "paused before write") {
+          yield* Deferred.await(beforeWriter);
+          yield* sql`UPDATE scheduled_tasks SET enabled = 0 WHERE task_id = 'paused-candidate'`;
+          yield* Deferred.succeed(allowWriter, undefined);
+        }
+        if (schedule !== "committed") {
           yield* Deferred.await(newerWaitStarted);
           assert.strictEqual(yield* snoozedUntil, null);
           yield* sql`UPDATE scheduled_tasks SET next_run_at = ${NEXT_RUN} WHERE task_id = ${activeTaskId}`;
@@ -424,7 +434,17 @@ it.effect.each([true, false])(
                   Effect.andThen(Deferred.await(releaseDispatch)),
                 ),
               ),
-            (engine) => ({ ...engine, streamDomainEvents: Stream.fromQueue(input) }),
+            (engine) => ({
+              ...engine,
+              streamDomainEvents: Stream.fromQueue(input),
+              autoSnoozeAfterRun: (attempt) =>
+                (schedule === "paused before write" && attempt.threadId === threadId
+                  ? Deferred.succeed(beforeWriter, undefined).pipe(
+                      Effect.andThen(Deferred.await(allowWriter)),
+                    )
+                  : Effect.void
+                ).pipe(Effect.andThen(engine.autoSnoozeAfterRun(attempt))),
+            }),
             Ref.get(dispatches),
           ),
         ),

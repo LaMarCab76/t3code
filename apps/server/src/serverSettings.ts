@@ -272,7 +272,7 @@ export class ServerSettingsService extends Context.Service<
       patch?: ServerSettingsPatch,
     ) => Effect.Effect<ServerSettings, ServerSettingsError>;
 
-    /** A raw snapshot keeps managed locks and leaves secrets redacted. */
+    /** Skipping materialization applies managed locks and retains stored values, including legacy inline secrets. */
     readonly withSettingsSnapshot: <A, E, R>(
       use: (settings: ServerSettings) => Effect.Effect<A, E, R>,
       options?: { readonly materializeSecrets: false },

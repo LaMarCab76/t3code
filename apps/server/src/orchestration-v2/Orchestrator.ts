@@ -429,7 +429,7 @@ export interface OrchestratorV2Shape {
     readonly threadId: ThreadId;
     readonly runId: RunId;
     readonly nextRun: (now: DateTime.Utc) => Effect.Effect<DateTime.Utc | null, SqlError>;
-  }) => Effect.Effect<void, OrchestratorV2Error>;
+  }) => Effect.Effect<"snoozed" | "no-next-run" | "skipped", OrchestratorV2Error>;
   readonly searchThreadStream: (
     input: OrchestrationV2SearchThreadInput,
   ) => Stream.Stream<OrchestrationV2SearchThreadResult, OrchestratorV2Error>;
@@ -16324,25 +16324,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             (thread.snoozedUntil != null &&
               DateTime.toEpochMillis(thread.snoozedUntil) > DateTime.toEpochMillis(now))
           )
-            return;
+            return "skipped" as const;
           // Take settings before the SQLite writer; a settings reload can also need that writer.
-          yield* serverSettings
+          return yield* serverSettings
             .withSettingsSnapshot(
               (settings) =>
                 settings.snoozeThreadsUntilScheduledTask
                   ? eventSink.withProviderBatch(
                       Effect.gen(function* () {
                         const snoozedUntil = yield* input.nextRun(yield* DateTime.now);
-                        if (snoozedUntil === null) return;
+                        if (snoozedUntil === null) return "no-next-run" as const;
                         yield* dispatchWithReceiptEffect({
                           type: "thread.snooze",
                           commandId: input.commandId,
                           threadId: input.threadId,
                           snoozedUntil: DateTime.formatIso(snoozedUntil),
                         });
+                        return "snoozed" as const;
                       }),
                     )
-                  : Effect.void,
+                  : Effect.succeed("skipped" as const),
               { materializeSecrets: false },
             )
             .pipe(

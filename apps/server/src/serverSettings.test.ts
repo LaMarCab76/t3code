@@ -1176,15 +1176,15 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
     Effect.gen(function* () {
       const secretReadStarted = yield* Deferred.make<void>();
       const releaseSecretRead = yield* Deferred.make<void>();
-      const blockFirstRead = yield* Ref.make(true);
+      const secretReads = yield* Ref.make(0);
       const layerSecret = Layer.effect(
         ServerSecretStore.ServerSecretStore,
         Effect.map(ServerSecretStore.ServerSecretStore, (store) => ({
           ...store,
           get: () =>
-            Ref.getAndSet(blockFirstRead, false).pipe(
-              Effect.flatMap((block) =>
-                block
+            Ref.updateAndGet(secretReads, (count) => count + 1).pipe(
+              Effect.flatMap((count) =>
+                count === 1
                   ? Deferred.succeed(secretReadStarted, undefined).pipe(
                       Effect.andThen(Deferred.await(releaseSecretRead)),
                     )
@@ -1233,9 +1233,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
         const oldRead = yield* service.getSettings.pipe(Effect.forkChild);
         yield* Deferred.await(secretReadStarted);
         yield* service.updateSettings({ snoozeThreadsUntilScheduledTask: false });
+        const readsBeforeSnapshot = yield* Ref.get(secretReads);
         const snapshot = yield* service.withSettingsSnapshot(Effect.succeed, {
           materializeSecrets: false,
         });
+        assert.equal(yield* Ref.get(secretReads), readsBeforeSnapshot);
         assert.isFalse(snapshot.snoozeThreadsUntilScheduledTask);
         assert.isTrue(snapshot.enableAgentDeviceAccess);
         const variable = snapshot.providerInstances[instanceId]?.environment?.[0];
