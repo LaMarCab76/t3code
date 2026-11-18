@@ -260,7 +260,10 @@ export class ScheduledTaskService extends Context.Service<
   {
     readonly list: () => Effect.Effect<ScheduledTaskListResult, ScheduledTaskError>;
     readonly subscribeList: () => Stream.Stream<ScheduledTaskListResult, ScheduledTaskError>;
-    readonly awaitDispatch: (id: ScheduledTaskId) => Effect.Effect<void>;
+    readonly pendingDispatch: (
+      id: ScheduledTaskId,
+      messageId: MessageId,
+    ) => Effect.Effect<Effect.Effect<void> | undefined>;
     readonly upsert: (
       input: ScheduledTaskUpsertInput,
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
@@ -532,14 +535,15 @@ export const layer = Layer.effect(
     const webhookFilteredLogWindows = yield* Ref.make<
       ReadonlyMap<ScheduledTaskId, ReadonlyArray<number>>
     >(new Map());
-    const activeRuns = yield* Ref.make<ReadonlyMap<ScheduledTaskId, Deferred.Deferred<void>>>(
-      new Map(),
-    );
-    const awaitDispatch = Effect.fn("ScheduledTaskService.awaitDispatch")(function* (
+    const activeRuns = yield* Ref.make<
+      ReadonlyMap<ScheduledTaskId, { messageId: MessageId; released: Deferred.Deferred<void> }>
+    >(new Map());
+    const pendingDispatch = Effect.fn("ScheduledTaskService.pendingDispatch")(function* (
       id: ScheduledTaskId,
+      messageId: MessageId,
     ) {
       const dispatch = (yield* Ref.get(activeRuns)).get(id);
-      if (dispatch !== undefined) yield* Deferred.await(dispatch);
+      return dispatch?.messageId === messageId ? Deferred.await(dispatch.released) : undefined;
     });
     // Notifications re-emit the full list; slow subscribers need only the newest dirty signal.
     const changesPubSub = yield* PubSub.sliding<void>(1);
@@ -978,6 +982,12 @@ export const layer = Layer.effect(
       // Read before reserving: nothing between the reservation and its release may fail.
       const startedAt = yield* localNow;
       const startedAtIso = iso(startedAt);
+      const fireKey =
+        webhook === undefined
+          ? `${task.id}:${DateTime.toEpochMillis(startedAt)}:${trigger}`
+          : `${task.id}:webhook:${webhook.deliveryId}`;
+      const commandId = CommandId.make(`scheduled-task:${fireKey}`);
+      const messageId = MessageId.make(`scheduled-task-message:${fireKey}`);
       const run = Effect.gen(function* () {
         // Re-read stale poll snapshots so deleted, paused or postponed tasks cannot fire.
         const active = yield* findTask(task.id);
@@ -1059,12 +1069,6 @@ export const layer = Layer.effect(
 
         yield* notifyChanged;
 
-        const fireKey =
-          webhook === undefined
-            ? `${active.id}:${DateTime.toEpochMillis(startedAt)}:${trigger}`
-            : `${active.id}:webhook:${webhook.deliveryId}`;
-        const commandId = CommandId.make(`scheduled-task:${fireKey}`);
-        const messageId = MessageId.make(`scheduled-task-message:${fireKey}`);
         const prompt = webhook?.prompt ?? active.prompt;
         const threadMode = scheduledTaskThreadMode(active);
 
@@ -1237,7 +1241,7 @@ export const layer = Layer.effect(
         Ref.modify(activeRuns, (active) => {
           if (active.has(task.id)) return [false, active] as const;
           const next = new Map(active);
-          next.set(task.id, dispatched);
+          next.set(task.id, { messageId, released: dispatched });
           return [true, next] as const;
         }),
         (reserved) =>
@@ -2667,7 +2671,7 @@ export const layer = Layer.effect(
     return ScheduledTaskService.of({
       list,
       subscribeList,
-      awaitDispatch,
+      pendingDispatch,
       upsert,
       setEnabled,
       delete: deleteTask,

@@ -5,6 +5,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it, vi } from "@effect/vitest";
 import {
   CommandId,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
   ScheduledTaskError,
@@ -585,6 +586,8 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
     const scratch = ProjectId.make("project:scratch");
     const promoted = ProjectId.make("project:promoted");
     const sends = yield* Ref.make<Array<{ projectId: ProjectId; commandId: string }>>([]);
+    const finalSend = yield* Deferred.make<MessageId>();
+    const releaseSend = yield* Deferred.make<void>();
     // Saving reads it first. Then the rebind lands, and the promotion commits between the shell
     // read and the retry.
     const shellProjects = yield* Ref.make([promoted, scratch, promoted]);
@@ -607,7 +610,10 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
                           threadId: input.threadId,
                         }),
                       )
-                    : Effect.succeed({} as never),
+                    : Deferred.succeed(finalSend, input.messageId).pipe(
+                        Effect.andThen(Deferred.await(releaseSend)),
+                        Effect.as({} as never),
+                      ),
                 ),
               ),
             getThreadShell: () =>
@@ -640,8 +646,26 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
         interactionMode: "default",
       });
 
-      const result = yield* service.runNow({ id: task.id });
+      const dispatch = yield* service.runNow({ id: task.id }).pipe(Effect.forkChild);
+      const messageId = yield* Deferred.await(finalSend);
+      const pending = yield* service.pendingDispatch(task.id, messageId);
+      assert.isDefined(pending);
+      assert.isUndefined(
+        yield* service.pendingDispatch(task.id, MessageId.make("message:previous-dispatch")),
+      );
+      const observed = yield* pending!.pipe(
+        Effect.andThen(service.list()),
+        Effect.map(({ tasks }) => tasks.find((candidate) => candidate.id === task.id)),
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* TestClock.adjust("1 second");
+      yield* Deferred.succeed(releaseSend, undefined);
+      const recorded = yield* Fiber.join(observed);
+      const result = yield* Fiber.join(dispatch);
 
+      assert.equal(recorded?.nextRunAt, result.task.nextRunAt);
+      assert.notEqual(recorded?.nextRunAt, task.nextRunAt);
+      assert.isUndefined(yield* service.pendingDispatch(task.id, messageId));
       assert.equal(result.threadId, threadId);
       const attempts = yield* Ref.get(sends);
       assert.deepEqual(

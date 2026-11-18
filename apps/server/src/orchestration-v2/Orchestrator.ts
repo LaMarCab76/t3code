@@ -80,6 +80,7 @@ import {
   TrimmedNonEmptyString,
   managedRuntimeModeCeilingMessage,
 } from "@t3tools/contracts";
+import type { SqlError } from "effect/sql/SqlError";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { modelSwitchSince } from "./modelSwitch.ts";
@@ -427,7 +428,7 @@ export interface OrchestratorV2Shape {
     readonly commandId: CommandId;
     readonly threadId: ThreadId;
     readonly runId: RunId;
-    readonly snoozedUntil: DateTime.Utc;
+    readonly nextRun: (now: DateTime.Utc) => Effect.Effect<DateTime.Utc | null, SqlError>;
   }) => Effect.Effect<void, OrchestratorV2Error>;
   readonly searchThreadStream: (
     input: OrchestrationV2SearchThreadInput,
@@ -16321,16 +16322,33 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               DateTime.toEpochMillis(thread.lastSnoozeWakeAt) >=
                 DateTime.toEpochMillis(latest.completedAt)) ||
             (thread.snoozedUntil != null &&
-              DateTime.toEpochMillis(thread.snoozedUntil) > DateTime.toEpochMillis(now)) ||
-            DateTime.toEpochMillis(input.snoozedUntil) <= DateTime.toEpochMillis(now)
+              DateTime.toEpochMillis(thread.snoozedUntil) > DateTime.toEpochMillis(now))
           )
             return;
-          yield* dispatchWithReceiptEffect({
-            type: "thread.snooze",
-            commandId: input.commandId,
-            threadId: input.threadId,
-            snoozedUntil: DateTime.formatIso(input.snoozedUntil),
-          });
+          // Read the schedule on the writer so a committed pause wins before the snooze.
+          yield* eventSink
+            .withProviderBatch(
+              Effect.gen(function* () {
+                const snoozedUntil = yield* input.nextRun(yield* DateTime.now);
+                if (snoozedUntil === null) return;
+                yield* dispatchWithReceiptEffect({
+                  type: "thread.snooze",
+                  commandId: input.commandId,
+                  threadId: input.threadId,
+                  snoozedUntil: DateTime.formatIso(snoozedUntil),
+                });
+              }),
+            )
+            .pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestratorDispatchError({
+                    commandId: input.commandId,
+                    commandType: "thread.snooze",
+                    cause,
+                  }),
+              ),
+            );
         }),
       );
     }),

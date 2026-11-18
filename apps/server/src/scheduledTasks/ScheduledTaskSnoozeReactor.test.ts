@@ -42,8 +42,8 @@ const adapter = {
 const layerDatabase = SqlitePersistence.layerMemory;
 const layerTest = (
   snoozeThreadsUntilScheduledTask: boolean,
-  awaitDispatch: ScheduledTaskService.ScheduledTaskService["Service"]["awaitDispatch"] = () =>
-    Effect.void,
+  pendingDispatch: ScheduledTaskService.ScheduledTaskService["Service"]["pendingDispatch"] = () =>
+    Effect.undefined,
 ) =>
   ScheduledTaskSnoozeReactor.layer.pipe(
     Layer.provideMerge(
@@ -51,7 +51,7 @@ const layerTest = (
         layerDatabase,
         ProjectionStore.layer.pipe(Layer.provide(layerDatabase)),
         ServerSettings.layerTest({ snoozeThreadsUntilScheduledTask }),
-        Layer.mock(ScheduledTaskService.ScheduledTaskService)({ awaitDispatch }),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({ pendingDispatch }),
         ProviderReplayHarness.layerWithRegistry(
           { name: "scheduled-task-snooze" },
           ProviderAdapterRegistry.layerFromAdapters([adapter]),
@@ -295,9 +295,7 @@ it.effect("waits for the scheduler to commit the next occurrence after a fast tu
     }).pipe(
       Effect.provide(
         layerTest(true, (id) =>
-          Deferred.succeed(awaitingDispatch, id).pipe(
-            Effect.andThen(Deferred.await(dispatchCommitted)),
-          ),
+          Deferred.succeed(awaitingDispatch, id).pipe(Effect.as(Deferred.await(dispatchCommitted))),
         ),
       ),
     );
