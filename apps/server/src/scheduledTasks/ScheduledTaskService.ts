@@ -271,9 +271,18 @@ export class ScheduledTaskService extends Context.Service<
     readonly pendingDispatch: (
       id: ScheduledTaskId,
       messageId: MessageId,
+      threadId: ThreadId,
     ) => Effect.Effect<Effect.Effect<void> | undefined, SqlError>;
-    readonly pendingDispatches: Effect.Effect<
-      ReadonlyMap<ScheduledTaskId, PendingScheduledDispatch>
+    readonly resolveThreadSchedule: (
+      threadId: ThreadId,
+      now: DateTime.Utc,
+    ) => Effect.Effect<
+      {
+        readonly nextRun: DateTime.Utc | null;
+        readonly waits: ReadonlyArray<Effect.Effect<void>>;
+        readonly hasRunningTask: boolean;
+      },
+      SqlError
     >;
     readonly upsert: (
       input: ScheduledTaskUpsertInput,
@@ -458,6 +467,9 @@ const timedSchedule = (sql: SqlClient.SqlClient) =>
 export const readThreadSchedule = Effect.fn("ScheduledTaskService.readThreadSchedule")(function* (
   threadId: ThreadId,
   now: DateTime.DateTime,
+  pendingDispatches: Effect.Effect<
+    ReadonlyMap<ScheduledTaskId, PendingScheduledDispatch>
+  > = Effect.succeed(new Map()),
 ) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{
@@ -487,7 +499,16 @@ export const readThreadSchedule = Effect.fn("ScheduledTaskService.readThreadSche
       nextRun = DateTime.toUtc(parsed.value);
     }
   }
-  return { nextRun, runningTaskIds };
+  const dispatches = yield* pendingDispatches;
+  const waits = runningTaskIds.flatMap((id) => {
+    const dispatch = dispatches.get(id);
+    return dispatch === undefined ? [] : [dispatch.settled];
+  });
+  return {
+    nextRun: waits.length === 0 ? nextRun : null,
+    waits,
+    hasRunningTask: runningTaskIds.length > 0,
+  };
 });
 
 export const listDueTasks = Effect.fn("ScheduledTaskService.listDueTasks")(function* (
@@ -570,12 +591,14 @@ export const layer = Layer.effect(
     const pendingDispatch = Effect.fn("ScheduledTaskService.pendingDispatch")(function* (
       id: ScheduledTaskId,
       messageId: MessageId,
+      threadId: ThreadId,
     ) {
       const dispatch = (yield* Ref.get(activeRuns)).get(id);
       if (dispatch?.messageId !== messageId) return;
       const rows = yield* sql`
         SELECT 1 FROM scheduled_tasks
         WHERE task_id = ${id} AND enabled = 1 AND last_run_status = 'running'
+          AND (thread_id = ${threadId} OR (thread_id IS NULL AND thread_mode != 'new_thread'))
           AND ${timedSchedule(sql)}
       `.pipe(NodeSqliteClient.readOnly);
       if (rows.length > 0) return dispatch.settled;
@@ -1651,7 +1674,11 @@ export const layer = Layer.effect(
       "ScheduledTaskService.setEnabled",
     )(function* (input) {
       const existing = yield* loadTask(input.id);
-      if (existing.enabled === input.enabled) return { task: existing };
+      const publishChange = sql.afterCommit(notifyChanged);
+      if (existing.enabled === input.enabled) {
+        yield* publishChange;
+        return { task: existing };
+      }
       if (
         input.enabled &&
         existing.schedule.type === "webhook" &&
@@ -1675,22 +1702,26 @@ export const layer = Layer.effect(
       const next = nextRunAt({ enabled: input.enabled, schedule: existing.schedule }, now);
       // RETURNING so a task deleted between the load and this UPDATE is a
       // visible not-found error, not a false success.
-      const updated = yield* sql<{ task_id: string }>`
+      const update = sql<{ task_id: string }>`
           UPDATE scheduled_tasks
           SET enabled = ${input.enabled ? 1 : 0},
               next_run_at = ${next},
               updated_at = ${iso(now)}
           WHERE task_id = ${input.id}
           RETURNING task_id
-        `.pipe(
-        Effect.mapError((cause) =>
-          taskError("Could not update schedule task.", { taskId: input.id, cause }),
-        ),
-      );
+        `;
+      const updated = yield* sql
+        .withTransaction(
+          update.pipe(Effect.tap((rows) => (rows.length === 0 ? Effect.void : publishChange))),
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            taskError("Could not update schedule task.", { taskId: input.id, cause }),
+          ),
+        );
       if (updated.length === 0) {
         return yield* taskError("Schedule task not found.", { taskId: input.id });
       }
-      yield* notifyChanged;
       return {
         task: { ...existing, enabled: input.enabled, nextRunAt: next, updatedAt: iso(now) },
       };
@@ -2708,7 +2739,12 @@ export const layer = Layer.effect(
       subscribeList,
       subscribeChanges: PubSub.subscribe(changesPubSub).pipe(Effect.map(PubSub.take)),
       pendingDispatch,
-      pendingDispatches: Ref.get(activeRuns),
+      resolveThreadSchedule: Effect.fn("ScheduledTaskService.resolveThreadSchedule")(
+        (threadId: ThreadId, now: DateTime.Utc) =>
+          readThreadSchedule(threadId, now, Ref.get(activeRuns)).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          ),
+      ),
       upsert,
       setEnabled,
       delete: deleteTask,

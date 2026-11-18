@@ -16,6 +16,7 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as EventSink from "./EventSink.ts";
@@ -24,7 +25,7 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 
 const layer = EventSink.layer.pipe(
   Layer.provideMerge(Layer.merge(EventStore.layer, ProjectionStore.layer)),
-  Layer.provide(Sqlite.layerMemory),
+  Layer.provideMerge(Sqlite.layerMemory),
 );
 
 const makeThread = (id: ThreadId, now: DateTime.Utc): OrchestrationV2AppThread => ({
@@ -152,6 +153,15 @@ it.effect.each([false, true])(
         assert.isTrue(Exit.hasInterrupts(yield* Fiber.await(fiber)));
         yield* sink.withProviderBatch(Effect.void);
       } else {
+        const sql = yield* SqlClient.SqlClient;
+        const nested = yield* Effect.exit(sql.withTransaction(batch));
+        assert.isTrue(Exit.isFailure(nested));
+        if (Exit.isFailure(nested)) {
+          assert.deepEqual(
+            Cause.prettyErrors(nested.cause).map((error) => error.message),
+            ["A pre-commit check requires the outermost batch."],
+          );
+        }
         yield* batch;
       }
       const stored = yield* sink.readByCommandId({ commandId }).pipe(Stream.runCollect);

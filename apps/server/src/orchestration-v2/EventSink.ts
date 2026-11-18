@@ -1071,12 +1071,15 @@ const layerBase: Layer.Layer<
       effect: Effect.Effect<A, E, R>,
       beforeCommit?: (result: A) => Effect.Effect<void, E2, R2>,
     ) {
-      if ((yield* CurrentProviderBatch) !== undefined) {
-        if (beforeCommit !== undefined) {
-          return yield* Effect.die(new Error("A pre-commit check requires the outermost batch."));
-        }
-        return yield* effect;
+      const parentBatch = yield* CurrentProviderBatch;
+      if (
+        beforeCommit !== undefined &&
+        (parentBatch !== undefined ||
+          Option.isSome(yield* Effect.serviceOption(sql.transactionService)))
+      ) {
+        return yield* Effect.die(new Error("A pre-commit check requires the outermost batch."));
       }
+      if (parentBatch !== undefined) return yield* effect;
       const batch: ProviderBatchPublication = { publish: [], eventCount: 0 };
       let started = false;
       const result = yield* commitThenPublishNow(

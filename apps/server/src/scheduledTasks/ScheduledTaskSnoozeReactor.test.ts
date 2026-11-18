@@ -53,9 +53,7 @@ const layerTest = (
   wrapOrchestrator: (
     engine: Orchestrator.OrchestratorV2["Service"],
   ) => Orchestrator.OrchestratorV2["Service"] = (engine) => engine,
-  pendingDispatches: ScheduledTaskService.ScheduledTaskService["Service"]["pendingDispatches"] = Effect.succeed(
-    new Map(),
-  ),
+  pendingDispatches: Parameters<typeof ScheduledTaskService.readThreadSchedule>[2] = undefined,
   wrapEventSink?: (sink: EventSink.EventSinkV2Shape) => EventSink.EventSinkV2Shape,
   subscribeChanges: ScheduledTaskService.ScheduledTaskService["Service"]["subscribeChanges"] = Effect.succeed(
     Effect.never,
@@ -80,11 +78,20 @@ const layerTest = (
         layerDatabase,
         ProjectionStore.layer.pipe(Layer.provide(layerDatabase)),
         settingsLayer,
-        Layer.mock(ScheduledTaskService.ScheduledTaskService)({
-          pendingDispatch,
-          pendingDispatches,
-          subscribeChanges,
-        }),
+        Layer.unwrap(
+          SqlClient.SqlClient.pipe(
+            Effect.map((sql) =>
+              Layer.mock(ScheduledTaskService.ScheduledTaskService)({
+                pendingDispatch,
+                resolveThreadSchedule: (threadId, now) =>
+                  ScheduledTaskService.readThreadSchedule(threadId, now, pendingDispatches).pipe(
+                    Effect.provideService(SqlClient.SqlClient, sql),
+                  ),
+                subscribeChanges,
+              }),
+            ),
+          ),
+        ).pipe(Layer.provide(layerDatabase)),
         Layer.effect(
           Orchestrator.OrchestratorV2,
           Effect.map(Orchestrator.OrchestratorV2, wrapOrchestrator),
@@ -377,6 +384,7 @@ it.effect.each([
     const input = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
     const changes = yield* PubSub.sliding<void>(1);
     const dispatchStarted = yield* Deferred.make<void>();
+    const retiredWait = yield* Deferred.make<void>();
     const releaseDispatch = yield* Deferred.make<void>();
     const paused = yield* Ref.make(false);
     const waits = yield* Ref.make(0);
@@ -460,6 +468,10 @@ it.effect.each([
           waitForSnooze(threadId).pipe(Effect.as(false)),
         );
         assert.strictEqual(waiting, schedule !== "running webhook");
+        if (schedule === "pending") {
+          yield* Deferred.await(retiredWait);
+          yield* Queue.offer(input, { ...scheduled, id: EventId.make("event:late-older-turn") });
+        }
         if (schedule === "paused while waiting") {
           yield* sql`UPDATE scheduled_tasks SET enabled = 0 WHERE task_id = ${activeTaskId}`;
           yield* Ref.set(paused, true);
@@ -487,6 +499,7 @@ it.effect.each([
                   : Ref.update(waits, (count) => count + 1).pipe(
                       Effect.andThen(Deferred.succeed(dispatchStarted, undefined)),
                       Effect.andThen(Deferred.await(releaseDispatch)),
+                      Effect.ensuring(Deferred.succeed(retiredWait, undefined)),
                     ),
               ),
             ),
@@ -652,13 +665,23 @@ it.effect.each([
           assert.isNull(thread.snoozedAt);
           assert.isNull(thread.lastSnoozeWakeAt ?? null);
         }
-        if (!hasLaterDate && expires !== "after commit") {
+        if (!hasLaterDate) {
           const reactor = yield* ScheduledTaskSnoozeReactor.ScheduledTaskSnoozeReactor;
           yield* insertTask(sql, { id: "later", threadId, next: NEXT_RUN });
           yield* reactor.handle(completed);
           assert.deepEqual(yield* Ref.get(outcomes), ["no-next-run", "snoozed"]);
           assert.strictEqual(yield* snoozedUntil, NEXT_RUN);
           assert.strictEqual(yield* snoozes, 1);
+        } else if (expires === "after commit") {
+          const reactor = yield* ScheduledTaskSnoozeReactor.ScheduledTaskSnoozeReactor;
+          yield* TestClock.setTime(Date.parse(NEXT_RUN));
+          yield* insertTask(sql, {
+            id: "after-natural-wake",
+            threadId,
+            next: "2031-01-01T00:00:00.000Z",
+          });
+          yield* reactor.handle(completed);
+          assert.strictEqual(yield* snoozedUntil, NEXT_RUN);
         }
       }).pipe(
         Effect.provide(

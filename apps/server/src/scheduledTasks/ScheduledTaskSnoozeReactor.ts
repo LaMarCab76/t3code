@@ -1,10 +1,10 @@
-import { CommandId, type OrchestrationV2DomainEvent, type RunId } from "@t3tools/contracts";
+import { CommandId, type OrchestrationV2DomainEvent, type ThreadId } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FiberMap from "effect/FiberMap";
 import * as Layer from "effect/Layer";
-import * as SqlClient from "effect/sql/SqlClient";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
@@ -31,7 +31,6 @@ const make = Effect.gen(function* () {
   const engine = yield* Orchestrator.OrchestratorV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const settings = yield* ServerSettings.ServerSettingsService;
-  const sql = yield* SqlClient.SqlClient;
   const tasks = yield* ScheduledTasks.ScheduledTaskService;
 
   // Runs for every domain event; most events return before any work is needed.
@@ -44,9 +43,12 @@ const make = Effect.gen(function* () {
       );
       if (!enabled) return;
       const run = event.payload;
-      const { messages } = yield* projections.getThreadRecords(event.threadId, ["messages"], {
-        messageIds: [run.userMessageId],
-      });
+      const { messages, runs } = yield* projections.getThreadRecords(
+        event.threadId,
+        ["messages", "runs"],
+        { messageIds: [run.userMessageId], latestRunLimit: 1 },
+      );
+      if (runs[0]?.id !== run.id || runs[0].status !== "completed") return;
       const message = messages.find((candidate) => candidate.id === run.userMessageId);
       if (message?.notification !== undefined || message?.delegatedCompletion !== undefined) {
         return;
@@ -60,6 +62,7 @@ const make = Effect.gen(function* () {
               const pending = yield* tasks.pendingDispatch(
                 message.scheduledTaskId,
                 run.userMessageId,
+                event.threadId,
               );
               if (pending === undefined) break;
               const settled = yield* Effect.raceFirst(
@@ -69,25 +72,17 @@ const make = Effect.gen(function* () {
               if (settled) break;
             }
           }
-          const readSchedule = (now: DateTime.Utc) =>
-            ScheduledTasks.readThreadSchedule(event.threadId, now).pipe(
-              Effect.provideService(SqlClient.SqlClient, sql),
-            );
-          const upcoming = yield* readSchedule(yield* DateTime.now);
-          if (upcoming.nextRun === null && upcoming.runningTaskIds.length === 0) return;
+          const upcoming = yield* tasks.resolveThreadSchedule(event.threadId, yield* DateTime.now);
+          if (upcoming.nextRun === null && !upcoming.hasRunningTask) return;
 
           let waits: ReadonlyArray<Effect.Effect<void>> = [];
-          const nextRun = Effect.fn("ScheduledTaskSnoozeReactor.nextRun")(function* (
-            now: DateTime.Utc,
-          ) {
-            const schedule = yield* readSchedule(now);
-            const dispatches = yield* tasks.pendingDispatches;
-            waits = schedule.runningTaskIds.flatMap((id) => {
-              const dispatch = dispatches.get(id);
-              return dispatch === undefined ? [] : [dispatch.settled];
-            });
-            return waits.length === 0 ? schedule.nextRun : null;
-          });
+          const nextRun = (now: DateTime.Utc) =>
+            tasks.resolveThreadSchedule(event.threadId, now).pipe(
+              Effect.map((schedule) => {
+                waits = schedule.waits;
+                return schedule.nextRun;
+              }),
+            );
           // Completion can be re-emitted by checkpoints and delegated rewrites.
           let commandId = CommandId.make(`server:scheduled-task-snooze:${run.id}`);
           while (true) {
@@ -107,20 +102,40 @@ const make = Effect.gen(function* () {
     (effect, event) =>
       effect.pipe(
         Effect.catchCause((cause) =>
-          Effect.logWarning("snoozing a thread until its scheduled task failed", {
-            threadId: event.threadId,
-            cause,
-          }),
+          Cause.hasInterruptsOnly(cause)
+            ? Effect.void
+            : Effect.logWarning("snoozing a thread until its scheduled task failed", {
+                threadId: event.threadId,
+                cause,
+              }),
         ),
       ),
   );
 
   const start = Effect.fn("ScheduledTaskSnoozeReactor.start")(function* () {
-    const inFlight = yield* FiberMap.make<RunId, void, never>();
+    const inFlight = yield* FiberMap.make<ThreadId, void, never>();
+    const activeOrdinals = new Map<ThreadId, number>();
     yield* forkParked(
       Stream.runForEach(engine.streamDomainEvents, (event) => {
         if (!isCompletedRun(event)) return Effect.void;
-        return FiberMap.run(inFlight, event.payload.id, handle(event), { onlyIfMissing: true });
+        const {
+          threadId,
+          payload: { ordinal },
+        } = event;
+        const previous = activeOrdinals.get(threadId);
+        if (previous !== undefined && previous >= ordinal) return Effect.void;
+        activeOrdinals.set(threadId, ordinal);
+        return FiberMap.run(
+          inFlight,
+          threadId,
+          handle(event).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                if (activeOrdinals.get(threadId) === ordinal) activeOrdinals.delete(threadId);
+              }),
+            ),
+          ),
+        );
       }).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("scheduled task snooze event stream failed", { cause }),

@@ -660,6 +660,7 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
     );
     yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const sql = yield* SqlClient.SqlClient;
       const threadId = ThreadId.make("thread:promoted-during-run");
       const { task } = yield* service.upsert({
         id: ScheduledTaskId.make("task:promoted-during-run"),
@@ -677,11 +678,20 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
 
       const dispatch = yield* service.runNow({ id: task.id }).pipe(Effect.forkChild);
       const messageId = yield* Deferred.await(finalSend);
-      const pending = yield* service.pendingDispatch(task.id, messageId);
+      const pending = yield* service.pendingDispatch(task.id, messageId, threadId);
       assert.isDefined(pending);
       assert.isUndefined(
-        yield* service.pendingDispatch(task.id, MessageId.make("message:previous-dispatch")),
+        yield* service.pendingDispatch(
+          task.id,
+          MessageId.make("message:previous-dispatch"),
+          threadId,
+        ),
       );
+      yield* sql`UPDATE scheduled_tasks SET thread_id = ${ThreadId.make("thread:new-destination")} WHERE task_id = ${task.id}`;
+      assert.isUndefined(yield* service.pendingDispatch(task.id, messageId, threadId));
+      yield* sql`UPDATE scheduled_tasks SET thread_id = NULL WHERE task_id = ${task.id}`;
+      assert.isDefined(yield* service.pendingDispatch(task.id, messageId, threadId));
+      yield* sql`UPDATE scheduled_tasks SET thread_id = ${threadId} WHERE task_id = ${task.id}`;
       const observed = yield* pending!.pipe(
         Effect.andThen(service.list()),
         Effect.map(({ tasks }) => tasks.find((candidate) => candidate.id === task.id)),
@@ -694,7 +704,7 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
 
       assert.equal(recorded?.nextRunAt, result.task.nextRunAt);
       assert.notEqual(recorded?.nextRunAt, task.nextRunAt);
-      assert.isUndefined(yield* service.pendingDispatch(task.id, messageId));
+      assert.isUndefined(yield* service.pendingDispatch(task.id, messageId, threadId));
       assert.equal(result.threadId, threadId);
       const attempts = yield* Ref.get(sends);
       assert.deepEqual(

@@ -167,7 +167,13 @@ it.effect("runs a one-time schedule once and rejects past times", () =>
       expect(due.task.nextRunAt).toBeNull();
       expect((yield* service.list()).tasks[0]?.nextRunAt).toBeNull();
 
-      yield* service.setEnabled({ id: created.task.id, enabled: false });
+      const changed = yield* service.subscribeChanges;
+      const pause = { id: created.task.id, enabled: false } as const;
+      yield* service.setEnabled(pause);
+      yield* changed;
+      expect((yield* service.list()).tasks[0]?.enabled).toBe(false);
+      yield* service.setEnabled(pause);
+      yield* changed;
       const resumed = yield* service
         .setEnabled({ id: created.task.id, enabled: true })
         .pipe(Effect.flip);

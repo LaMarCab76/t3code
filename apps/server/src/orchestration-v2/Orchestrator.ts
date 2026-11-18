@@ -16379,7 +16379,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                       DateTime.toEpochMillis(thread.snoozedUntil) > DateTime.toEpochMillis(now))
                   ) {
                     yield* clearExpiredSnooze;
-                    return { outcome: "skipped" as const, deadline: null };
+                    return { outcome: "skipped" as const, deadline: null, replayed: false };
                   }
                   const snoozedUntil = yield* input.nextRun(yield* DateTime.now);
                   const result =
@@ -16398,22 +16398,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                         );
                   if (result === null) {
                     yield* clearExpiredSnooze;
-                    return { outcome: "no-next-run" as const, deadline: null };
+                    return { outcome: "no-next-run" as const, deadline: null, replayed: false };
                   }
-                  const snooze = result.replayed
-                    ? undefined
-                    : result.storedEvents.find(({ event }) => event.type === "thread.snoozed")
-                        ?.event;
+                  const snooze = result.storedEvents.find(
+                    ({ event }) => event.type === "thread.snoozed",
+                  )?.event;
+                  // An ordinary time-based wake keeps its deadline. A recovered snooze was cleared.
+                  const deadline =
+                    snooze?.type === "thread.snoozed" &&
+                    (!result.replayed || thread.snoozedUntil == null)
+                      ? (snooze.payload.snoozedUntil ?? null)
+                      : null;
                   return {
                     outcome: "snoozed" as const,
-                    deadline:
-                      snooze?.type === "thread.snoozed"
-                        ? (snooze.payload.snoozedUntil ?? null)
-                        : null,
+                    deadline,
+                    replayed: result.replayed === true,
                   };
                 }),
-                ({ deadline }) =>
-                  deadline == null
+                ({ deadline, replayed }) =>
+                  replayed || deadline === null
                     ? Effect.void
                     : DateTime.now.pipe(
                         Effect.flatMap((now) =>
