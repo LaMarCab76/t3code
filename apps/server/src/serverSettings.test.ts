@@ -28,6 +28,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SchemaAST from "effect/SchemaAST";
@@ -1170,6 +1171,83 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
       assert.equal(yield* token, "sk-second");
     }).pipe(Effect.provide(layerSettings));
   });
+
+  it.effect("reads the committed policy without waiting for an older secret read", () =>
+    Effect.gen(function* () {
+      const secretReadStarted = yield* Deferred.make<void>();
+      const releaseSecretRead = yield* Deferred.make<void>();
+      const secretReads = yield* Ref.make(0);
+      const layerSecret = Layer.effect(
+        ServerSecretStore.ServerSecretStore,
+        Effect.map(ServerSecretStore.ServerSecretStore, (store) => ({
+          ...store,
+          get: () =>
+            Ref.updateAndGet(secretReads, (count) => count + 1).pipe(
+              Effect.flatMap((count) =>
+                count === 1
+                  ? Deferred.succeed(secretReadStarted, undefined).pipe(
+                      Effect.andThen(Deferred.await(releaseSecretRead)),
+                    )
+                  : Effect.void,
+              ),
+              Effect.as(Option.some(new TextEncoder().encode("test-secret-value"))),
+            ),
+        })),
+      ).pipe(Layer.provide(ServerSecretStore.layer));
+      const layerSettings = ServerSettingsModule.layer.pipe(
+        Layer.provide(layerSecret),
+        Layer.provide(
+          ManagedPolicy.layerTest({
+            schemaVersion: 1,
+            organization: "Example Corp",
+            settings: { enableAgentDeviceAccess: { value: true, locked: true } },
+          }),
+        ),
+        Layer.provideMerge(Layer.fresh(SqlitePersistence.layerMemory)),
+        Layer.provideMerge(
+          Layer.fresh(
+            ServerConfig.layerTest(process.cwd(), { prefix: "t3code-settings-raw-snapshot-" }),
+          ),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* ServerSettingsModule.ServerSettingsService;
+        const fs = yield* FileSystem.FileSystem;
+        const config = yield* ServerConfig.ServerConfig;
+        const instanceId = ProviderInstanceId.make("codex_snapshot");
+        yield* fs.writeFileString(
+          config.settingsPath,
+          JSON.stringify({
+            snoozeThreadsUntilScheduledTask: true,
+            providerInstances: {
+              [instanceId]: {
+                driver: "codex",
+                environment: [
+                  { name: "API_TOKEN", value: "", sensitive: true, valueRedacted: true },
+                ],
+                config: {},
+              },
+            },
+          }),
+        );
+        const oldRead = yield* service.getSettings.pipe(Effect.forkChild);
+        yield* Deferred.await(secretReadStarted);
+        yield* service.updateSettings({ snoozeThreadsUntilScheduledTask: false });
+        const readsBeforeSnapshot = yield* Ref.get(secretReads);
+        const snapshot = yield* service.withSettingsSnapshot(Effect.succeed, {
+          materializeSecrets: false,
+        });
+        assert.equal(yield* Ref.get(secretReads), readsBeforeSnapshot);
+        assert.isFalse(snapshot.snoozeThreadsUntilScheduledTask);
+        assert.isTrue(snapshot.enableAgentDeviceAccess);
+        const variable = snapshot.providerInstances[instanceId]?.environment?.[0];
+        assert.isTrue(variable?.valueRedacted);
+        assert.equal(variable?.value, "");
+        yield* Deferred.succeed(releaseSecretRead, undefined);
+        assert.isTrue((yield* Fiber.join(oldRead)).snoozeThreadsUntilScheduledTask);
+      }).pipe(Effect.provide(layerSettings));
+    }),
+  );
 
   it.effect("keeps the inline value on disk when secret migration fails", () => {
     const cause = new ServerSecretStore.SecretStorePersistError({

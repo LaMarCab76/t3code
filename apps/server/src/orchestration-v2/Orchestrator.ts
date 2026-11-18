@@ -80,6 +80,7 @@ import {
   TrimmedNonEmptyString,
   managedRuntimeModeCeilingMessage,
 } from "@t3tools/contracts";
+import type { SqlError } from "effect/sql/SqlError";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { modelSwitchSince } from "./modelSwitch.ts";
@@ -212,6 +213,20 @@ import * as ServerSettings from "../serverSettings.ts";
 const isMessageQuestionAnswer = Schema.is(
   Schema.Union([TrimmedNonEmptyString, Schema.NonEmptyArray(TrimmedNonEmptyString)]),
 );
+
+const AutomaticSnoozeNextRun = Context.Reference<
+  ((now: DateTime.Utc) => Effect.Effect<DateTime.Utc | null, SqlError>) | undefined
+>("t3/orchestration-v2/AutomaticSnoozeNextRun", { defaultValue: () => undefined });
+
+class AutomaticSnoozeNoOccurrence extends Schema.TaggedError<AutomaticSnoozeNoOccurrence>()(
+  "AutomaticSnoozeNoOccurrence",
+  {},
+) {}
+
+class AutomaticSnoozeDeadlineElapsed extends Schema.TaggedError<AutomaticSnoozeDeadlineElapsed>()(
+  "AutomaticSnoozeDeadlineElapsed",
+  {},
+) {}
 
 export class OrchestratorDispatchError extends Schema.TaggedError<OrchestratorDispatchError>()(
   "OrchestratorDispatchError",
@@ -369,6 +384,7 @@ export class OrchestratorCommandIdConflictError extends Schema.TaggedError<Orche
 }
 
 export const OrchestratorV2Error = Schema.Union([
+  AutomaticSnoozeNoOccurrence,
   OrchestratorDispatchError,
   OrchestratorThreadAlreadyExistsError,
   OrchestratorCommandRejectedError,
@@ -427,8 +443,12 @@ export interface OrchestratorV2Shape {
     readonly commandId: CommandId;
     readonly threadId: ThreadId;
     readonly runId: RunId;
-    readonly snoozedUntil: DateTime.Utc;
-  }) => Effect.Effect<void, OrchestratorV2Error>;
+    readonly nextRun: (now: DateTime.Utc) => Effect.Effect<DateTime.Utc | null, SqlError>;
+  }) => Effect.Effect<
+    | { readonly outcome: "snoozed" | "skipped" }
+    | { readonly outcome: "no-next-run"; readonly commandId: CommandId },
+    OrchestratorV2Error
+  >;
   readonly searchThreadStream: (
     input: OrchestrationV2SearchThreadInput,
   ) => Stream.Stream<OrchestrationV2SearchThreadResult, OrchestratorV2Error>;
@@ -4591,17 +4611,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const projection = yield* loadProjectionForCommand(command, ["runs", "runtimeRequests"], {
         turnItemTypes: [],
       });
-      const parsedSnoozedUntil = DateTime.make(command.snoozedUntil);
-      if (
-        Option.isNone(parsedSnoozedUntil) ||
-        DateTime.toEpochMillis(parsedSnoozedUntil.value) <= DateTime.toEpochMillis(now)
-      ) {
+      const resolveNextRun = yield* AutomaticSnoozeNextRun;
+      let validationTime = resolveNextRun === undefined ? now : yield* DateTime.now;
+      let candidate = Option.getOrNull(DateTime.make(command.snoozedUntil));
+      if (resolveNextRun !== undefined) {
+        while (candidate === null || !DateTime.isGreaterThan(candidate, validationTime)) {
+          candidate = yield* resolveNextRun(validationTime).pipe(mapDispatchError(command));
+          if (candidate === null) return yield* new AutomaticSnoozeNoOccurrence();
+          validationTime = yield* DateTime.now;
+        }
+      }
+      if (candidate === null || !DateTime.isGreaterThan(candidate, validationTime)) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
           cause: `Thread ${command.threadId} snooze wake time ${command.snoozedUntil} is not in the future.`,
         });
       }
+      snoozedUntil = candidate;
       if (
         projection.runtimeRequests.some(
           (request) => request.status === "pending" && request.kind !== "user_input",
@@ -4650,7 +4677,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Thread ${command.threadId} has a queued run and cannot be snoozed.`,
         });
       }
-      snoozedUntil = parsedSnoozedUntil.value;
     }
     let markUnreadVisitedAt: DateTime.Utc | null = null;
     if (command.type === "thread.mark-unread") {
@@ -15518,8 +15544,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ),
       Effect.catch((cause) =>
         Effect.gen(function* () {
-          // Refusals depend on modes the user can change; a recorded rejection would block the retry.
+          // A recorded rejection would block a retry after the schedule or permissions change.
           if (
+            cause._tag === "AutomaticSnoozeNoOccurrence" ||
             cause._tag === "OrchestratorThreadAboveModeLimitError" ||
             cause._tag === "OrchestratorRuntimeModeAboveCeilingError"
           ) {
@@ -16295,42 +16322,157 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       return threadDispatch.withLock(
         input.threadId,
         Effect.gen(function* () {
-          const { thread, runs, runtimeRequests } = yield* projectionStore
-            .getThreadRecords(input.threadId, ["runs", "runtimeRequests"])
+          const attempt = (commandId: CommandId, expired: DateTime.Utc | null) =>
+            eventSink
+              .withProviderBatch(
+                Effect.gen(function* () {
+                  // Provider events can update the turn and its questions without the thread lock.
+                  const { thread, runs, runtimeRequests } = yield* projectionStore
+                    .getThreadRecords(input.threadId, ["runs", "runtimeRequests"])
+                    .pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new OrchestratorProjectionError({
+                            threadId: input.threadId,
+                            cause,
+                          }),
+                      ),
+                    );
+                  const now = yield* DateTime.now;
+                  const clearExpiredSnooze =
+                    expired !== null &&
+                    thread.snoozedUntil != null &&
+                    DateTime.Equivalence(thread.snoozedUntil, expired)
+                      ? writeSystemEvents([
+                          {
+                            type: "thread.unsnoozed",
+                            threadId: thread.id,
+                            providerInstanceId: thread.providerInstanceId,
+                            occurredAt: now,
+                            payload: {
+                              ...thread,
+                              snoozedUntil: null,
+                              snoozedAt: null,
+                              updatedAt: now,
+                            },
+                          },
+                        ])
+                      : Effect.void;
+                  const latest = runs.reduce<OrchestrationV2Run | undefined>(
+                    (found, run) =>
+                      found === undefined || run.ordinal > found.ordinal ? run : found,
+                    undefined,
+                  );
+                  if (
+                    latest?.id !== input.runId ||
+                    latest.status !== "completed" ||
+                    runs.some((run) => run.status === "queued" || isActiveRun(run)) ||
+                    runtimeRequests.some((request) => request.status === "pending") ||
+                    thread.archivedAt !== null ||
+                    thread.deletedAt !== null ||
+                    thread.settledOverride === "settled" ||
+                    (thread.lastSnoozeWakeAt != null &&
+                      latest.completedAt !== null &&
+                      DateTime.toEpochMillis(thread.lastSnoozeWakeAt) >=
+                        DateTime.toEpochMillis(latest.completedAt)) ||
+                    (thread.snoozedUntil != null &&
+                      DateTime.toEpochMillis(thread.snoozedUntil) > DateTime.toEpochMillis(now))
+                  ) {
+                    yield* clearExpiredSnooze;
+                    return { outcome: "skipped" as const, deadline: null, replayed: false };
+                  }
+                  const snoozedUntil = yield* input.nextRun(yield* DateTime.now);
+                  const result =
+                    snoozedUntil === null
+                      ? null
+                      : yield* dispatchWithReceiptEffect({
+                          type: "thread.snooze",
+                          commandId,
+                          threadId: input.threadId,
+                          snoozedUntil: DateTime.formatIso(snoozedUntil),
+                        }).pipe(
+                          Effect.provideService(AutomaticSnoozeNextRun, input.nextRun),
+                          Effect.catchTags({
+                            AutomaticSnoozeNoOccurrence: () => Effect.succeed(null),
+                          }),
+                        );
+                  if (result === null) {
+                    yield* clearExpiredSnooze;
+                    return { outcome: "no-next-run" as const, deadline: null, replayed: false };
+                  }
+                  const snooze = result.storedEvents.find(
+                    ({ event }) => event.type === "thread.snoozed",
+                  )?.event;
+                  // An ordinary time-based wake keeps its deadline. A recovered snooze was cleared.
+                  const deadline =
+                    snooze?.type === "thread.snoozed" &&
+                    (!result.replayed || thread.snoozedUntil == null)
+                      ? (snooze.payload.snoozedUntil ?? null)
+                      : null;
+                  return {
+                    outcome: "snoozed" as const,
+                    deadline,
+                    replayed: result.replayed === true,
+                  };
+                }),
+                ({ deadline, replayed }) =>
+                  replayed || deadline === null
+                    ? Effect.void
+                    : DateTime.now.pipe(
+                        Effect.flatMap((now) =>
+                          DateTime.isGreaterThan(deadline, now)
+                            ? Effect.void
+                            : Effect.fail(new AutomaticSnoozeDeadlineElapsed()),
+                        ),
+                      ),
+              )
+              .pipe(
+                Effect.retry({ while: (cause) => cause._tag === "AutomaticSnoozeDeadlineElapsed" }),
+              );
+          const commit = Effect.gen(function* () {
+            let commandId = input.commandId;
+            let expired: DateTime.Utc | null = null;
+            while (true) {
+              const {
+                outcome,
+                deadline,
+              }: {
+                outcome: "snoozed" | "no-next-run" | "skipped";
+                deadline: DateTime.Utc | null;
+              } = yield* attempt(commandId, expired);
+              if (outcome === "no-next-run") return { outcome, commandId };
+              if (deadline == null || DateTime.isGreaterThan(deadline, yield* DateTime.now)) {
+                return { outcome };
+              }
+              // COMMIT can finish after the deadline. Its accepted receipt cannot be retried.
+              expired = deadline;
+              commandId = CommandId.make(
+                `server:scheduled-task-snooze:${input.runId}:after:${DateTime.toEpochMillis(deadline)}`,
+              );
+            }
+          });
+          // Take settings before the SQLite writer; a settings reload can also need that writer.
+          return yield* serverSettings
+            .withSettingsSnapshot(
+              (settings) =>
+                Effect.gen(function* () {
+                  if (!settings.snoozeThreadsUntilScheduledTask) {
+                    return { outcome: "skipped" as const };
+                  }
+                  return yield* commit;
+                }),
+              { materializeSecrets: false },
+            )
             .pipe(
               Effect.mapError(
-                (cause) => new OrchestratorProjectionError({ threadId: input.threadId, cause }),
+                (cause) =>
+                  new OrchestratorDispatchError({
+                    commandId: input.commandId,
+                    commandType: "thread.snooze",
+                    cause,
+                  }),
               ),
             );
-          const now = yield* DateTime.now;
-          const latest = runs.reduce<OrchestrationV2Run | undefined>(
-            (found, run) => (found === undefined || run.ordinal > found.ordinal ? run : found),
-            undefined,
-          );
-          // The caller read the thread before this lock; a message sent since then wins.
-          if (
-            latest?.id !== input.runId ||
-            latest.status !== "completed" ||
-            runs.some((run) => run.status === "queued" || isActiveRun(run)) ||
-            runtimeRequests.some((request) => request.status === "pending") ||
-            thread.archivedAt !== null ||
-            thread.deletedAt !== null ||
-            thread.settledOverride === "settled" ||
-            (thread.lastSnoozeWakeAt != null &&
-              latest.completedAt !== null &&
-              DateTime.toEpochMillis(thread.lastSnoozeWakeAt) >=
-                DateTime.toEpochMillis(latest.completedAt)) ||
-            (thread.snoozedUntil != null &&
-              DateTime.toEpochMillis(thread.snoozedUntil) > DateTime.toEpochMillis(now)) ||
-            DateTime.toEpochMillis(input.snoozedUntil) <= DateTime.toEpochMillis(now)
-          )
-            return;
-          yield* dispatchWithReceiptEffect({
-            type: "thread.snooze",
-            commandId: input.commandId,
-            threadId: input.threadId,
-            snoozedUntil: DateTime.formatIso(input.snoozedUntil),
-          });
         }),
       );
     }),

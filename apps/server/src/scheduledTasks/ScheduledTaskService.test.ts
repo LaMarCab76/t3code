@@ -5,6 +5,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it, vi } from "@effect/vitest";
 import {
   CommandId,
+  MessageId,
   ProjectId,
   ProviderInstanceId,
   ScheduledTaskError,
@@ -51,6 +52,7 @@ const insertRow = (
     next: string | null;
     enabled: number;
     status: string;
+    threadId?: ThreadId;
     scheduleJson?: string;
     prompt?: string;
   },
@@ -63,7 +65,7 @@ const insertRow = (
     enabled: row.enabled,
     schedule_json: row.scheduleJson ?? '{"type":"interval","everyMs":60000}',
     project_id: "project:test",
-    thread_id: null,
+    thread_id: row.threadId ?? null,
     workspace_strategy_json: '{"type":"root"}',
     model_selection_json: '{"instanceId":"codex","model":"gpt-5"}',
     runtime_mode: "full-access",
@@ -78,6 +80,34 @@ const insertRow = (
     last_run_error: null,
     run_count: 0,
   })}`;
+
+it.effect.each([
+  {
+    dates: ["2026-09-09T09:10:00.000-03:00"],
+    expected: "2026-09-09T12:10:00.000Z",
+  },
+  {
+    dates: ["2026-09-09T12:10:00.000Z", "2026-09-09T15:05:00.000+03:00"],
+    expected: "2026-09-09T12:05:00.000Z",
+  },
+])("selects the earliest future instant across offsets: $expected", ({ dates, expected }) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const now = "2026-09-09T12:00:00.000Z";
+    const threadId = ThreadId.make("thread:offset");
+    yield* Effect.forEach(
+      [...dates, "invalid", "2026-09-09T15:00:00.000+03:00"],
+      (next, index) =>
+        insertRow(sql, { id: `offset-${index}`, enabled: 1, status: "never", next, threadId }, now),
+      { discard: true },
+    );
+    const { nextRun } = yield* ScheduledTaskService.readThreadSchedule(
+      threadId,
+      DateTime.makeUnsafe(now),
+    );
+    assert.equal(nextRun === null ? null : DateTime.formatIso(nextRun), expected);
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
 
 it.effect("loads only due tasks and skips corrupt due rows without decoding settled tasks", () =>
   Effect.gen(function* () {
@@ -585,6 +615,8 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
     const scratch = ProjectId.make("project:scratch");
     const promoted = ProjectId.make("project:promoted");
     const sends = yield* Ref.make<Array<{ projectId: ProjectId; commandId: string }>>([]);
+    const finalSend = yield* Deferred.make<MessageId>();
+    const releaseSend = yield* Deferred.make<void>();
     // Saving reads it first. Then the rebind lands, and the promotion commits between the shell
     // read and the retry.
     const shellProjects = yield* Ref.make([promoted, scratch, promoted]);
@@ -607,7 +639,10 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
                           threadId: input.threadId,
                         }),
                       )
-                    : Effect.succeed({} as never),
+                    : Deferred.succeed(finalSend, input.messageId).pipe(
+                        Effect.andThen(Deferred.await(releaseSend)),
+                        Effect.as({} as never),
+                      ),
                 ),
               ),
             getThreadShell: () =>
@@ -625,6 +660,7 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
     );
     yield* Effect.gen(function* () {
       const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const sql = yield* SqlClient.SqlClient;
       const threadId = ThreadId.make("thread:promoted-during-run");
       const { task } = yield* service.upsert({
         id: ScheduledTaskId.make("task:promoted-during-run"),
@@ -640,8 +676,35 @@ it.effect("a bound run follows its thread when promotion moves it mid-send", () 
         interactionMode: "default",
       });
 
-      const result = yield* service.runNow({ id: task.id });
+      const dispatch = yield* service.runNow({ id: task.id }).pipe(Effect.forkChild);
+      const messageId = yield* Deferred.await(finalSend);
+      const pending = yield* service.pendingDispatch(task.id, messageId, threadId);
+      assert.isDefined(pending);
+      assert.isUndefined(
+        yield* service.pendingDispatch(
+          task.id,
+          MessageId.make("message:previous-dispatch"),
+          threadId,
+        ),
+      );
+      yield* sql`UPDATE scheduled_tasks SET thread_id = ${ThreadId.make("thread:new-destination")} WHERE task_id = ${task.id}`;
+      assert.isUndefined(yield* service.pendingDispatch(task.id, messageId, threadId));
+      yield* sql`UPDATE scheduled_tasks SET thread_id = NULL WHERE task_id = ${task.id}`;
+      assert.isDefined(yield* service.pendingDispatch(task.id, messageId, threadId));
+      yield* sql`UPDATE scheduled_tasks SET thread_id = ${threadId} WHERE task_id = ${task.id}`;
+      const observed = yield* pending!.pipe(
+        Effect.andThen(service.list()),
+        Effect.map(({ tasks }) => tasks.find((candidate) => candidate.id === task.id)),
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* TestClock.adjust("1 second");
+      yield* Deferred.succeed(releaseSend, undefined);
+      const recorded = yield* Fiber.join(observed);
+      const result = yield* Fiber.join(dispatch);
 
+      assert.equal(recorded?.nextRunAt, result.task.nextRunAt);
+      assert.notEqual(recorded?.nextRunAt, task.nextRunAt);
+      assert.isUndefined(yield* service.pendingDispatch(task.id, messageId, threadId));
       assert.equal(result.threadId, threadId);
       const attempts = yield* Ref.get(sends);
       assert.deepEqual(
@@ -1110,16 +1173,17 @@ it.effect("a run interrupted right after it reserves the task does not block the
         interactionMode: "default",
       });
 
-      // The reservation is the first Set.add of the task id; interrupt the run right there.
-      const add = Set.prototype.add;
+      // Interrupt the run as soon as it reserves the task.
+      const set = Map.prototype.set;
       let interrupted = false;
       const first = yield* Effect.gen(function* () {
-        using _reserve = vi.spyOn(Set.prototype, "add").mockImplementation(function (
-          this: Set<unknown>,
+        using _reserve = vi.spyOn(Map.prototype, "set").mockImplementation(function (
+          this: Map<unknown, unknown>,
+          key: unknown,
           value: unknown,
         ) {
-          const result = add.call(this, value);
-          if (value === task.id && !interrupted) {
+          const result = set.call(this, key, value);
+          if (key === task.id && !interrupted) {
             interrupted = true;
             Fiber.getCurrent()?.interruptUnsafe();
           }

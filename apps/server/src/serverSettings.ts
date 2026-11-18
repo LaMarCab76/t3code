@@ -272,8 +272,10 @@ export class ServerSettingsService extends Context.Service<
       patch?: ServerSettingsPatch,
     ) => Effect.Effect<ServerSettings, ServerSettingsError>;
 
+    /** Skipping materialization applies managed locks and retains stored values, including legacy inline secrets. */
     readonly withSettingsSnapshot: <A, E, R>(
       use: (settings: ServerSettings) => Effect.Effect<A, E, R>,
+      options?: { readonly materializeSecrets: false },
     ) => Effect.Effect<A, E | ServerSettingsError, R>;
 
     readonly streamChanges: Stream.Stream<ServerSettings>;
@@ -1267,8 +1269,16 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const withSettingsSnapshot: ServerSettingsService["Service"]["withSettingsSnapshot"] = (use) =>
-    writeSemaphore.withPermits(1)(getMaterializedSettings.pipe(Effect.flatMap(use)));
+  const withSettingsSnapshot: ServerSettingsService["Service"]["withSettingsSnapshot"] = (
+    use,
+    options,
+  ) =>
+    writeSemaphore.withPermits(1)(
+      (options?.materializeSecrets === false
+        ? getSettingsFromCache.pipe(Effect.map(toEffective))
+        : getMaterializedSettings
+      ).pipe(Effect.flatMap(use)),
+    );
 
   const revalidateAndEmit = writeSemaphore.withPermits(1)(
     Effect.gen(function* () {

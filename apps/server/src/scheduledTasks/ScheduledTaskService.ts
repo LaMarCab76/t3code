@@ -34,6 +34,7 @@ import * as Digest from "effect/crypto/Digest";
 import * as Mac from "effect/crypto/Mac";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Exit from "effect/Exit";
@@ -45,9 +46,11 @@ import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
+import type { SqlError } from "effect/sql/SqlError";
 
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
@@ -254,11 +257,33 @@ interface WebhookDeliveryRow {
   readonly error: string | null;
 }
 
+interface PendingScheduledDispatch {
+  readonly messageId: MessageId;
+  readonly settled: Effect.Effect<void>;
+}
+
 export class ScheduledTaskService extends Context.Service<
   ScheduledTaskService,
   {
     readonly list: () => Effect.Effect<ScheduledTaskListResult, ScheduledTaskError>;
     readonly subscribeList: () => Stream.Stream<ScheduledTaskListResult, ScheduledTaskError>;
+    readonly subscribeChanges: Effect.Effect<Effect.Effect<void>, never, Scope.Scope>;
+    readonly pendingDispatch: (
+      id: ScheduledTaskId,
+      messageId: MessageId,
+      threadId: ThreadId,
+    ) => Effect.Effect<Effect.Effect<void> | undefined, SqlError>;
+    readonly resolveThreadSchedule: (
+      threadId: ThreadId,
+      now: DateTime.Utc,
+    ) => Effect.Effect<
+      {
+        readonly nextRun: DateTime.Utc | null;
+        readonly waits: ReadonlyArray<Effect.Effect<void>>;
+        readonly hasRunningTask: boolean;
+      },
+      SqlError
+    >;
     readonly upsert: (
       input: ScheduledTaskUpsertInput,
     ) => Effect.Effect<ScheduledTaskMutationResult, ScheduledTaskError>;
@@ -436,24 +461,54 @@ const decodeRow = Effect.fnUntraced(
     ),
 );
 
-/** The soonest future run of an enabled task bound to this thread, or null. */
-export const nextRunForThread = Effect.fn("ScheduledTaskService.nextRunForThread")(function* (
+const timedSchedule = (sql: SqlClient.SqlClient) =>
+  sql`CASE WHEN json_valid(schedule_json) THEN json_extract(schedule_json, '$.type') END <> 'webhook'`;
+
+export const readThreadSchedule = Effect.fn("ScheduledTaskService.readThreadSchedule")(function* (
   threadId: ThreadId,
   now: DateTime.DateTime,
+  pendingDispatches: Effect.Effect<
+    ReadonlyMap<ScheduledTaskId, PendingScheduledDispatch>
+  > = Effect.succeed(new Map()),
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ next_run_at: string }>`
-    SELECT next_run_at FROM scheduled_tasks
+  const rows = yield* sql<{
+    task_id: ScheduledTaskId;
+    next_run_at: string | null;
+    last_run_status: string;
+  }>`
+    SELECT task_id, next_run_at, last_run_status FROM scheduled_tasks
     WHERE thread_id = ${threadId} AND enabled = 1
-      AND next_run_at IS NOT NULL AND next_run_at > ${iso(now)}
-    ORDER BY next_run_at ASC
+      AND (next_run_at IS NOT NULL OR last_run_status = 'running')
+      AND ${timedSchedule(sql)}
   `.pipe(NodeSqliteClient.readOnly);
-  // next_run_at is freeform; the soonest parseable value wins.
+  const runningTaskIds: ScheduledTaskId[] = [];
+  let nextRun: DateTime.Utc | null = null;
   for (const row of rows) {
+    if (row.last_run_status === "running") {
+      runningTaskIds.push(row.task_id);
+      continue;
+    }
+    if (row.next_run_at === null) continue;
     const parsed = DateTime.make(row.next_run_at);
-    if (Option.isSome(parsed)) return DateTime.toUtc(parsed.value);
+    if (
+      Option.isSome(parsed) &&
+      DateTime.isGreaterThan(parsed.value, now) &&
+      (nextRun === null || DateTime.isLessThan(parsed.value, nextRun))
+    ) {
+      nextRun = DateTime.toUtc(parsed.value);
+    }
   }
-  return null;
+  const dispatches = yield* pendingDispatches;
+  const waits = runningTaskIds.flatMap((id) => {
+    const dispatch = dispatches.get(id);
+    return dispatch === undefined ? [] : [dispatch.settled];
+  });
+  return {
+    nextRun: waits.length === 0 ? nextRun : null,
+    waits,
+    hasRunningTask: runningTaskIds.length > 0,
+  };
 });
 
 export const listDueTasks = Effect.fn("ScheduledTaskService.listDueTasks")(function* (
@@ -530,7 +585,24 @@ export const layer = Layer.effect(
     const webhookFilteredLogWindows = yield* Ref.make<
       ReadonlyMap<ScheduledTaskId, ReadonlyArray<number>>
     >(new Map());
-    const activeRuns = yield* Ref.make<ReadonlySet<ScheduledTaskId>>(new Set());
+    const activeRuns = yield* Ref.make<ReadonlyMap<ScheduledTaskId, PendingScheduledDispatch>>(
+      new Map(),
+    );
+    const pendingDispatch = Effect.fn("ScheduledTaskService.pendingDispatch")(function* (
+      id: ScheduledTaskId,
+      messageId: MessageId,
+      threadId: ThreadId,
+    ) {
+      const dispatch = (yield* Ref.get(activeRuns)).get(id);
+      if (dispatch?.messageId !== messageId) return;
+      const rows = yield* sql`
+        SELECT 1 FROM scheduled_tasks
+        WHERE task_id = ${id} AND enabled = 1 AND last_run_status = 'running'
+          AND (thread_id = ${threadId} OR (thread_id IS NULL AND thread_mode != 'new_thread'))
+          AND ${timedSchedule(sql)}
+      `.pipe(NodeSqliteClient.readOnly);
+      if (rows.length > 0) return dispatch.settled;
+    });
     // Notifications re-emit the full list; slow subscribers need only the newest dirty signal.
     const changesPubSub = yield* PubSub.sliding<void>(1);
     const dueTasks = DueHint.make();
@@ -968,6 +1040,12 @@ export const layer = Layer.effect(
       // Read before reserving: nothing between the reservation and its release may fail.
       const startedAt = yield* localNow;
       const startedAtIso = iso(startedAt);
+      const fireKey =
+        webhook === undefined
+          ? `${task.id}:${DateTime.toEpochMillis(startedAt)}:${trigger}`
+          : `${task.id}:webhook:${webhook.deliveryId}`;
+      const commandId = CommandId.make(`scheduled-task:${fireKey}`);
+      const messageId = MessageId.make(`scheduled-task-message:${fireKey}`);
       const run = Effect.gen(function* () {
         // Re-read stale poll snapshots so deleted, paused or postponed tasks cannot fire.
         const active = yield* findTask(task.id);
@@ -1049,12 +1127,6 @@ export const layer = Layer.effect(
 
         yield* notifyChanged;
 
-        const fireKey =
-          webhook === undefined
-            ? `${active.id}:${DateTime.toEpochMillis(startedAt)}:${trigger}`
-            : `${active.id}:webhook:${webhook.deliveryId}`;
-        const commandId = CommandId.make(`scheduled-task:${fireKey}`);
-        const messageId = MessageId.make(`scheduled-task-message:${fireKey}`);
         const prompt = webhook?.prompt ?? active.prompt;
         const threadMode = scheduledTaskThreadMode(active);
 
@@ -1222,11 +1294,12 @@ export const layer = Layer.effect(
       );
 
       // Reserve and release as one bracket so an interrupt cannot leave the task marked busy.
+      const dispatched = yield* Deferred.make<void>();
       return yield* Effect.acquireUseRelease(
         Ref.modify(activeRuns, (active) => {
           if (active.has(task.id)) return [false, active] as const;
-          const next = new Set(active);
-          next.add(task.id);
+          const next = new Map(active);
+          next.set(task.id, { messageId, settled: Deferred.await(dispatched) });
           return [true, next] as const;
         }),
         (reserved) =>
@@ -1238,10 +1311,10 @@ export const layer = Layer.effect(
         (reserved) =>
           reserved
             ? Ref.update(activeRuns, (active) => {
-                const next = new Set(active);
+                const next = new Map(active);
                 next.delete(task.id);
                 return next;
-              })
+              }).pipe(Effect.andThen(Deferred.succeed(dispatched, undefined)))
             : Effect.void,
       );
     });
@@ -1601,7 +1674,11 @@ export const layer = Layer.effect(
       "ScheduledTaskService.setEnabled",
     )(function* (input) {
       const existing = yield* loadTask(input.id);
-      if (existing.enabled === input.enabled) return { task: existing };
+      const publishChange = sql.afterCommit(notifyChanged);
+      if (existing.enabled === input.enabled) {
+        yield* publishChange;
+        return { task: existing };
+      }
       if (
         input.enabled &&
         existing.schedule.type === "webhook" &&
@@ -1625,22 +1702,26 @@ export const layer = Layer.effect(
       const next = nextRunAt({ enabled: input.enabled, schedule: existing.schedule }, now);
       // RETURNING so a task deleted between the load and this UPDATE is a
       // visible not-found error, not a false success.
-      const updated = yield* sql<{ task_id: string }>`
+      const update = sql<{ task_id: string }>`
           UPDATE scheduled_tasks
           SET enabled = ${input.enabled ? 1 : 0},
               next_run_at = ${next},
               updated_at = ${iso(now)}
           WHERE task_id = ${input.id}
           RETURNING task_id
-        `.pipe(
-        Effect.mapError((cause) =>
-          taskError("Could not update schedule task.", { taskId: input.id, cause }),
-        ),
-      );
+        `;
+      const updated = yield* sql
+        .withTransaction(
+          update.pipe(Effect.tap((rows) => (rows.length === 0 ? Effect.void : publishChange))),
+        )
+        .pipe(
+          Effect.mapError((cause) =>
+            taskError("Could not update schedule task.", { taskId: input.id, cause }),
+          ),
+        );
       if (updated.length === 0) {
         return yield* taskError("Schedule task not found.", { taskId: input.id });
       }
-      yield* notifyChanged;
       return {
         task: { ...existing, enabled: input.enabled, nextRunAt: next, updatedAt: iso(now) },
       };
@@ -2656,6 +2737,14 @@ export const layer = Layer.effect(
     return ScheduledTaskService.of({
       list,
       subscribeList,
+      subscribeChanges: PubSub.subscribe(changesPubSub).pipe(Effect.map(PubSub.take)),
+      pendingDispatch,
+      resolveThreadSchedule: Effect.fn("ScheduledTaskService.resolveThreadSchedule")(
+        (threadId: ThreadId, now: DateTime.Utc) =>
+          readThreadSchedule(threadId, now, Ref.get(activeRuns)).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          ),
+      ),
       upsert,
       setEnabled,
       delete: deleteTask,

@@ -184,6 +184,10 @@ const layerUnusedScheduledTaskStub = Layer.succeed(
   ScheduledTaskService.ScheduledTaskService.of({
     list: () => Effect.succeed({ tasks: [] }),
     subscribeList: () => Stream.succeed({ tasks: [] }),
+    subscribeChanges: Effect.succeed(Effect.never),
+    pendingDispatch: () => Effect.undefined,
+    resolveThreadSchedule: () =>
+      Effect.succeed({ nextRun: null, waits: [], hasRunningTask: false }),
     upsert: () => Effect.die("ScheduledTaskService.upsert is unused in this test"),
     setEnabled: () => Effect.die("ScheduledTaskService.setEnabled is unused in this test"),
     delete: () => Effect.die("ScheduledTaskService.delete is unused in this test"),

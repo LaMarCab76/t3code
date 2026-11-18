@@ -345,6 +345,8 @@ question and answer when the thread wakes; the question stays unanswered.
 
 To hide a thread while it waits for its own scheduled task, turn on **Settings → Threads →
 Snooze until scheduled task runs**. When a turn ends and the thread has an enabled scheduled task
-coming up, the thread snoozes until that task's next run, then wakes when the task starts. The
-task's own turn leaves its result visible. Pausing or rescheduling the task does not move the wake
-time; choose **Wake thread** to bring the thread back sooner.
+coming up, the thread snoozes until that task's next run, then wakes when the task starts. If a
+scheduled turn succeeds and the thread has another upcoming run, it snoozes again until the earliest
+one. When the schedule is exhausted or the run needs your attention, the thread stays visible.
+Pausing or rescheduling the task does not move the wake time; choose **Wake thread** to bring the
+thread back sooner.
