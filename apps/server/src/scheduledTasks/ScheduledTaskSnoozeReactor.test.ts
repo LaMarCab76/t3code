@@ -276,27 +276,37 @@ it.effect.each([
   }).pipe(Effect.provide(layerTest(true))),
 );
 
-it.effect("waits for the scheduler to commit the next occurrence after a fast turn", () =>
+it.effect.each([
+  { pending: true, expected: NEXT_RUN },
+  { pending: false, expected: null },
+])("evaluates snooze after a dispatch lookup with a pending wait: $pending", (scenario) =>
   Effect.gen(function* () {
-    const awaitingDispatch = yield* Deferred.make<ScheduledTaskId>();
-    const dispatchCommitted = yield* Deferred.make<void>();
+    const dispatchReached = yield* Deferred.make<ScheduledTaskId>();
+    const dispatchReleased = yield* Deferred.make<void>();
     yield* Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
+      const settings = yield* ServerSettings.ServerSettingsService;
       const current = ScheduledTaskId.make("current");
       yield* insertTask(sql, { id: current, threadId, next: null });
       yield* insertTask(sql, { id: "later", threadId, next: "2030-02-01T00:00:00.000Z" });
       const completion = yield* completeTurn({ scheduledTaskId: current }).pipe(Effect.forkScoped);
-      assert.strictEqual(yield* Deferred.await(awaitingDispatch), current);
+      assert.strictEqual(yield* Deferred.await(dispatchReached), current);
       assert.strictEqual(yield* snoozedUntil, null);
+      if (!scenario.pending) {
+        yield* settings.updateSettings({ snoozeThreadsUntilScheduledTask: false });
+      }
       yield* sql`UPDATE scheduled_tasks SET next_run_at = ${NEXT_RUN} WHERE task_id = ${current}`;
-      yield* Deferred.succeed(dispatchCommitted, undefined);
+      yield* Deferred.succeed(dispatchReleased, undefined);
       yield* Fiber.join(completion);
-      assert.strictEqual(yield* snoozedUntil, NEXT_RUN);
+      assert.strictEqual(yield* snoozedUntil, scenario.expected);
     }).pipe(
       Effect.provide(
-        layerTest(true, (id) =>
-          Deferred.succeed(awaitingDispatch, id).pipe(Effect.as(Deferred.await(dispatchCommitted))),
-        ),
+        layerTest(true, (id) => {
+          const reached = Deferred.succeed(dispatchReached, id).pipe(
+            Effect.andThen(Deferred.await(dispatchReleased)),
+          );
+          return scenario.pending ? Effect.succeed(reached) : reached.pipe(Effect.as(undefined));
+        }),
       ),
     );
   }),
