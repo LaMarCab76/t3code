@@ -21,6 +21,7 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
@@ -54,6 +55,7 @@ const layerTest = (
   pendingDispatches: ScheduledTaskService.ScheduledTaskService["Service"]["pendingDispatches"] = Effect.succeed(
     new Map(),
   ),
+  wrapEventSink?: (sink: EventSink.EventSinkV2Shape) => EventSink.EventSinkV2Shape,
 ) => {
   const settingsLayer = ServerSettings.layerTest({ snoozeThreadsUntilScheduledTask }).pipe(
     Layer.orDie,
@@ -61,7 +63,12 @@ const layerTest = (
   const replayLayer = ProviderReplayHarness.layerWithRegistry(
     { name: "scheduled-task-snooze" },
     ProviderAdapterRegistry.layerFromAdapters([adapter]),
-    { databaseLayer: layerDatabase, runEffectWorker: false, settingsLayer },
+    {
+      databaseLayer: layerDatabase,
+      runEffectWorker: false,
+      settingsLayer,
+      ...(wrapEventSink === undefined ? {} : { wrapEventSink }),
+    },
   );
   return ScheduledTaskSnoozeReactor.layer.pipe(
     Layer.provideMerge(
@@ -350,6 +357,7 @@ it.effect.each(["committed", "pending", "paused before write"] as const)(
       const waits = yield* Ref.make(0);
       const newerWaitStarted = yield* Deferred.make<void>();
       const beforeWriter = yield* Deferred.make<void>();
+      const gateNextWriter = yield* Ref.make(false);
       const allowWriter = yield* Deferred.make<void>();
       const activeTaskId = ScheduledTaskId.make("dispatch-in-progress");
       const dispatches = yield* Ref.make(
@@ -406,6 +414,7 @@ it.effect.each(["committed", "pending", "paused before write"] as const)(
         assert.strictEqual(yield* snoozedUntil, null);
 
         const newer = yield* completeTurn({}, { ordinal: 2, observe: false });
+        if (schedule === "paused before write") yield* Ref.set(gateNextWriter, true);
         yield* Queue.offer(input, newer);
         if (schedule === "paused before write") {
           yield* Deferred.await(beforeWriter);
@@ -434,18 +443,22 @@ it.effect.each(["committed", "pending", "paused before write"] as const)(
                   Effect.andThen(Deferred.await(releaseDispatch)),
                 ),
               ),
-            (engine) => ({
-              ...engine,
-              streamDomainEvents: Stream.fromQueue(input),
-              autoSnoozeAfterRun: (attempt) =>
-                (schedule === "paused before write" && attempt.threadId === threadId
-                  ? Deferred.succeed(beforeWriter, undefined).pipe(
-                      Effect.andThen(Deferred.await(allowWriter)),
-                    )
-                  : Effect.void
-                ).pipe(Effect.andThen(engine.autoSnoozeAfterRun(attempt))),
-            }),
+            (engine) => ({ ...engine, streamDomainEvents: Stream.fromQueue(input) }),
             Ref.get(dispatches),
+            (sink) => ({
+              ...sink,
+              withProviderBatch: (write) =>
+                Ref.getAndSet(gateNextWriter, false).pipe(
+                  Effect.flatMap((gate) =>
+                    gate
+                      ? Deferred.succeed(beforeWriter, undefined).pipe(
+                          Effect.andThen(Deferred.await(allowWriter)),
+                        )
+                      : Effect.void,
+                  ),
+                  Effect.andThen(sink.withProviderBatch(write)),
+                ),
+            }),
           ),
         ),
       );
@@ -491,4 +504,99 @@ it.effect("keeps the thread awake when disabled while the snooze waits for its l
       ),
     );
   }),
+);
+
+it.effect("keeps a question committed before the SQLite writer visible", () =>
+  Effect.gen(function* () {
+    const beforeWriter = yield* Deferred.make<void>();
+    const allowWriter = yield* Deferred.make<void>();
+    yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const events = yield* EventSink.EventSinkV2;
+      const reactor = yield* ScheduledTaskSnoozeReactor.ScheduledTaskSnoozeReactor;
+      yield* insertTask(sql, { id: "next", threadId, next: NEXT_RUN });
+      const completed = yield* completeTurn({}, { observe: false });
+      const attempt = yield* reactor.handle(completed).pipe(Effect.forkScoped);
+      yield* Deferred.await(beforeWriter);
+      const now = yield* DateTime.now;
+      yield* events.write({
+        events: [
+          {
+            id: EventId.make("event:question-before-snooze-writer"),
+            type: "runtime-request.updated",
+            threadId,
+            runId: completed.payload.id,
+            occurredAt: now,
+            payload: {
+              id: RuntimeRequestId.make("request:question-before-snooze-writer"),
+              nodeId: completed.payload.rootNodeId!,
+              providerTurnId: null,
+              nativeRequestRef: null,
+              kind: "user_input",
+              status: "pending",
+              responseCapability: { type: "message" },
+              createdAt: now,
+              resolvedAt: null,
+            },
+          },
+        ],
+      });
+      yield* Deferred.succeed(allowWriter, undefined);
+      yield* Fiber.join(attempt);
+      assert.strictEqual(yield* snoozedUntil, null);
+    }).pipe(
+      Effect.provide(
+        layerTest(true, undefined, undefined, undefined, (sink) => ({
+          ...sink,
+          withProviderBatch: (write) =>
+            Deferred.succeed(beforeWriter, undefined).pipe(
+              Effect.andThen(Deferred.await(allowWriter)),
+              Effect.andThen(sink.withProviderBatch(write)),
+            ),
+        })),
+      ),
+    );
+  }),
+);
+
+it.effect.each([true, false])(
+  "handles a deadline expiring during validation with another date: %s",
+  (hasLaterDate) =>
+    Effect.gen(function* () {
+      const expiresAt = DateTime.add(yield* DateTime.now, { milliseconds: 1 });
+      const expiresAtIso = DateTime.formatIso(expiresAt);
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* insertTask(sql, { id: "expiring", threadId, next: expiresAtIso });
+        if (hasLaterDate) yield* insertTask(sql, { id: "later", threadId, next: NEXT_RUN });
+        const completed = yield* completeTurn();
+        assert.strictEqual(yield* snoozedUntil, hasLaterDate ? NEXT_RUN : null);
+        if (!hasLaterDate) {
+          const reactor = yield* ScheduledTaskSnoozeReactor.ScheduledTaskSnoozeReactor;
+          yield* insertTask(sql, { id: "later", threadId, next: NEXT_RUN });
+          yield* reactor.handle(completed);
+          assert.strictEqual(yield* snoozedUntil, NEXT_RUN);
+        }
+      }).pipe(
+        Effect.provide(
+          layerTest(true, undefined, (engine) => ({
+            ...engine,
+            autoSnoozeAfterRun: (attempt) =>
+              engine.autoSnoozeAfterRun({
+                ...attempt,
+                nextRun: (now) =>
+                  attempt
+                    .nextRun(now)
+                    .pipe(
+                      Effect.tap((candidate) =>
+                        candidate !== null && DateTime.formatIso(candidate) === expiresAtIso
+                          ? TestClock.adjust(1)
+                          : Effect.void,
+                      ),
+                    ),
+              }),
+          })),
+        ),
+      );
+    }),
 );

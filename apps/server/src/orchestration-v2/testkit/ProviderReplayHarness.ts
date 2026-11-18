@@ -289,6 +289,7 @@ export function layerWithRegistry<Error>(
     ) => ProjectionStore.ProjectionStoreV2Shape;
     readonly managedPolicy?: ManagedPolicyDocument;
     readonly settingsLayer?: Layer.Layer<ServerSettings.ServerSettingsService>;
+    readonly wrapEventSink?: (sink: EventSink.EventSinkV2Shape) => EventSink.EventSinkV2Shape;
   } = {},
 ): Layer.Layer<
   | Orchestrator.OrchestratorV2
@@ -351,9 +352,16 @@ export function layerWithRegistry<Error>(
     layerEffectOutboxProvided,
     TurnItemPositionStore.layer,
   ).pipe(Layer.provide(layerDatabase));
-  const layerEventSinkProvided = EventSink.layerFromStores.pipe(
+  const layerEventSink = EventSink.layerFromStores.pipe(
     Layer.provide(Layer.mergeAll(layerStores, layerDatabase)),
   );
+  const wrapEventSink = options.wrapEventSink;
+  const layerEventSinkProvided =
+    wrapEventSink === undefined
+      ? layerEventSink
+      : Layer.effect(EventSink.EventSinkV2, Effect.map(EventSink.EventSinkV2, wrapEventSink)).pipe(
+          Layer.provide(layerEventSink),
+        );
   const layerRuntime = RuntimePolicy.layerEnforcingCeiling.pipe(
     Layer.provide(Layer.merge(layerRuntimeBase, layerServerSettings)),
   );

@@ -214,6 +214,12 @@ const isMessageQuestionAnswer = Schema.is(
   Schema.Union([TrimmedNonEmptyString, Schema.NonEmptyArray(TrimmedNonEmptyString)]),
 );
 
+const AutomaticSnoozeNextRun = Context.Reference<
+  ((now: DateTime.Utc) => Effect.Effect<DateTime.Utc | null, SqlError>) | undefined
+>("t3/orchestration-v2/AutomaticSnoozeNextRun", { defaultValue: () => undefined });
+
+const noAutomaticSnoozeOccurrence = Symbol("no-automatic-snooze-occurrence");
+
 export class OrchestratorDispatchError extends Schema.TaggedError<OrchestratorDispatchError>()(
   "OrchestratorDispatchError",
   {
@@ -4592,15 +4598,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const projection = yield* loadProjectionForCommand(command, ["runs", "runtimeRequests"], {
         turnItemTypes: [],
       });
-      const parsedSnoozedUntil = DateTime.make(command.snoozedUntil);
-      if (
-        Option.isNone(parsedSnoozedUntil) ||
-        DateTime.toEpochMillis(parsedSnoozedUntil.value) <= DateTime.toEpochMillis(now)
-      ) {
+      const resolveNextRun = yield* AutomaticSnoozeNextRun;
+      const validationTime = resolveNextRun === undefined ? now : yield* DateTime.now;
+      const candidate = Option.getOrNull(DateTime.make(command.snoozedUntil));
+      if (candidate !== null && DateTime.isGreaterThan(candidate, validationTime)) {
+        snoozedUntil = candidate;
+      } else if (resolveNextRun !== undefined) {
+        snoozedUntil = yield* resolveNextRun(validationTime).pipe(mapDispatchError(command));
+      }
+      if (snoozedUntil === null) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,
-          cause: `Thread ${command.threadId} snooze wake time ${command.snoozedUntil} is not in the future.`,
+          cause:
+            resolveNextRun === undefined
+              ? `Thread ${command.threadId} snooze wake time ${command.snoozedUntil} is not in the future.`
+              : noAutomaticSnoozeOccurrence,
         });
       }
       if (
@@ -4651,7 +4664,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: `Thread ${command.threadId} has a queued run and cannot be snoozed.`,
         });
       }
-      snoozedUntil = parsedSnoozedUntil.value;
     }
     let markUnreadVisitedAt: DateTime.Utc | null = null;
     if (command.type === "thread.mark-unread") {
@@ -16300,7 +16312,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             .getThreadRecords(input.threadId, ["runs", "runtimeRequests"])
             .pipe(
               Effect.mapError(
-                (cause) => new OrchestratorProjectionError({ threadId: input.threadId, cause }),
+                (cause) =>
+                  new OrchestratorProjectionError({
+                    threadId: input.threadId,
+                    cause,
+                  }),
               ),
             );
           const now = yield* DateTime.now;
@@ -16308,7 +16324,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             (found, run) => (found === undefined || run.ordinal > found.ordinal ? run : found),
             undefined,
           );
-          // The caller read the thread before this lock; a message sent since then wins.
           if (
             latest?.id !== input.runId ||
             latest.status !== "completed" ||
@@ -16325,24 +16340,42 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               DateTime.toEpochMillis(thread.snoozedUntil) > DateTime.toEpochMillis(now))
           )
             return "skipped" as const;
+          const commit = eventSink
+            .withProviderBatch(
+              Effect.gen(function* () {
+                // Provider events can commit questions without taking the thread lock.
+                const { runtimeRequests } = yield* projectionStore.getThreadRecords(
+                  input.threadId,
+                  ["runtimeRequests"],
+                );
+                if (runtimeRequests.some((request) => request.status === "pending")) {
+                  return "skipped" as const;
+                }
+                const snoozedUntil = yield* input.nextRun(yield* DateTime.now);
+                if (snoozedUntil === null) return "no-next-run" as const;
+                yield* dispatchWithReceiptEffect({
+                  type: "thread.snooze",
+                  commandId: input.commandId,
+                  threadId: input.threadId,
+                  snoozedUntil: DateTime.formatIso(snoozedUntil),
+                }).pipe(Effect.provideService(AutomaticSnoozeNextRun, input.nextRun));
+                return "snoozed" as const;
+              }),
+            )
+            .pipe(
+              Effect.catchIf(
+                (cause) =>
+                  cause._tag === "OrchestratorDispatchError" &&
+                  cause.cause === noAutomaticSnoozeOccurrence,
+                () => Effect.succeed("no-next-run" as const),
+              ),
+            );
           // Take settings before the SQLite writer; a settings reload can also need that writer.
           return yield* serverSettings
             .withSettingsSnapshot(
               (settings) =>
                 settings.snoozeThreadsUntilScheduledTask
-                  ? eventSink.withProviderBatch(
-                      Effect.gen(function* () {
-                        const snoozedUntil = yield* input.nextRun(yield* DateTime.now);
-                        if (snoozedUntil === null) return "no-next-run" as const;
-                        yield* dispatchWithReceiptEffect({
-                          type: "thread.snooze",
-                          commandId: input.commandId,
-                          threadId: input.threadId,
-                          snoozedUntil: DateTime.formatIso(snoozedUntil),
-                        });
-                        return "snoozed" as const;
-                      }),
-                    )
+                  ? commit
                   : Effect.succeed("skipped" as const),
               { materializeSecrets: false },
             )
