@@ -92,10 +92,11 @@ export interface EventSinkV2Shape {
     R | R2
   >;
 
-  /** Normalize and persist an ordered group against one transaction; publish after its commit. */
-  readonly withProviderBatch: <A, E, R>(
+  /** Persist and publish an ordered group. A pre-commit check requires the outermost batch. */
+  readonly withProviderBatch: <A, E, R, E2 = never, R2 = never>(
     effect: Effect.Effect<A, E, R>,
-  ) => Effect.Effect<A, E | EventSinkV2Error, R>;
+    beforeCommit?: (result: A) => Effect.Effect<void, E2, R2>,
+  ) => Effect.Effect<A, E | E2 | EventSinkV2Error, R | R2>;
 
   readonly write: (input: {
     /** Return no events if another thread owns this native session at commit time. */
@@ -313,9 +314,10 @@ const layerBase: Layer.Layer<
 
     // Serialize commit and publish; reordered publication makes clients drop earlier sequences.
     const publishLane = yield* Semaphore.make(1);
-    const commitThenPublishNow = <A, E, R>(
+    const commitThenPublishNow = <A, E, R, E2 = never, R2 = never>(
       transaction: Effect.Effect<A, E, R>,
       publish: (committed: A) => Effect.Effect<void>,
+      beforeCommit?: (result: A) => Effect.Effect<void, E2, R2>,
     ) =>
       Effect.uninterruptibleMask((restore) => {
         let holdsLane = false;
@@ -331,7 +333,13 @@ const layerBase: Layer.Layer<
         // every subscriber must hear about it before this writer can exit.
         // Otherwise a failed child run can leave its parent's task running.
         return sql
-          .withTransaction(Effect.tap(restore(transaction), () => takeLane))
+          .withTransaction(
+            Effect.tap(restore(transaction), (result) =>
+              beforeCommit === undefined
+                ? takeLane
+                : takeLane.pipe(Effect.andThen(() => beforeCommit(result))),
+            ),
+          )
           .pipe(
             Effect.tap(publish),
             Effect.ensuring(
@@ -1059,8 +1067,16 @@ const layerBase: Layer.Layer<
 
     const withProviderBatch: EventSinkV2Shape["withProviderBatch"] = Effect.fn(
       "orchestrationV2.EventSink.providerBatch",
-    )(function* <A, E, R>(effect: Effect.Effect<A, E, R>) {
-      if ((yield* CurrentProviderBatch) !== undefined) return yield* effect;
+    )(function* <A, E, R, E2 = never, R2 = never>(
+      effect: Effect.Effect<A, E, R>,
+      beforeCommit?: (result: A) => Effect.Effect<void, E2, R2>,
+    ) {
+      if ((yield* CurrentProviderBatch) !== undefined) {
+        if (beforeCommit !== undefined) {
+          return yield* Effect.die(new Error("A pre-commit check requires the outermost batch."));
+        }
+        return yield* effect;
+      }
       const batch: ProviderBatchPublication = { publish: [], eventCount: 0 };
       let started = false;
       const result = yield* commitThenPublishNow(
@@ -1068,6 +1084,7 @@ const layerBase: Layer.Layer<
           started = true;
         }).pipe(Effect.andThen(Effect.provideService(effect, CurrentProviderBatch, batch))),
         () => Effect.forEach(batch.publish, (publish) => publish, { discard: true }),
+        beforeCommit,
       ).pipe(
         // Normalization mutates run-local state, so only retry before its transaction body starts.
         Effect.retry({

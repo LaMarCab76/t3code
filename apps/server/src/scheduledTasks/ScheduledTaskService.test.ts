@@ -52,6 +52,7 @@ const insertRow = (
     next: string | null;
     enabled: number;
     status: string;
+    threadId?: ThreadId;
     scheduleJson?: string;
     prompt?: string;
   },
@@ -64,7 +65,7 @@ const insertRow = (
     enabled: row.enabled,
     schedule_json: row.scheduleJson ?? '{"type":"interval","everyMs":60000}',
     project_id: "project:test",
-    thread_id: null,
+    thread_id: row.threadId ?? null,
     workspace_strategy_json: '{"type":"root"}',
     model_selection_json: '{"instanceId":"codex","model":"gpt-5"}',
     runtime_mode: "full-access",
@@ -79,6 +80,31 @@ const insertRow = (
     last_run_error: null,
     run_count: 0,
   })}`;
+
+it.effect.each([
+  {
+    dates: ["2026-09-09T09:10:00.000-03:00"],
+    expected: "2026-09-09T12:10:00.000Z",
+  },
+  {
+    dates: ["2026-09-09T12:10:00.000Z", "2026-09-09T15:05:00.000+03:00"],
+    expected: "2026-09-09T12:05:00.000Z",
+  },
+])("selects the earliest future instant across offsets: $expected", ({ dates, expected }) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const now = "2026-09-09T12:00:00.000Z";
+    const threadId = ThreadId.make("thread:offset");
+    yield* Effect.forEach(
+      [...dates, "invalid", "2026-09-09T15:00:00.000+03:00"],
+      (next, index) =>
+        insertRow(sql, { id: `offset-${index}`, enabled: 1, status: "never", next, threadId }, now),
+      { discard: true },
+    );
+    const next = yield* ScheduledTaskService.nextRunForThread(threadId, DateTime.makeUnsafe(now));
+    assert.equal(next === null ? null : DateTime.formatIso(next), expected);
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
 
 it.effect("loads only due tasks and skips corrupt due rows without decoding settled tasks", () =>
   Effect.gen(function* () {

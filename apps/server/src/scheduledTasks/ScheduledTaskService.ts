@@ -457,18 +457,20 @@ export const nextRunForThread = Effect.fn("ScheduledTaskService.nextRunForThread
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ next_run_at: string }>`
     SELECT next_run_at FROM scheduled_tasks
-    WHERE thread_id = ${threadId} AND enabled = 1
-      AND next_run_at IS NOT NULL AND next_run_at > ${iso(now)}
-    ORDER BY next_run_at ASC
+    WHERE thread_id = ${threadId} AND enabled = 1 AND next_run_at IS NOT NULL
   `.pipe(NodeSqliteClient.readOnly);
-  // An offset can sort after the UTC bound even though the instant is already past.
+  let next: DateTime.Utc | null = null;
   for (const row of rows) {
     const parsed = DateTime.make(row.next_run_at);
-    if (Option.isSome(parsed) && DateTime.isGreaterThan(parsed.value, now)) {
-      return DateTime.toUtc(parsed.value);
+    if (
+      Option.isSome(parsed) &&
+      DateTime.isGreaterThan(parsed.value, now) &&
+      (next === null || DateTime.isLessThan(parsed.value, next))
+    ) {
+      next = DateTime.toUtc(parsed.value);
     }
   }
-  return null;
+  return next;
 });
 
 export const listDueTasks = Effect.fn("ScheduledTaskService.listDueTasks")(function* (

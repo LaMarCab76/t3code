@@ -452,7 +452,7 @@ it.effect.each(["committed", "pending", "paused before write"] as const)(
             Ref.get(dispatches),
             (sink) => ({
               ...sink,
-              withProviderBatch: (write) =>
+              withProviderBatch: (write, beforeCommit) =>
                 Ref.getAndSet(gateNextWriter, false).pipe(
                   Effect.flatMap((gate) =>
                     gate
@@ -461,7 +461,7 @@ it.effect.each(["committed", "pending", "paused before write"] as const)(
                         )
                       : Effect.void,
                   ),
-                  Effect.andThen(sink.withProviderBatch(write)),
+                  Effect.andThen(sink.withProviderBatch(write, beforeCommit)),
                 ),
             }),
           ),
@@ -553,10 +553,10 @@ it.effect("keeps a question committed before the SQLite writer visible", () =>
       Effect.provide(
         layerTest(true, undefined, undefined, undefined, (sink) => ({
           ...sink,
-          withProviderBatch: (write) =>
+          withProviderBatch: (write, beforeCommit) =>
             Deferred.succeed(beforeWriter, undefined).pipe(
               Effect.andThen(Deferred.await(allowWriter)),
-              Effect.andThen(sink.withProviderBatch(write)),
+              Effect.andThen(sink.withProviderBatch(write, beforeCommit)),
             ),
         })),
       ),
@@ -565,13 +565,15 @@ it.effect("keeps a question committed before the SQLite writer visible", () =>
 );
 
 it.effect.each([
-  { expiring: 1, hasLaterDate: true },
-  { expiring: 1, hasLaterDate: false },
-  { expiring: 2, hasLaterDate: true },
-  { expiring: 2, hasLaterDate: false },
+  { expiring: 1, hasLaterDate: true, atCommit: false },
+  { expiring: 1, hasLaterDate: false, atCommit: false },
+  { expiring: 2, hasLaterDate: true, atCommit: false },
+  { expiring: 2, hasLaterDate: false, atCommit: false },
+  { expiring: 1, hasLaterDate: true, atCommit: true },
+  { expiring: 1, hasLaterDate: false, atCommit: true },
 ])(
-  "handles $expiring deadlines expiring during validation with another date: $hasLaterDate",
-  ({ expiring, hasLaterDate }) =>
+  "handles $expiring expiring deadlines with another date: $hasLaterDate, at commit: $atCommit",
+  ({ expiring, hasLaterDate, atCommit }) =>
     Effect.gen(function* () {
       const outcomes = yield* Ref.make<ReadonlyArray<string>>([]);
       const now = yield* DateTime.now;
@@ -589,35 +591,71 @@ it.effect.each([
         const completed = yield* completeTurn();
         assert.deepEqual(yield* Ref.get(outcomes), [hasLaterDate ? "snoozed" : "no-next-run"]);
         assert.strictEqual(yield* snoozedUntil, hasLaterDate ? NEXT_RUN : null);
+        const sink = yield* EventSink.EventSinkV2;
+        const snoozes = sink
+          .readByCommandId({
+            commandId: CommandId.make(`server:scheduled-task-snooze:${completed.runId}`),
+          })
+          .pipe(
+            Stream.filter(({ event }) => event.type === "thread.snoozed"),
+            Stream.runCount,
+          );
+        assert.strictEqual(yield* snoozes, hasLaterDate ? 1 : 0);
         if (!hasLaterDate) {
           const reactor = yield* ScheduledTaskSnoozeReactor.ScheduledTaskSnoozeReactor;
           yield* insertTask(sql, { id: "later", threadId, next: NEXT_RUN });
           yield* reactor.handle(completed);
           assert.deepEqual(yield* Ref.get(outcomes), ["no-next-run", "snoozed"]);
           assert.strictEqual(yield* snoozedUntil, NEXT_RUN);
+          assert.strictEqual(yield* snoozes, 1);
         }
       }).pipe(
         Effect.provide(
-          layerTest(true, undefined, (engine) => ({
-            ...engine,
-            autoSnoozeAfterRun: (attempt) =>
-              engine
-                .autoSnoozeAfterRun({
-                  ...attempt,
-                  nextRun: (now) =>
-                    attempt
-                      .nextRun(now)
-                      .pipe(
-                        Effect.tap((candidate) =>
-                          candidate !== null &&
-                          expiringDates.includes(DateTime.formatIso(candidate))
-                            ? TestClock.adjust(1)
-                            : Effect.void,
+          layerTest(
+            true,
+            undefined,
+            (engine) => ({
+              ...engine,
+              autoSnoozeAfterRun: (attempt) =>
+                engine
+                  .autoSnoozeAfterRun({
+                    ...attempt,
+                    nextRun: (now) =>
+                      attempt
+                        .nextRun(now)
+                        .pipe(
+                          Effect.tap((candidate) =>
+                            !atCommit &&
+                            candidate !== null &&
+                            expiringDates.includes(DateTime.formatIso(candidate))
+                              ? TestClock.adjust(1)
+                              : Effect.void,
+                          ),
                         ),
-                      ),
-                })
-                .pipe(Effect.tap((result) => Ref.update(outcomes, (all) => [...all, result]))),
-          })),
+                  })
+                  .pipe(Effect.tap((result) => Ref.update(outcomes, (all) => [...all, result]))),
+            }),
+            undefined,
+            (sink) => ({
+              ...sink,
+              commitCommand: (command) =>
+                sink
+                  .commitCommand(command)
+                  .pipe(
+                    Effect.tap(({ storedEvents }) =>
+                      atCommit &&
+                      storedEvents.some(
+                        ({ event }) =>
+                          event.type === "thread.snoozed" &&
+                          event.payload.snoozedUntil != null &&
+                          expiringDates.includes(DateTime.formatIso(event.payload.snoozedUntil)),
+                      )
+                        ? TestClock.adjust(1)
+                        : Effect.void,
+                    ),
+                  ),
+            }),
+          ),
         ),
       );
     }),

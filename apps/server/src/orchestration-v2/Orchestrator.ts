@@ -223,6 +223,11 @@ class AutomaticSnoozeNoOccurrence extends Schema.TaggedError<AutomaticSnoozeNoOc
   {},
 ) {}
 
+class AutomaticSnoozeDeadlineElapsed extends Schema.TaggedError<AutomaticSnoozeDeadlineElapsed>()(
+  "AutomaticSnoozeDeadlineElapsed",
+  {},
+) {}
+
 export class OrchestratorDispatchError extends Schema.TaggedError<OrchestratorDispatchError>()(
   "OrchestratorDispatchError",
   {
@@ -16354,20 +16359,40 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   ["runtimeRequests"],
                 );
                 if (runtimeRequests.some((request) => request.status === "pending")) {
-                  return "skipped" as const;
+                  return { outcome: "skipped" as const, deadline: null };
                 }
                 const snoozedUntil = yield* input.nextRun(yield* DateTime.now);
-                if (snoozedUntil === null) return "no-next-run" as const;
-                yield* dispatchWithReceiptEffect({
+                if (snoozedUntil === null) {
+                  return { outcome: "no-next-run" as const, deadline: null };
+                }
+                const result = yield* dispatchWithReceiptEffect({
                   type: "thread.snooze",
                   commandId: input.commandId,
                   threadId: input.threadId,
                   snoozedUntil: DateTime.formatIso(snoozedUntil),
                 }).pipe(Effect.provideService(AutomaticSnoozeNextRun, input.nextRun));
-                return "snoozed" as const;
+                const snooze = result.replayed
+                  ? undefined
+                  : result.storedEvents.find(({ event }) => event.type === "thread.snoozed")?.event;
+                return {
+                  outcome: "snoozed" as const,
+                  deadline: snooze?.type === "thread.snoozed" ? snooze.payload.snoozedUntil : null,
+                };
               }),
+              ({ deadline }) =>
+                deadline == null
+                  ? Effect.void
+                  : DateTime.now.pipe(
+                      Effect.flatMap((now) =>
+                        DateTime.isGreaterThan(deadline, now)
+                          ? Effect.void
+                          : Effect.fail(new AutomaticSnoozeDeadlineElapsed()),
+                      ),
+                    ),
             )
             .pipe(
+              Effect.retry({ while: (cause) => cause._tag === "AutomaticSnoozeDeadlineElapsed" }),
+              Effect.map(({ outcome }) => outcome),
               Effect.catchTags({
                 AutomaticSnoozeNoOccurrence: () => Effect.succeed("no-next-run" as const),
               }),
