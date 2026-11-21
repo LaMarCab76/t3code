@@ -208,6 +208,7 @@ export function ThreadInsightsPanel({
               </p>
               <ThreadDetailsUsage
                 providerInstanceId={instanceId}
+                model={null}
                 providers={providersByEnvironment.get(environmentId) ?? []}
                 sources={configs.get(environmentId)?.usageLimitSources ?? EMPTY_SOURCES}
               />
