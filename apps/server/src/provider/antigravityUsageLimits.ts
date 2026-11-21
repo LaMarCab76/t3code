@@ -81,7 +81,7 @@ const Models = Schema.Struct({
   models: Schema.Record(
     Schema.String,
     Schema.Struct({
-      modelProvider: Schema.optional(Schema.String),
+      displayName: Schema.optional(Schema.String),
       quotaInfo: Schema.optional(Quota),
       weeklyQuotaInfo: Schema.optional(Quota),
     }),
@@ -284,37 +284,28 @@ function summaryWindows(summary: typeof Summary.Type, requestedAt: number) {
   return [...windows.values()];
 }
 
-/** Older accounts expose model quotas without a window length. Do not invent a reset cadence. */
 function modelWindows(models: typeof Models.Type) {
-  const windows = new Map<string, ServerProviderUsageWindow>();
-  for (const [modelId, model] of Object.entries(models.models)) {
-    const family =
-      model.modelProvider === "MODEL_PROVIDER_GOOGLE" || modelId.startsWith("gemini-")
-        ? "Gemini"
-        : model.modelProvider === "MODEL_PROVIDER_ANTHROPIC" || modelId.startsWith("claude-")
-          ? "Claude"
-          : model.modelProvider === "MODEL_PROVIDER_OPENAI" || modelId.startsWith("gpt-")
-            ? "GPT"
-            : undefined;
-    if (!family) continue;
+  const windows: ServerProviderUsageWindow[] = [];
+  for (const [id, model] of Object.entries(models.models)) {
+    const modelId = id.trim();
+    if (!modelId) continue;
+    const name = model.displayName?.trim() || modelId;
     for (const [suffix, quota] of [
       ["quota", model.quotaInfo],
       ["weekly", model.weeklyQuotaInfo],
     ] as const) {
       if (!quota) continue;
       const window = quotaWindow(
-        `${family.toLowerCase()}-${suffix}`,
-        `${family} · ${suffix === "weekly" ? "Weekly" : "Reported quota"}`,
+        `model:${modelId}-${suffix}`,
+        `${name} · ${suffix === "weekly" ? "Weekly" : "Reported quota"}`,
         quota,
         suffix === "weekly" ? "weekly" : "other",
         suffix === "weekly" ? 7 * 24 * 60 : undefined,
       );
-      if (!window) continue;
-      const previous = windows.get(window.id);
-      if (!previous || window.usedPercent > previous.usedPercent) windows.set(window.id, window);
+      if (window) windows.push({ ...window, modelIds: [modelId] });
     }
   }
-  return [...windows.values()];
+  return windows;
 }
 
 export const makeAntigravityUsageProbe = Effect.fn("makeAntigravityUsageProbe")(function* (input: {

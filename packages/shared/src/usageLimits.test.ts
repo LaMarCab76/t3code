@@ -1804,6 +1804,43 @@ describe("external usage settings", () => {
     expect(collectLimitNotices(presentations)).toEqual([]);
   });
 
+  it("shows the Antigravity sign-in notice without adding a quota pool", () => {
+    const checkedAt = "2026-09-03T11:00:00.000Z";
+    const antigravity = provider({
+      driver: ProviderDriverKind.make("antigravity"),
+      instanceId: ProviderInstanceId.make("antigravity"),
+      displayName: "Antigravity",
+      auth: { status: "unauthenticated", type: "oauth-personal" },
+      usageLimits: {
+        checkedAt,
+        windows: [],
+        unavailable: {
+          reason: "unsupported",
+          message: "Sign in with Google to see Antigravity limits.",
+        },
+      },
+    });
+    const apiKey = {
+      ...antigravity,
+      instanceId: ProviderInstanceId.make("antigravity-api"),
+      auth: { status: "authenticated", type: "gemini-api-key" } as const,
+      usageLimits: { checkedAt, windows: [], unavailable: { reason: "unsupported" } as const },
+    };
+    const presentations = new Map([
+      [
+        EnvironmentId.make("local"),
+        {
+          entry: { target: { label: "Local" } },
+          serverConfig: { providers: [antigravity, apiKey] },
+        },
+      ],
+    ]);
+    expect(collectLimitAccounts(presentations)).toEqual([]);
+    expect(collectLimitNotices(presentations)).toEqual([
+      "Antigravity: Sign in with Google to see Antigravity limits.",
+    ]);
+  });
+
   it("shows a notice once when environments with one label report the same failure", () => {
     const failing = provider({
       usageLimits: {

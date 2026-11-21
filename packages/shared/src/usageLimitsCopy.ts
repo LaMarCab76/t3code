@@ -89,8 +89,15 @@ export function collectLimitNotices(
   for (const presentation of presentations.values()) {
     const environmentLabel = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
-      if (provider.usageLimits?.unavailable?.reason === "unsupported") continue;
-      const notice = provider.usageLimits ? limitsNotice(provider.usageLimits, resolve) : null;
+      const limits = provider.usageLimits;
+      if (!limits) continue;
+      if (
+        limits.unavailable?.reason === "unsupported" &&
+        (provider.driver !== "antigravity" || !limits.unavailable.message)
+      ) {
+        continue;
+      }
+      const notice = limitsNotice(limits, resolve);
       const name = provider.displayName?.trim() || String(provider.driver);
       if (notice) notices.add(`${label(environmentLabel, name)}: ${notice}`);
     }

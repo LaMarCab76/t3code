@@ -422,8 +422,16 @@ describe("Antigravity subscription limits", () => {
           windowDurationMins,
         })),
       ).toEqual([
-        { id: "gemini-weekly", resetsAt: "2026-10-28T10:16:04.000Z", windowDurationMins: 10080 },
-        { id: "gemini-quota", resetsAt: "2026-10-21T15:16:04.000Z", windowDurationMins: undefined },
+        {
+          id: "model:gemini-a-weekly",
+          resetsAt: "2026-10-28T10:16:04.000Z",
+          windowDurationMins: 10080,
+        },
+        {
+          id: "model:gemini-a-quota",
+          resetsAt: "2026-10-21T15:16:04.000Z",
+          windowDurationMins: undefined,
+        },
       ]);
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
@@ -601,27 +609,41 @@ describe("Antigravity subscription limits", () => {
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
-  it.effect("falls back to model quotas without inventing a window duration", () =>
+  it.effect("keeps each model quota and its reset when no summary is available", () =>
     Effect.gen(function* () {
       const { probe } = yield* fixture({
         summaryStatus: 404,
         models: {
           models: {
             "gemini-a": {
+              displayName: "Gemini Flash",
               modelProvider: "MODEL_PROVIDER_GOOGLE",
               quotaInfo: { remainingFraction: 0.8, resetTime: "2026-10-10T12:00:00Z" },
             },
             "gemini-b": {
               modelProvider: "MODEL_PROVIDER_GOOGLE",
-              quotaInfo: { remainingFraction: 0.6, resetTime: "2026-10-10T12:00:00Z" },
+              quotaInfo: { remainingFraction: 0.6, resetTime: "2026-10-10T15:00:00Z" },
             },
             "claude-a": { quotaInfo: { remainingFraction: 0.2 } },
           },
         },
       });
       const limits = yield* probe;
-      expect(limits.windows).toHaveLength(2);
-      expect(limits.windows.find((window) => window.id === "gemini-quota")?.usedPercent).toBe(40);
+      expect(limits.windows).toHaveLength(3);
+      const byId = new Map(limits.windows.map((window) => [window.id, window]));
+      const flash = byId.get("model:gemini-a-quota");
+      expect(flash).toMatchObject({
+        label: "Gemini Flash · Reported quota",
+        modelIds: ["gemini-a"],
+        resetsAt: "2026-10-10T12:00:00.000Z",
+      });
+      expect(flash?.usedPercent).toBeCloseTo(20);
+      expect(byId.get("model:gemini-b-quota")).toMatchObject({
+        label: "gemini-b · Reported quota",
+        modelIds: ["gemini-b"],
+        usedPercent: 40,
+        resetsAt: "2026-10-10T15:00:00.000Z",
+      });
       expect(
         limits.windows.every(
           (window) => window.kind === "other" && window.windowDurationMins === undefined,
@@ -684,10 +706,8 @@ describe("Antigravity subscription limits", () => {
         }),
       );
       const limits = yield* probe;
-      expect(limits.unavailable?.message).not.toBe(
-        "Sign in with Google to see Antigravity limits.",
-      );
-      expect(limits.unavailable?.reason).not.toBe("unsupported");
+      expect(limits.unavailable).toBeUndefined();
+      expect(limits.windows).toHaveLength(4);
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 
