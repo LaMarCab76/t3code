@@ -140,6 +140,9 @@ const makeHarness = Effect.fn("makeAntigravityProviderHarness")(function* (
     readonly safe?: boolean;
     readonly probeUsage?: Effect.Effect<ServerProviderUsageLimits>;
     readonly rememberedRuntimeModes?: ReadonlyArray<RuntimeMode>;
+    readonly beforeRememberRuntimeModes?: (
+      modes: ReadonlyArray<RuntimeMode>,
+    ) => Effect.Effect<void>;
   } = {},
 ) {
   const savedRuntimeModes = yield* Ref.make<ReadonlyArray<ReadonlyArray<RuntimeMode>>>([]);
@@ -159,7 +162,10 @@ const makeHarness = Effect.fn("makeAntigravityProviderHarness")(function* (
       ...(options.rememberedRuntimeModes
         ? { rememberedRuntimeModes: options.rememberedRuntimeModes }
         : {}),
-      rememberRuntimeModes: (modes) => Ref.update(savedRuntimeModes, (saved) => [...saved, modes]),
+      rememberRuntimeModes: (modes) =>
+        (options.beforeRememberRuntimeModes?.(modes) ?? Effect.void).pipe(
+          Effect.andThen(Ref.update(savedRuntimeModes, (saved) => [...saved, modes])),
+        ),
       probe: Ref.update(probeCalls, (count) => count + 1).pipe(
         Effect.andThen(Ref.get(probe)),
         Effect.flatten,
@@ -408,6 +414,48 @@ it.layer(layerTest)("Antigravity provider snapshots", (it) => {
       expect(yield* restarted.provider.snapshot.getSnapshot).toMatchObject({
         supportedRuntimeModes: withAuto,
       });
+    }),
+  );
+
+  it.effect("persists sign-out modes after an already-started session save", () =>
+    Effect.gen(function* () {
+      const writing = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const harness = yield* makeHarness({
+        beforeRememberRuntimeModes: (modes) =>
+          modes.includes("auto")
+            ? Deferred.succeed(writing, undefined).pipe(Effect.andThen(Deferred.await(release)))
+            : Effect.void,
+      });
+      yield* harness.initialize;
+      const session = yield* harness.provider
+        .onSessionStarted({
+          ...started,
+          sessionSetupResult: {
+            ...sessionSetupResult,
+            modes: {
+              currentModeId: "default",
+              availableModes: [
+                { id: "default", name: "Default" },
+                { id: "auto", name: "Auto" },
+              ],
+            },
+          },
+        })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(writing);
+      const signedOut = yield* harness.nextPublish(
+        (snapshot) => snapshot.auth.status === "unauthenticated",
+      );
+      const signOut = yield* harness.provider.onSignedOut.pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* signedOut;
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(session);
+      yield* Fiber.join(signOut);
+      const saved = yield* Ref.get(harness.savedRuntimeModes);
+      expect(saved.map((modes) => modes.includes("auto"))).toEqual([true, false]);
     }),
   );
 

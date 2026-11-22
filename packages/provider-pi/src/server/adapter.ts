@@ -2386,6 +2386,10 @@ export const makePiAdapterV2 = Effect.fn("makePiAdapterV2")(function* (
             if (turn === null) return;
             const message = event["message"];
             if (recordString(message, "role") !== "assistant") return;
+            const usage = recordField(message, "usage");
+            if ((nonNegativeInteger(usage, "totalTokens") ?? 0) > 0) {
+              turn.lastMessageUsage = piMessageTokenUsage(usage);
+            }
             yield* completeOpenStreamItems(turn);
             const reportedProvider = recordString(message, "provider");
             const reportedModelId = recordString(message, "model");

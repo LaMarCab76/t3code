@@ -18,6 +18,8 @@ import {
   sanitizeChatHast,
 } from "@t3tools/shared/markdownHast";
 
+import { ASSISTANT_INSIGHT_OPENING } from "@t3tools/shared/assistantInsights";
+
 import { rehypeChipPunctuation } from "../components/chat/markdownChipPunctuation";
 import { rehypeHeadingIds } from "../components/chat/markdownFragments";
 import { rehypeTextDirection } from "../components/chat/markdownTextDirection";
@@ -280,12 +282,24 @@ function normalizeRawTables(node: Root | Element) {
     if (child.type === "element") normalizeRawTables(child);
   }
   if (node.type !== "element" || node.tagName !== "table") return;
-  const first = node.children.findIndex((child) => isElement(child, "tr"));
-  if (first < 0) return;
-  node.children = [
-    ...node.children.slice(0, first),
-    { type: "element", tagName: "tbody", properties: {}, children: node.children.slice(first) },
-  ];
+  if (!node.children.some((child) => isElement(child, "tr"))) return;
+  const children: ElementContent[] = [];
+  let body: Element | undefined;
+  for (const child of node.children) {
+    if (isElement(child, "tr")) {
+      if (!body) {
+        body = { type: "element", tagName: "tbody", properties: {}, children: [] };
+        children.push(body);
+      }
+      body.children.push(child);
+    } else if (body && child.type === "text" && child.value.trim() === "") {
+      body.children.push(child);
+    } else {
+      body = undefined;
+      children.push(child);
+    }
+  }
+  node.children = children;
 }
 
 // Words leaves these raw in Markdown destinations, where micromark percent-encodes them.
@@ -750,7 +764,10 @@ function imageOwnsLine(items: ElementContent[], at: number): boolean {
     before === undefined ||
     (before.type === "text" && /\n[ \t]*$/.test(before.value)) ||
     isElement(before, "br");
-  const endsLine = after === undefined || (after.type === "text" && /^[ \t]*\n/.test(after.value));
+  const endsLine =
+    after === undefined ||
+    isElement(after, "br") ||
+    (after.type === "text" && /^[ \t]*\n/.test(after.value));
   return startsLine && endsLine;
 }
 
@@ -867,7 +884,6 @@ const preserveImageSourceMeta = rehypePreserveImageSourceMeta();
 const normalizeLocalEditorLinks = rehypeNormalizeLocalEditorLinks();
 const groupChipPunctuation = rehypeChipPunctuation();
 
-const INSIGHT_OPENING = /^( {0,3})(`?)★ Insight[ \t]+─{3,}\2[ \t]*$/u;
 const INSIGHT_CLOSING = /^( {0,3})(`?)─{3,}\2[ \t]*$/u;
 
 interface InsightSource {
@@ -915,7 +931,7 @@ function insightSource(text: string, options: RenderOptions): InsightSource | nu
         const inCode = code.some(([start, end]) => original >= start && original < end);
         let output = line;
         if (indent === undefined) {
-          const opening = inCode ? null : INSIGHT_OPENING.exec(value);
+          const opening = inCode ? null : ASSISTANT_INSIGHT_OPENING.exec(value);
           if (opening && !skipped.has(lineIndex)) {
             indent = opening[1] ?? "";
             opened++;
@@ -1040,11 +1056,18 @@ function flattenPreview(tree: Root, preview: NonNullable<MarkdownExtensions["pre
       return;
     }
     if (node.type === "element" && node.properties.dataMarkdownMath !== undefined) {
+      const svg = node.children[0];
+      const length =
+        svg?.type === "element" ? String(svg.properties.ariaLabel ?? "").trim().length : 0;
+      if (length > remaining) {
+        remaining = 0;
+        return;
+      }
+      remaining -= length;
       flush();
       hasContent = true;
       endsInSpace = false;
       // One line has no room for display math, which a preview shows inline.
-      const svg = node.children[0];
       children.push(
         node.properties.dataMarkdownMath === "display" && svg?.type === "element"
           ? mathWrapper({

@@ -114,27 +114,31 @@ export const assertCheckoutIdle = Effect.fn("sharedCheckoutGuard.assertCheckoutI
       ...sharingTrackedFolders.flat(),
     ].map(({ id }) => id),
   );
-  // Archiving does not stop a run, so archived threads can still be working. Each lookup fails
-  // open on its own, so one failure keeps what the others found.
+  // Archiving does not stop a run. Keep successful lookups so a busy thread can still be named.
   const snapshots = yield* Effect.forEach(
     [
       ...checkoutPaths.map((worktreePath) => threadManagement.getShellSnapshot({ worktreePath })),
       ...[...projectIds].map((projectId) => threadManagement.getShellSnapshot({ projectId })),
     ],
-    (snapshot) => snapshot.pipe(Effect.orElseSucceed(() => ({ threads: [], archivedThreads: [] }))),
+    (snapshot) => snapshot.pipe(Effect.orElseSucceed(() => null)),
     { concurrency: "unbounded" },
   );
   const busy = busyThreadsInCheckout({
     checkoutPaths,
     projectIds,
-    threads: snapshots.flatMap((snapshot) => [...snapshot.threads, ...snapshot.archivedThreads]),
+    threads: snapshots.flatMap((snapshot) =>
+      snapshot ? [...snapshot.threads, ...snapshot.archivedThreads] : [],
+    ),
   });
   const titles = [...new Map(busy.map((thread) => [thread.id, thread.title])).values()];
-  if (titles.length === 0) return;
+  if (titles.length === 0 && !snapshots.includes(null)) return;
   return yield* new GitCommandError({
     operation,
     command: "git checkout",
     cwd,
-    detail: describeBusyCheckout(titles),
+    detail:
+      titles.length > 0
+        ? describeBusyCheckout(titles)
+        : "Could not verify that this checkout is idle. Try again or use a separate worktree.",
   });
 });

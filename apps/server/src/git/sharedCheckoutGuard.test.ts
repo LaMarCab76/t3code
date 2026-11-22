@@ -153,6 +153,18 @@ describe("assertCheckoutIdle", () => {
     }),
   );
 
+  it.effect("refuses a switch when an activity lookup could not establish checkout state", () =>
+    Effect.gen(function* () {
+      const error = yield* assertCheckoutIdle("test", "/repo").pipe(
+        Effect.flip,
+        Effect.provide(
+          guardLayer({ repositoryRoot: "/repo", threads: [], failWorktreeLookup: true }),
+        ),
+      );
+      expect(error.detail).toContain("Could not verify");
+    }),
+  );
+
   it.effect("refuses a switch while a nested project or archived thread is working", () =>
     Effect.gen(function* () {
       const error = yield* assertCheckoutIdle("test", "/repo").pipe(

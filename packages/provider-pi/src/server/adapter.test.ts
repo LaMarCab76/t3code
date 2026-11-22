@@ -4203,6 +4203,10 @@ describe("PiAdapterV2", () => {
         live.type === "provider_turn.updated" ? live.providerTurn.tokenUsage : undefined,
         { inputTokens: 50_668, cachedInputTokens: 40_101 },
       );
+      yield* fake.emit({
+        type: "message_end",
+        message: { role: "assistant", usage: { ...usage, cacheRead: 40_201, totalTokens: 50_891 } },
+      });
       yield* fake.emit({ type: "agent_settled" });
       const completed = yield* takeEvent(
         (event) =>
@@ -4210,7 +4214,7 @@ describe("PiAdapterV2", () => {
       );
       assert.deepInclude(
         completed.type === "provider_turn.updated" ? completed.providerTurn.tokenUsage : undefined,
-        { inputTokens: 50_668, cachedInputTokens: 40_101 },
+        { inputTokens: 50_768, cachedInputTokens: 40_201 },
       );
     }).pipe(Effect.scoped, Effect.provide(layerTest)),
   );

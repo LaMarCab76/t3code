@@ -132,7 +132,11 @@ describe("readEnvironmentFromLoginShell", () => {
           encoding: "utf8",
           env: { PATH: process.env.PATH },
         }).trim();
-        NodeFS.copyFileSync(printenv, NodePath.join(tools, "printenv"));
+        NodeFS.writeFileSync(
+          NodePath.join(tools, "printenv"),
+          `#!/bin/sh\nexec '${printenv.replaceAll("'", "'\\''")}' "$@"\n`,
+          { mode: 0o755 },
+        );
         vi.stubEnv("PATH", tools);
         const shellPath = NodePath.join(home, "bin");
         const bashEnv = NodePath.join(home, "env.bash");
@@ -675,8 +679,12 @@ effectIt.layer(NodeServices.layer)("resolveCommandPath", (it) => {
         expect(yield* isCommandAvailable("also-absent", { env })).toBe(false);
         expect(yield* resolveCommandPath("MYTOOL~1", { env })).toBe(alias);
         expect(listed).toEqual([first, second]);
-        yield* fs.writeFileString(path.join(second, "late.EXE"), "");
-        yield* fs.utimes(second, AGED_MTIME + 30, AGED_MTIME + 30);
+        const replacement = yield* fs.makeTempDirectoryScoped();
+        yield* fs.writeFileString(path.join(replacement, "late.EXE"), "");
+        yield* fs.utimes(replacement, AGED_MTIME, AGED_MTIME);
+        yield* fs.rename(second, path.join(replacement, "previous"));
+        yield* fs.utimes(replacement, AGED_MTIME, AGED_MTIME);
+        yield* fs.rename(replacement, second);
         expect(yield* resolveCommandPath("late", { env })).toBe(path.join(second, "late.EXE"));
         expect(listed).toEqual([first, second, second]);
       }).pipe(
