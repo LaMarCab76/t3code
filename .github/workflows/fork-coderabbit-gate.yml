@@ -1,11 +1,9 @@
 name: Fork CodeRabbit gate
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   pull_request_review:
     types: [submitted, dismissed]
-  pull_request_review_thread:
-    types: [resolved, unresolved]
 permissions:
   contents: read
   pull-requests: read
