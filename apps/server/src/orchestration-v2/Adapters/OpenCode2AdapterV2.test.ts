@@ -3703,7 +3703,7 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     }),
   );
 
-  it.effect.each(["idle", "active probe failed"] as const)(
+  it.effect.each(["idle", "active probe failed", "unauthorized active probe"] as const)(
     "settles a workspace command that never starts an execution (%s)",
     (probe) =>
       Effect.gen(function* () {
@@ -3738,10 +3738,23 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
                 }),
               ]
             : [
-                reply("session.active", {
-                  status: 503,
-                  body: { message: "temporarily unavailable" },
-                }),
+                reply(
+                  "session.active",
+                  probe === "unauthorized active probe"
+                    ? {
+                        status: 401,
+                        body: { _tag: "UnauthorizedError", message: "Authentication required" },
+                      }
+                    : { status: 503, body: { message: "temporarily unavailable" } },
+                ),
+                ...(probe === "unauthorized active probe"
+                  ? [
+                      out("session.active"),
+                      replyData("session.active", { [SESSION]: { type: "running" } }),
+                      out("session.interrupt", { sessionID: SESSION }),
+                      reply("session.interrupt", { interrupted: true }),
+                    ]
+                  : []),
               ]),
         ]);
         const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
@@ -3756,6 +3769,11 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
           (yield* Fiber.join(terminal))?.status,
           probe === "idle" ? "completed" : "failed",
         );
+        if (probe === "unauthorized active probe") {
+          const next = yield* terminalOf(runtime).pipe(Effect.forkScoped);
+          yield* runtime.startTurn(secondTurn(thread));
+          assert.equal((yield* Fiber.join(next))?.failure?.message, OPENCODE_2_STILL_STOPPING);
+        }
       }).pipe(Effect.scoped),
   );
 
