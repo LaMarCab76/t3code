@@ -8170,6 +8170,57 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect(
+      "restores the branch name when a permanent lock prevents moving branch settings",
+      () =>
+        Effect.gen(function* () {
+          const cwd = yield* makeTmpDir();
+          yield* initRepoWithCommit(cwd);
+          yield* git(cwd, ["checkout", "-b", "feature/settings"]);
+          yield* git(cwd, ["config", "branch.feature/settings.remote", "origin"]);
+          yield* git(cwd, ["config", "branch.feature/settings.merge", "refs/heads/release"]);
+          yield* writeTextFile(cwd, ".git/config.lock", "");
+          const driver = yield* GitVcsDriver.GitVcsDriver;
+
+          const error = yield* TestClock.withLive(
+            driver
+              .renameBranch({ cwd, oldBranch: "feature/settings", newBranch: "feature/renamed" })
+              .pipe(Effect.flip),
+          );
+          assert.include(error.detail, "The original branch name was restored");
+          assert.equal(yield* git(cwd, ["branch", "--show-current"]), "feature/settings");
+          assert.equal(
+            yield* driver.readConfigValue(cwd, "branch.feature/settings.merge"),
+            "refs/heads/release",
+          );
+        }),
+    );
+
+    it.effect("moves branch settings once the partial rename's lock is released", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const path = yield* Path.Path;
+        yield* git(cwd, ["checkout", "-b", "feature/settings"]);
+        yield* git(cwd, ["config", "branch.feature/settings.remote", "origin"]);
+        yield* git(cwd, ["config", "branch.feature/settings.merge", "refs/heads/release"]);
+        yield* writeTextFile(cwd, ".git/config.lock", "");
+        const { driver } = yield* makeDriverReleasingLock(
+          (args) => args.includes("--rename-section"),
+          path.join(cwd, ".git", "config.lock"),
+        );
+        const result = yield* TestClock.withLive(
+          driver.renameBranch({ cwd, oldBranch: "feature/settings", newBranch: "feature/renamed" }),
+        );
+        assert.equal(result.branch, "feature/renamed");
+        assert.equal(
+          yield* driver.readConfigValue(cwd, "branch.feature/renamed.merge"),
+          "refs/heads/release",
+        );
+        assert.isNull(yield* driver.readConfigValue(cwd, "branch.feature/settings.merge"));
+      }),
+    );
+
     it.effect.each([false, true])(
       "cleans up links left by successful worktree removal, preserving ordinary files: %s",
       (keepFile) =>

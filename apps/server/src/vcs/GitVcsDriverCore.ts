@@ -520,6 +520,7 @@ const GIT_FAILURE_REASON_PATTERNS: ReadonlyArray<readonly [RegExp, GitCommandFai
   [/'refs\/[^'\n]+' exists; cannot create 'refs\//i, "ref_name_conflict"],
   // The same prefix also reports permission errors, which retrying cannot fix.
   [/could not lock config file .+: File exists/i, "config_locked"],
+  [/^error: could not lock config file (?![^\r\n]*: )[^\r\n]+$/im, "config_locked"],
   [
     /could not lock config file [^\r\n]+\r?\nfatal: branch is renamed, but update of config-file failed/i,
     "config_locked",
@@ -2526,15 +2527,13 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           else looseRefs.push(entryPath);
         }
       }
-      tokens.push(
-        ...(yield* Effect.forEach(
-          looseRefs,
-          (ref) => Effect.map(statToken(ref), (token) => `${ref}=${token}`),
-          { concurrency: 16 },
-        )),
+      const looseTokens = yield* Effect.forEach(
+        looseRefs,
+        (ref) => Effect.map(statToken(ref), (token) => `${ref}=${token}`),
+        { concurrency: 16 },
       );
-      tokens.push(configHash);
-      return tokens.join("\0");
+      const bytes = new TextEncoder().encode(tokens.concat(looseTokens, configHash).join("\0"));
+      return Hex.encode(yield* digest.digest(Digest.sha256, bytes));
     },
   );
   const baseBranchCache = yield* Cache.makeWith(
@@ -6779,6 +6778,60 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     );
   });
 
+  const repairRenamedBranchConfig = Effect.fn("GitVcsDriver.repairRenamedBranchConfig")(function* (
+    cwd: string,
+    oldBranch: string,
+    newBranch: string,
+  ) {
+    const oldSection = `branch.${oldBranch}`;
+    const config = yield* executeGit("GitVcsDriver.renameBranch.readConfig", cwd, [
+      "config",
+      "--local",
+      "--null",
+      "--name-only",
+      "--list",
+    ]);
+    if (
+      !config.stdoutTruncated &&
+      !config.stdout.split("\0").some((key) => key.slice(0, key.lastIndexOf(".")) === oldSection)
+    )
+      return;
+    yield* retryWhileConfigLocked(
+      executeGitWithStableDiagnostics("GitVcsDriver.renameBranch.moveConfig", cwd, [
+        "config",
+        "--local",
+        "--rename-section",
+        oldSection,
+        `branch.${newBranch}`,
+      ]),
+    ).pipe(
+      Effect.catch((cause) =>
+        Effect.gen(function* () {
+          yield* executeGitWithStableDiagnostics(
+            "GitVcsDriver.renameBranch.restoreRef",
+            cwd,
+            ["branch", "-m", "--", newBranch, oldBranch],
+            { allowNonZeroExit: true },
+          ).pipe(Effect.ignore);
+          const restored =
+            (yield* branchExists(cwd, oldBranch)) && !(yield* branchExists(cwd, newBranch));
+          return yield* new GitCommandError({
+            ...gitCommandContext({
+              operation: "GitVcsDriver.renameBranch",
+              cwd,
+              args: ["branch", "-m"],
+            }),
+            ...(cause.reason === undefined ? {} : { reason: cause.reason }),
+            detail: restored
+              ? `Could not move Git settings for '${oldBranch}'. The original branch name was restored.`
+              : `Git moved '${oldBranch}' to '${newBranch}', but could not move its branch settings.`,
+            cause,
+          });
+        }),
+      ),
+    );
+  });
+
   const renameBranch: GitVcsDriver.GitVcsDriver["Service"]["renameBranch"] = Effect.fn(
     "renameBranch",
   )(function* (input) {
@@ -6814,9 +6867,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
                 Effect.orElseSucceed(() => [true, false] as const),
                 Effect.flatMap(([oldExists, newExists]) =>
                   !oldExists && newExists
-                    ? Effect.logWarning(
-                        "GitVcsDriver.renameBranch: renamed the branch but could not move its config entries",
-                      )
+                    ? repairRenamedBranchConfig(input.cwd, input.oldBranch, targetBranch)
                     : Effect.fail(error),
                 ),
               ),

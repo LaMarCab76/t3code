@@ -1307,7 +1307,7 @@ export function useComposerSend(input: ComposerSendInput) {
     }
     if (sendQueuesBehindSetup) {
       setSetupQueueSendThreadKey(activeThreadKey);
-    } else {
+    } else if (isCurrentRouteThread()) {
       beginLocalDispatch({
         preparingWorktree: multipleModelSelections !== null || Boolean(baseBranchForWorktree),
         submissionIntent:
@@ -1723,7 +1723,7 @@ export function useComposerSend(input: ComposerSendInput) {
       setDockedDraftHeroThreadKey((currentThreadKey) =>
         currentThreadKey === activeThreadKey ? null : currentThreadKey,
       );
-      if (!sendQueuesBehindSetup) resetLocalDispatch();
+      if (!sendQueuesBehindSetup && isCurrentRouteThread()) resetLocalDispatch();
     }
   };
 

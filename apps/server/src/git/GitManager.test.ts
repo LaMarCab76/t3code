@@ -1100,7 +1100,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
     }),
   );
 
-  it.effect("a turn-end status refresh reads the branch remote and remote URL once", () =>
+  it.effect("a turn-end PR refresh reads Git independently from local status", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
       yield* initRepo(repoDir);
@@ -1122,8 +1122,8 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       );
 
       expect(remote?.pr ?? null).toBeNull();
-      expect(count("config --get branch.feature/turn-end.remote")).toBe(1);
-      expect(count("config --get-all remote.origin.url")).toBe(1);
+      expect(count("config --get branch.feature/turn-end.remote")).toBe(2);
+      expect(count("config --get-all remote.origin.url")).toBe(2);
 
       // The thread's PR backfill can reach the lookup before the status refresh does.
       const backfillCommands: string[] = [];
@@ -1140,7 +1140,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       expect(
         backfillCommands.filter((args) => args === "config --get branch.feature/turn-end.remote")
           .length,
-      ).toBe(1);
+      ).toBeGreaterThanOrEqual(2);
 
       // A fresh identity check reads git itself, not what local status just read.
       yield* manager.invalidateLocalStatus(repoDir);
@@ -2849,7 +2849,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       }),
   );
 
-  it.effect("status detects cross-repo PRs from the upstream remote URL owner", () =>
+  it.effect("status reads the current remote URL for cross-repo PRs after local status", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
       yield* initRepo(repoDir);
@@ -2897,6 +2897,19 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         },
       });
 
+      yield* runGit(repoDir, [
+        "remote",
+        "set-url",
+        "fork-seed",
+        "git@github.com:old-owner/codething-mvp.git",
+      ]);
+      yield* manager.localStatus({ cwd: repoDir });
+      yield* runGit(repoDir, [
+        "remote",
+        "set-url",
+        "fork-seed",
+        "git@github.com:jasonLaster/codething-mvp.git",
+      ]);
       const status = yield* manager.status({ cwd: repoDir });
       expect(status.refName).toBe("t3code/pr-488/statemachine");
       expect(status.pr).toEqual({
