@@ -426,6 +426,7 @@ it.live("leaves a hook's link to an empty folder alone", () =>
       yield* run(project, "add", ".");
       yield* run(project, "commit", "-m", "ignore vendor");
       const lib = yield* repository("p/vendor/lib");
+      const inner = yield* repository("p/vendor/lib/inner");
       const target = path.join(tmp, "empty");
       yield* fileSystem.makeDirectory(target);
       const hooks = path.join(tmp, "hooks");
@@ -437,7 +438,7 @@ it.live("leaves a hook's link to an empty folder alone", () =>
       );
       yield* run(project, "config", "core.hooksPath", hooks);
       state.workspaceRoot = project;
-      state.trackedFolders = tracked(lib);
+      state.trackedFolders = tracked(lib, inner);
 
       const created = yield* create("feature").pipe(Effect.exit);
 

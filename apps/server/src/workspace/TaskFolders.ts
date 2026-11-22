@@ -870,10 +870,11 @@ const make = Effect.gen(function* () {
     let target = taskFolder.root;
     for (const segment of segments) {
       target = path.join(target, segment);
-      if (Option.isSome(yield* fileSystem.readLink(target).pipe(Effect.option))) return null;
+      if (Option.isSome(yield* fileSystem.readLink(target).pipe(Effect.option)))
+        return "blocked" as const;
       const info = yield* fileSystem.stat(target).pipe(Effect.option);
       if (Option.isNone(info)) break;
-      if (info.value.type !== "Directory") return null;
+      if (info.value.type !== "Directory") return "blocked" as const;
     }
     const checkout = {
       repositoryPath: repository.path,
@@ -1033,6 +1034,7 @@ const make = Effect.gen(function* () {
           yield* linkFolder(taskPlan.projectRoot, empty.projectPath, taskPlan.trackedRepositories);
         }
         let finished = 0;
+        const skipped: string[] = [];
         // A repository inside another waits for the one that holds it.
         const levels = Map.groupBy(
           taskPlan.repositories,
@@ -1048,17 +1050,21 @@ const make = Effect.gen(function* () {
           const exits = yield* Effect.forEach(
             levels.get(level)!,
             (repository) =>
-              createRepositoryWorktree(
-                empty,
-                repository,
-                branch,
-                input.startFromOrigin,
-                input.baseBranch,
+              (skipped.some((outer) => isWithinRoot(path, repository.path, outer))
+                ? Effect.succeed(null)
+                : createRepositoryWorktree(
+                    empty,
+                    repository,
+                    branch,
+                    input.startFromOrigin,
+                    input.baseBranch,
+                  )
               ).pipe(
                 Effect.tap((worktree) =>
                   Effect.suspend(() => {
                     finished += 1;
-                    if (worktree !== null) {
+                    if (worktree === "blocked") skipped.push(repository.path);
+                    else if (worktree !== null) {
                       created.push(worktree.repository);
                       repositoriesStartedFromOrigin ||= worktree.fromOrigin;
                     }
