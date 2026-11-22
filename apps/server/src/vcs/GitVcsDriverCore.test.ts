@@ -5955,6 +5955,67 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect.each([
+      {
+        name: "the default branch changes",
+        command: ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/release"],
+        refName: "origin/release",
+        field: "isDefault",
+        before: false,
+        after: true,
+      },
+      {
+        name: "the upstream branch changes",
+        command: ["branch", "--set-upstream-to=origin/release"],
+        refName: null,
+        field: "upstreamRef",
+        before: "refs/remotes/origin/main",
+        after: "refs/remotes/origin/release",
+      },
+      {
+        name: "a remote is configured",
+        command: ["config", "remote.origin/nested.url", "."],
+        refName: "origin/nested/topic",
+        field: "remoteName",
+        before: "origin",
+        after: "origin/nested",
+      },
+    ] as const)("a ref snapshot detects when $name without moving commit IDs", (scenario) =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        yield* git(cwd, ["remote", "add", "origin", "."]);
+        for (const ref of ["main", "release", "nested/topic"]) {
+          yield* git(cwd, ["update-ref", `refs/remotes/origin/${ref}`, "HEAD"]);
+        }
+        yield* git(cwd, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
+        yield* git(cwd, ["branch", "--set-upstream-to=origin/main"]);
+
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const list = driver.listRefs({ cwd, refresh: true, includeMatchingRemoteRefs: true });
+        const before = yield* list;
+        const refName = scenario.refName ?? initialBranch;
+        assert.equal(
+          before.refs.find((ref) => ref.name === refName)?.[scenario.field],
+          scenario.before,
+        );
+        const refs = yield* git(cwd, ["show-ref", "--head"]);
+        const snapshot = yield* driver.readRefSnapshot(cwd);
+        yield* git(cwd, scenario.command);
+        assert.equal(yield* git(cwd, ["show-ref", "--head"]), refs);
+        const changed = yield* driver.readRefSnapshot(cwd);
+        assert.isNotNull(changed);
+        assert.notEqual(changed, snapshot);
+        assert.equal(yield* driver.readRefSnapshot(cwd), changed);
+
+        const after = yield* list;
+        assert.equal(
+          after.refs.find((ref) => ref.name === refName)?.[scenario.field],
+          scenario.after,
+        );
+      }),
+    );
+
     it.effect("a ref snapshot detects branch identity, ref and ancestry changes", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
