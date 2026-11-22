@@ -442,12 +442,45 @@ it.live("leaves a hook's link to an empty folder alone", () =>
       state.workspaceRoot = project;
       state.trackedFolders = tracked(lib, inner);
 
-      const created = yield* create("feature").pipe(Effect.exit);
-
-      assert.isTrue(Exit.isSuccess(created), String(Exit.isFailure(created) && created.cause));
+      const { taskFolder } = yield* create("feature");
+      state.thread = { worktreePath: taskFolder.projectPath, branch: "feature" };
+      const taskFolders = yield* TaskFolders.TaskFolders;
+      const error = yield* taskFolders
+        .addRepository({ threadId, repositoryPath: inner })
+        .pipe(Effect.flip);
+      assert.include(error.detail, "link or file");
       assert.deepStrictEqual(yield* fileSystem.readDirectory(target), []);
+      assert.deepStrictEqual((yield* taskFolders.find(taskFolder.root))?.repositories, []);
     }),
   ),
+);
+
+it.live(
+  "reports a collision when the project checkout already has files at the repository path",
+  () =>
+    withState((state) =>
+      Effect.gen(function* () {
+        const { fileSystem, path, run, repository, worktreeCount } = yield* fixture;
+        const project = yield* repository("p");
+        const destination = path.join(project, "vendor", "lib");
+        yield* fileSystem.makeDirectory(destination, { recursive: true });
+        yield* fileSystem.writeFileString(path.join(destination, ".gitkeep"), "");
+        yield* run(project, "add", "vendor/lib/.gitkeep");
+        yield* run(project, "commit", "-m", "track placeholder");
+        const lib = yield* repository("p/vendor/lib");
+        state.workspaceRoot = project;
+        state.trackedFolders = tracked(lib);
+
+        const error = yield* create("feature").pipe(Effect.flip);
+
+        assert.include(error.detail, "already holds files");
+        assert.include(error.detail, "vendor");
+        assert.equal(yield* worktreeCount(project), 1);
+        assert.equal(yield* worktreeCount(lib), 1);
+        assert.deepStrictEqual(yield* (yield* TaskFolderStore.TaskFolderStore).list, []);
+        assert.isTrue(yield* fileSystem.exists(path.join(destination, ".gitkeep")));
+      }),
+    ),
 );
 
 it.live("treats a project folder inside a larger repository as plain", () =>

@@ -40,6 +40,7 @@ export const layerTaskFoldersWithGit = (state: TaskFoldersTestState) => {
           .execute({ operation: "task-folders-test", cwd, args, allowNonZeroExit: true })
           .pipe(Effect.map((result) => (result.exitCode === 0 ? result.stdout.trim() : null)));
       return Layer.mock(GitWorkflowService.GitWorkflowService)({
+        repositoryRoot: (cwd) => succeeds(cwd, ["rev-parse", "--show-toplevel"]),
         createWorktree: git.createWorktree,
         removeWorktree: git.removeWorktree,
         deleteLocalBranch: git.deleteLocalBranch,
