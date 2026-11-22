@@ -415,6 +415,11 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("latex tex katex equations formulas markdown")],
   },
   {
+    id: "collapse-insights",
+    title: msg("Collapse Claude insights"),
+    to: "/settings/appearance",
+  },
+  {
     id: "panel-animations",
     title: msg("Panel animations"),
     to: "/settings/appearance",

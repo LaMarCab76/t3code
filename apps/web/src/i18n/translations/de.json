@@ -7513,6 +7513,7 @@
   "cfa4521f8239a22f": "LaTeX-Formeln wie $x^2$ oder \\[x^2\\] in Nachrichten und Markdown-Vorschauen setzen. Im Eingabefeld bleibt der TeX-Quelltext bearbeitbar.",
   "14a7693909929fde": "Mathe-Darstellung auf Standard zurücksetzen",
   "eeca51fe648d9317": "Formeln darstellen",
+  "b442d0806fb59405": "Claude-Insights einklappen",
   "5f5df3703ab56499": "Lege fest, wie schnell Panels sich öffnen und schließen.",
   "afa318f40bb22567": "Dauer der Panel-Animation",
   "cda243654f5bf0a7": "Panel-Animationen auf Standard zurücksetzen",

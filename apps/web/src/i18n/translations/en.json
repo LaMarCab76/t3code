@@ -7521,6 +7521,7 @@
   "cfa4521f8239a22f": "Typeset LaTeX math, such as $x^2$ or \\[x^2\\], in messages and Markdown previews. The composer keeps TeX source editable.",
   "14a7693909929fde": "Reset math rendering to default",
   "eeca51fe648d9317": "Render math",
+  "b442d0806fb59405": "Collapse Claude insights",
   "5f5df3703ab56499": "Set how fast panels open and close.",
   "afa318f40bb22567": "Panel animation duration",
   "cda243654f5bf0a7": "Reset panel animations to default",

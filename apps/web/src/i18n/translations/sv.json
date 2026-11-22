@@ -7520,6 +7520,7 @@
   "cfa4521f8239a22f": "Typsätt LaTeX-matematik, till exempel $x^2$ eller \\[x^2\\], i meddelanden och Markdown-förhandsvisningar. Inmatningsfältet behåller TeX-källan redigerbar.",
   "14a7693909929fde": "Återställ matematikrendering till standard",
   "eeca51fe648d9317": "Rendera matematik",
+  "b442d0806fb59405": "Fäll ihop Claude-insikter",
   "5f5df3703ab56499": "Ange hur snabbt paneler öppnas och stängs.",
   "afa318f40bb22567": "Animationstid för paneler",
   "cda243654f5bf0a7": "Återställ panelanimationer till standard",

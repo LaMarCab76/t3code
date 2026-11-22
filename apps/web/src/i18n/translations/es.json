@@ -7514,6 +7514,7 @@
   "cfa4521f8239a22f": "Compone matemáticas LaTeX, como $x^2$ o \\[x^2\\], en los mensajes y las vistas previas de Markdown. El cuadro de mensaje mantiene editable el código TeX.",
   "14a7693909929fde": "Restablecer el renderizado matemático al valor predeterminado",
   "eeca51fe648d9317": "Renderizar matemáticas",
+  "b442d0806fb59405": "Plegar los insights de Claude",
   "5f5df3703ab56499": "Define la rapidez con la que se abren y cierran los paneles.",
   "afa318f40bb22567": "Duración de la animación de los paneles",
   "cda243654f5bf0a7": "Restablecer las animaciones de paneles al valor predeterminado",

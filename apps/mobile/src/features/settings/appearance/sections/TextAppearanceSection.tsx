@@ -15,8 +15,15 @@ import { SettingsSwitchRow } from "../../components/SettingsSwitchRow";
 
 export function TextAppearanceSection() {
   const gt = useGT();
-  const { isReady, appearance, setBaseFontSize, mathRenderingEnabled, setMathRenderingEnabled } =
-    useAppearancePreferences();
+  const {
+    isReady,
+    appearance,
+    setBaseFontSize,
+    mathRenderingEnabled,
+    setMathRenderingEnabled,
+    assistantInsightsCollapsed,
+    setAssistantInsightsCollapsed,
+  } = useAppearancePreferences();
 
   return (
     <SettingsSection title={gt("Text", { $context: "settings section for text size" })}>
@@ -39,6 +46,13 @@ export function TextAppearanceSection() {
         label={gt("Render math")}
         value={mathRenderingEnabled}
         onValueChange={setMathRenderingEnabled}
+      />
+      <SettingsSwitchRow
+        disabled={!isReady}
+        icon="star"
+        label={gt("Collapse Claude insights")}
+        value={assistantInsightsCollapsed}
+        onValueChange={setAssistantInsightsCollapsed}
       />
     </SettingsSection>
   );

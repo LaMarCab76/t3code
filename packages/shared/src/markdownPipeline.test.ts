@@ -11,6 +11,7 @@ import {
   CHAT_MARKDOWN_REMARK_PLUGINS_WITH_BREAKS,
   CHAT_USER_MARKDOWN_REMARK_PLUGINS,
   remarkAssistantInsights,
+  splitAssistantInsights,
   remarkEnableOrderedListNumbers,
 } from "./markdownPipeline.ts";
 
@@ -325,7 +326,7 @@ it.each(["", "`"])("groups %j insight fences while preserving surrounding markdo
   ).toEqual(["p", "blockquote", "p"]);
   expect(
     tree.children.find((node) => node.type === "element" && node.tagName === "blockquote"),
-  ).toMatchObject({ properties: { dataAlert: "insight" } });
+  ).toMatchObject({ properties: { dataAlert: "insight", dataInsightComplete: "" } });
   expect(JSON.stringify(tree).match(/"href":"https:\/\/example.com"/g)).toHaveLength(2);
   expect(JSON.stringify(tree)).toContain('"tagName":"strong"');
   expect(JSON.stringify(tree)).not.toContain(insightRule);
@@ -345,6 +346,23 @@ it.each([
   const processor = unified().use(remarkParse).use(remarkAssistantInsights);
   const tree = processor.parse(markdown);
   expect(processor.runSync(structuredClone(tree), markdown)).toEqual(tree);
+  expect(splitAssistantInsights(markdown)).toEqual([
+    { kind: "markdown", markdown, sourceOffset: 0 },
+  ]);
+});
+
+it("splits completed insights into mobile folds while keeping an unfinished one readable", () => {
+  const first = insightFence("- A **bold** preview.\n- More.");
+  const second = insightFence("- Second preview.\n- More.", "`");
+  const trailing = `★ Insight ${insightRule}\nStill **streaming**`;
+  const markdown = [first, second, trailing].join("\n\n");
+  const segments = splitAssistantInsights(markdown);
+  expect(segments).toMatchObject([
+    { kind: "insight", preview: "A bold preview.", sourceOffset: 0 },
+    { kind: "markdown", markdown: "\n" },
+    { kind: "insight", preview: "Second preview.", sourceOffset: first.length + 2 },
+    { kind: "markdown", markdown: `\n${trailing}` },
+  ]);
 });
 
 it("groups streaming bodies and several insights without losing code or headings", () => {
