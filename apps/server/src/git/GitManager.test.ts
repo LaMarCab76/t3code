@@ -5113,9 +5113,25 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
     }),
   );
 
-  it.effect(
-    "createPullRequest opens a private PR from the companion and never pushes to origin",
-    () =>
+  it.effect.each([
+    {
+      name: "inferred base",
+      configuredBaseRef: null,
+      expectedBaseRef: "refs/remotes/origin/release",
+    },
+    {
+      name: "stale base",
+      configuredBaseRef: "refs/remotes/origin/retired",
+      expectedBaseRef: "refs/remotes/origin/release",
+    },
+    {
+      name: "valid base",
+      configuredBaseRef: "refs/heads/release",
+      expectedBaseRef: "refs/heads/release",
+    },
+  ])(
+    "createPullRequest opens a private PR from the companion and never pushes to origin ($name)",
+    ({ configuredBaseRef, expectedBaseRef }) =>
       Effect.gen(function* () {
         const repoDir = yield* makeTempDir("t3code-git-manager-");
         yield* initRepo(repoDir);
@@ -5125,6 +5141,10 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         yield* runGit(repoDir, ["push", "-u", "origin", "main"]);
         yield* runGit(repoDir, ["push", "origin", "main:refs/heads/release"]);
         yield* runGit(repoDir, ["checkout", "-b", "sec/fix", "--track", "origin/release"]);
+        if (configuredBaseRef !== null) {
+          yield* runGit(repoDir, ["branch", "release", "origin/release"]);
+          yield* runGit(repoDir, ["config", "branch.sec/fix.t3-merge-base-ref", configuredBaseRef]);
+        }
         NodeFS.writeFileSync(NodePath.join(repoDir, "fix.txt"), "fix\n");
         yield* runGit(repoDir, ["add", "fix.txt"]);
         yield* runGit(repoDir, ["commit", "-m", "Fix"]);
@@ -5154,6 +5174,19 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         expect(created(unsupported.providerCalls)).toEqual([]);
 
         const privateRemote = { url: companionDir, repository: "pingdotgg/codething-mvp.private" };
+        const failed = yield* makeManager({
+          providerScenario: {
+            privateRemote,
+            failWith: "Could not open the private PR",
+            failAfterCalls: 1,
+          },
+        });
+        const failure = yield* Effect.flip(createPrivate(failed.manager));
+        expect(failure.message).toContain("Could not open the private PR");
+        expect(created(failed.providerCalls)).toMatchObject([{ baseRefName: "release" }]);
+        expect(
+          (yield* runGit(repoDir, ["rev-parse", "--abbrev-ref", "@{upstream}"])).stdout.trim(),
+        ).toBe("pingdotgg/sec/fix");
         const open = {
           number: 9,
           title: "Fix",
@@ -5193,6 +5226,13 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         });
         yield* createPrivate(retry.manager);
         expect(created(retry.providerCalls)).toMatchObject([{ baseRefName: "release" }]);
+        expect(
+          (yield* runGit(repoDir, [
+            "config",
+            "--get",
+            "branch.sec/fix.t3-merge-base-ref",
+          ])).stdout.trim(),
+        ).toBe(expectedBaseRef);
 
         // Later commits follow the recorded push remote.
         NodeFS.writeFileSync(NodePath.join(repoDir, "late.txt"), "late\n");

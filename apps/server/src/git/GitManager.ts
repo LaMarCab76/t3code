@@ -2441,7 +2441,14 @@ export const make = Effect.gen(function* () {
         remoteName: headContext.remoteName,
       });
       if (upstreamBranch.length > 0 && upstreamBranch !== branch) {
-        return { baseBranch: upstreamBranch, baseRef: upstreamBranch };
+        return {
+          baseBranch: upstreamBranch,
+          baseRef: upstreamBranch,
+          inferredUpstreamBaseRef:
+            upstreamRef === upstreamBranch
+              ? `refs/heads/${upstreamBranch}`
+              : `refs/remotes/${upstreamRef}`,
+        };
       }
     }
 
@@ -2948,16 +2955,8 @@ export const make = Effect.gen(function* () {
         ),
         Effect.tapError(() => invalidateStatus(cwd)),
       );
-    if (
-      input.baseBranch === undefined &&
-      status.upstreamRef !== null &&
-      (yield* gitCore.readBranchBase(cwd, branch)) === null &&
-      (yield* gitCore.readConfigValue(cwd, `branch.${branch}.t3-merge-base-ref`)) === null
-    ) {
-      const baseRef =
-        status.upstreamRef === baseBranch
-          ? `refs/heads/${baseBranch}`
-          : `refs/remotes/${status.upstreamRef}`;
+    const baseRef = input.baseBranch === undefined ? resolved.inferredUpstreamBaseRef : undefined;
+    if (baseRef !== undefined) {
       if ((yield* gitCore.resolveBranchName(cwd, baseRef)) === baseBranch) {
         yield* gitCore.writeConfigValue({
           cwd,
