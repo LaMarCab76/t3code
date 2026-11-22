@@ -3489,15 +3489,24 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       "--no-ext-diff",
       "--no-textconv",
     ];
-    if (
-      options?.stage?.unverified &&
-      (yield* prepareCommitContext(cwd, options.stage.filePaths, { includePatch: false })) === null
-    ) {
-      return yield* new GitVcsDriver.GitNothingToCommitError({
-        operation: "GitVcsDriver.commit",
-        cwd,
-        detail: "Staging found no changes.",
-      });
+    if (options?.stage?.unverified) {
+      const { filePaths } = options.stage;
+      // A selection can reset the whole index even if it was clean when inspected.
+      const needsScratchIndex =
+        (filePaths !== undefined && filePaths.length > 0) ||
+        (yield* executeGit("GitVcsDriver.commit.indexChanges", cwd, [...diffCached, "--quiet"], {
+          allowNonZeroExit: true,
+        })).exitCode !== 0;
+      if (
+        needsScratchIndex &&
+        (yield* prepareCommitContext(cwd, filePaths, { includePatch: false })) === null
+      ) {
+        return yield* new GitVcsDriver.GitNothingToCommitError({
+          operation: "GitVcsDriver.commit",
+          cwd,
+          detail: "Staging found no changes.",
+        });
+      }
     }
     const partialCommitPaths =
       options?.stage !== undefined
