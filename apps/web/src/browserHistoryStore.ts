@@ -33,6 +33,7 @@ import { readPreparedConnection } from "~/state/session";
 
 import { isLocalLoopbackHost, normalizeHostname } from "./browser/browserTargetResolver";
 import { useComposerDraftStore } from "./composerDraftStore";
+import { randomUUID } from "./lib/utils";
 import {
   ensureClientSettingsHydrated,
   getClientSettings,
@@ -177,6 +178,7 @@ export function migratePersistedBrowserHistoryState(persistedState: unknown): {
 }
 
 const BROWSER_HISTORY_STORAGE_KEY = "t3code:browser-history:v1";
+const BROWSER_HISTORY_FALLBACK_PREFIX = `${BROWSER_HISTORY_STORAGE_KEY}:fallback:`;
 
 const MAX_PERSISTED_THREAD_MAPPINGS = 100;
 const PENDING_MAX_PER_THREAD = 10;
@@ -254,28 +256,65 @@ const EMPTY_PERSISTED_HISTORY: PersistedBrowserHistory = {
 let historyDatabase: Promise<IDBDatabase> | undefined;
 let historyChannel: BroadcastChannel | undefined;
 
-function readLegacyHistory<Missing = PersistedBrowserHistory>(
-  missing: Missing = EMPTY_PERSISTED_HISTORY as Missing,
-): PersistedBrowserHistory | Missing {
+interface HistorySnapshot {
+  readonly key: string;
+  readonly raw: string;
+  readonly history: PersistedBrowserHistory;
+}
+
+function readHistorySnapshots(): HistorySnapshot[] {
   try {
-    const value = window.localStorage.getItem(BROWSER_HISTORY_STORAGE_KEY);
-    if (value === null) return missing;
-    const parsed: { state?: unknown } | null = JSON.parse(value);
-    return {
-      ...migratePersistedBrowserHistoryState(parsed?.state),
-      projectKeyByThreadKey: migratePersistedThreadProjectKeys(parsed?.state),
-    };
+    const storage = window.localStorage;
+    const keys = [BROWSER_HISTORY_STORAGE_KEY];
+    for (let index = 0; index < storage.length; index++) {
+      const key = storage.key(index);
+      if (key?.startsWith(BROWSER_HISTORY_FALLBACK_PREFIX)) keys.push(key);
+    }
+    return keys.flatMap((key) => {
+      const raw = storage.getItem(key);
+      if (raw === null) return [];
+      try {
+        const parsed: { state?: unknown } | null = JSON.parse(raw);
+        return [
+          {
+            key,
+            raw,
+            history: {
+              ...migratePersistedBrowserHistoryState(parsed?.state),
+              projectKeyByThreadKey: migratePersistedThreadProjectKeys(parsed?.state),
+            },
+          },
+        ];
+      } catch {
+        return [];
+      }
+    });
   } catch {
-    return EMPTY_PERSISTED_HISTORY;
+    return [];
   }
 }
 
-function retireLegacyHistory(): void {
+function retireHistorySnapshots(snapshots: readonly HistorySnapshot[]): void {
   try {
-    window.localStorage.removeItem(BROWSER_HISTORY_STORAGE_KEY);
+    const storage = window.localStorage;
+    for (const { key, raw } of snapshots) {
+      // Fallback keys are immutable. Older clients may still overwrite the original key.
+      if (key !== BROWSER_HISTORY_STORAGE_KEY || storage.getItem(key) === raw)
+        storage.removeItem(key);
+    }
   } catch {
     // The browser can deny access to localStorage independently of IndexedDB.
   }
+}
+
+function mergeHistorySnapshots(
+  saved: PersistedBrowserHistory | undefined,
+  snapshots: readonly HistorySnapshot[],
+): PersistedBrowserHistory | undefined {
+  for (const { history } of snapshots) {
+    saved = saved ? mergeLegacyHistory(saved, history) : history;
+  }
+  return saved;
 }
 
 // localStorage can gain visits after migration: from the fallback below, or a tab on an older build.
@@ -294,15 +333,17 @@ function mergeLegacyHistory(
 
 // Without IndexedDB, merge into the freshest localStorage snapshot so a reload keeps new visits.
 function transactLegacyHistory(update: UpdateHistory, current: PersistedBrowserHistory) {
-  const previous = readLegacyHistory(current);
+  const snapshots = readHistorySnapshots();
+  const previous = mergeHistorySnapshots(undefined, snapshots) ?? current;
   const next = update(previous);
   if (next === previous) return previous;
   const history = boundThreadMappings(previous, next);
   try {
     window.localStorage.setItem(
-      BROWSER_HISTORY_STORAGE_KEY,
+      `${BROWSER_HISTORY_FALLBACK_PREFIX}${randomUUID()}`,
       JSON.stringify({ state: history, version: 1 }),
     );
+    retireHistorySnapshots(snapshots);
   } catch {
     // History stays in memory when the browser denies both storage APIs.
   }
@@ -353,13 +394,11 @@ async function transactIndexedHistory(update?: UpdateHistory, retry = true) {
     const request = store.get(BROWSER_HISTORY_STORAGE_KEY);
     let history: PersistedBrowserHistory;
     let changed = false;
+    let snapshots: readonly HistorySnapshot[] = [];
     request.onsuccess = () => {
       const saved = request.result as PersistedBrowserHistory | undefined;
-      const legacy = update ? readLegacyHistory(null) : null;
-      const previous =
-        saved && legacy
-          ? mergeLegacyHistory(saved, legacy)
-          : (saved ?? legacy ?? EMPTY_PERSISTED_HISTORY);
+      if (update) snapshots = readHistorySnapshots();
+      const previous = mergeHistorySnapshots(saved, snapshots) ?? EMPTY_PERSISTED_HISTORY;
       const next = update?.(previous) ?? previous;
       history = next === previous ? previous : boundThreadMappings(previous, next);
       changed = history !== saved;
@@ -367,7 +406,7 @@ async function transactIndexedHistory(update?: UpdateHistory, retry = true) {
     };
     transaction.oncomplete = () => {
       // Keep the migration source until the IndexedDB snapshot has committed.
-      if (update) retireLegacyHistory();
+      if (snapshots.length > 0) retireHistorySnapshots(snapshots);
       resolve({ history, changed });
     };
     transaction.onabort = () => reject(transaction.error);
@@ -516,7 +555,8 @@ if (typeof window !== "undefined") {
   };
   void transactIndexedHistory((history) => history).then(
     ({ history }) => hydrate(history),
-    () => hydrate(readLegacyHistory()),
+    () =>
+      hydrate(mergeHistorySnapshots(undefined, readHistorySnapshots()) ?? EMPTY_PERSISTED_HISTORY),
   );
   import.meta.hot?.dispose(() => {
     historyChannel?.close();

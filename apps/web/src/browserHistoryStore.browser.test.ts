@@ -8,8 +8,10 @@ const oldEntry = { url: "http://example.test/removed", lastVisitedAt: 1 };
 const otherEntry = { url: "http://example.test/other", lastVisitedAt: 2 };
 const page = { url: "http://localhost:3000/page", lastVisitedAt: 3, title: "Page" };
 
-function storedHistory(): unknown {
-  return JSON.parse(localStorage.getItem(storageKey) ?? "null")?.state;
+const fallbackPrefix = `${storageKey}:fallback:`;
+
+function fallbackKeys(): string[] {
+  return Object.keys(localStorage).filter((key) => key.startsWith(fallbackPrefix));
 }
 
 function openHistoryFixture(disposables: DisposableStack) {
@@ -199,6 +201,7 @@ function deleteHistoryDatabase() {
 
 async function resetHistoryFixture() {
   localStorage.removeItem(storageKey);
+  for (const key of fallbackKeys()) localStorage.removeItem(key);
   await deleteHistoryDatabase();
   resetBrowserHistoryForTests();
 }
@@ -221,6 +224,45 @@ it("moves the legacy snapshot into the shared database", async () => {
     await vi.waitFor(() =>
       expect(reopened.getState().byProjectKey).toEqual({ a: [page], b: [otherEntry] }),
     );
+  } finally {
+    await resetHistoryFixture();
+  }
+});
+
+it("keeps a fallback write made after the migration read", async () => {
+  await resetHistoryFixture();
+  const first = JSON.stringify({ state: { byProjectKey: { a: [page] } }, version: 1 });
+  const later = JSON.stringify({
+    state: { byProjectKey: { a: [page], b: [otherEntry] } },
+    version: 1,
+  });
+  localStorage.setItem(storageKey, first);
+  try {
+    const put = IDBObjectStore.prototype.put;
+    using _put = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementationOnce(function (
+      this: IDBObjectStore,
+      value: unknown,
+      key?: IDBValidKey,
+    ) {
+      localStorage.setItem(storageKey, later);
+      return put.call(this, value, key);
+    });
+    useBrowserHistoryStore.getState().recordVisit("c", oldEntry.url, oldEntry.lastVisitedAt);
+    await vi.waitFor(() =>
+      expect(useBrowserHistoryStore.getState().byProjectKey.c).toEqual([oldEntry]),
+    );
+    expect(localStorage.getItem(storageKey)).toBe(later);
+
+    using documents = new DisposableStack();
+    const reopened = await openHistoryDocument(documents);
+    await vi.waitFor(() =>
+      expect(reopened.getState().byProjectKey).toEqual({
+        a: [page],
+        b: [otherEntry],
+        c: [oldEntry],
+      }),
+    );
+    expect(localStorage.getItem(storageKey)).toBeNull();
   } finally {
     await resetHistoryFixture();
   }
@@ -287,15 +329,14 @@ it("keeps visits saved while IndexedDB could not open", async () => {
     await writeHistoryFixture(db, { byProjectKey: { a: [page] }, projectKeyByThreadKey: {} });
     const offline = await openHistoryDocument(documents, { withoutIndexedDB: true });
     offline.getState().recordVisit("b", otherEntry.url, otherEntry.lastVisitedAt);
-    await vi.waitFor(() =>
-      expect(storedHistory()).toHaveProperty("byProjectKey", { b: [otherEntry] }),
-    );
+    await vi.waitFor(() => expect(fallbackKeys()).toHaveLength(1));
+    expect(offline.getState().byProjectKey).toEqual({ b: [otherEntry] });
 
     const online = await openHistoryDocument(documents);
     await vi.waitFor(() =>
       expect(online.getState().byProjectKey).toEqual({ a: [page], b: [otherEntry] }),
     );
-    expect(storedHistory()).toBeUndefined();
+    expect(fallbackKeys()).toEqual([]);
   } finally {
     await resetHistoryFixture();
   }
