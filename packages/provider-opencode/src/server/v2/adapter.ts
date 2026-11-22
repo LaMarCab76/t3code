@@ -4745,31 +4745,36 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           // A command that never prompts the model starts no execution, so no event ends its turn.
           const idle = () => state.active === turn && !busy.has(sessionId);
           if (!idle()) return;
-          const active = yield* client.session
-            .active()
-            .pipe(Effect.timeout(ACTIVE_CHECK_TIMEOUT), Effect.option);
-          if (active._tag === "None") {
-            return yield* Effect.logWarning("Could not check whether an OpenCode command started.");
-          }
-          if (sessionId in active.value) return;
-          // An execution that already ended left history behind; its events may still trail this reply.
-          const ran = yield* OpenCode2Client.paginate(
-            { sessionID, order: "desc" as const, limit: 1 },
-            client.message.list,
-          ).pipe(
-            Stream.takeWhile((message) => message.id !== before),
-            Stream.filter(
-              (message) =>
-                message.type === "user" || message.type === "assistant" || message.type === "idle",
+          const hasExecution = yield* Effect.gen(function* () {
+            const active = yield* client.session
+              .active()
+              .pipe(Effect.timeout(ACTIVE_CHECK_TIMEOUT));
+            if (sessionId in active) return true;
+            // An ended execution left history behind, but its events may still trail this reply.
+            const ran = yield* OpenCode2Client.paginate(
+              { sessionID, order: "desc" as const, limit: 1 },
+              client.message.list,
+            ).pipe(
+              Stream.takeWhile((message) => message.id !== before),
+              Stream.filter(
+                (message) =>
+                  message.type === "user" ||
+                  message.type === "assistant" ||
+                  message.type === "idle",
+              ),
+              Stream.runHead,
+              Effect.timeout(ACTIVE_CHECK_TIMEOUT),
+            );
+            return Option.isSome(ran);
+          }).pipe(
+            // The command was accepted, even if the follow-up request returns a rejection.
+            Effect.tapError(() =>
+              Effect.sync(() => {
+                if (state.active === turn) markUnsettled(state);
+              }),
             ),
-            Stream.runHead,
-            Effect.timeout(ACTIVE_CHECK_TIMEOUT),
-            Effect.option,
           );
-          if (ran._tag === "None") {
-            return yield* Effect.logWarning("Could not check whether an OpenCode command ran.");
-          }
-          if (ran.value._tag === "Some") return;
+          if (hasExecution) return;
           return yield* lock.withPermit(
             Effect.suspend(() =>
               idle()

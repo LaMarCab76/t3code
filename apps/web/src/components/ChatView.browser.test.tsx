@@ -36,6 +36,7 @@ import { usePromptStashStore } from "~/promptStashStore";
 import { useRightPanelStore } from "~/rightPanelStore";
 import { getRouter } from "~/router";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
+import { primaryServerKeybindingsAtom, serverEnvironment } from "~/state/server";
 import { environmentThreadDetails } from "~/state/threads";
 import {
   ENVIRONMENT_ID,
@@ -872,6 +873,8 @@ it("a mounted thread view lets go of the thread structures it has replaced", asy
 it("a shortcut conditioned on rightPanelOpen sees the thread's open right panel", async () => {
   await page.viewport(1280, 800);
   const thread = threadWithHistory("thread-panel-shortcut", 1);
+  const config = serverEnvironment.configProjection({ environmentId: ENVIRONMENT_ID, input: {} });
+  using _config = { [Symbol.dispose]: () => appAtomRegistry.refresh(config) };
   using _environment = installFakeEnvironment([thread], {
     keybindings: mergeWithDefaultKeybindings(
       compileResolvedKeybindingsConfig([
@@ -894,6 +897,16 @@ it("a shortcut conditioned on rightPanelOpen sees the thread's open right panel"
   });
   const composer = page.getByTestId("composer-editor");
   const toggle = page.getByRole("button", { name: "Toggle right panel", exact: true });
+  // Earlier tests can leave the previous server config subscription cached.
+  await act(() => appAtomRegistry.refresh(config));
+  await vi.waitFor(() =>
+    expect(appAtomRegistry.get(primaryServerKeybindingsAtom)).toContainEqual(
+      expect.objectContaining({
+        command: "rightPanel.new",
+        shortcut: expect.objectContaining({ key: "t", ctrlKey: true }),
+      }),
+    ),
+  );
   await expect.element(toggle).toHaveAttribute("aria-pressed", "false");
   await toggle.click();
   await page.getByRole("button", { name: /^Files/ }).click();

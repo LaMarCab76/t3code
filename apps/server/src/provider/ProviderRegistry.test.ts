@@ -2567,21 +2567,6 @@ it.layer(
         }),
     );
 
-    // A login shell stand-in that prints the capture with one more PATH entry, as a profile edited
-    // after launch would.
-    const withLateLoginShell = <A, E, R>(effect: (shell: string) => Effect.Effect<A, E, R>) =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-login-shell-" });
-        const shell = `${dir}/sh`;
-        yield* fs.writeFileString(
-          shell,
-          '#!/bin/sh\nPATH=/opt/late:/usr/bin exec /bin/sh -c "$2"\n',
-        );
-        yield* fs.chmod(shell, 0o755);
-        return yield* effect(shell);
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
-
     it.effect.each([
       {
         name: "Windows PATH",
@@ -2596,11 +2581,15 @@ it.layer(
         expectedPath: "/opt/late:/usr/bin",
       },
     ])("rebuilds only instances missing their CLI when a refresh finds a new $name", (host) =>
-      withLateLoginShell((shell) => {
-        const env: NodeJS.ProcessEnv = { PATH: host.path, SHELL: shell };
+      Effect.suspend(() => {
+        const env: NodeJS.ProcessEnv = { PATH: host.path, SHELL: "/bin/sh" };
         return Effect.gen(function* () {
           const driver = ProviderDriverKind.make("codex");
-          const makeInstance = (id: string, installed: boolean): ProviderInstance => {
+          const makeInstance = (
+            id: string,
+            installed: boolean,
+            installedAfterProbe = installed,
+          ): ProviderInstance => {
             const instanceId = ProviderInstanceId.make(id);
             const provider = {
               instanceId,
@@ -2615,6 +2604,7 @@ it.layer(
               slashCommands: [],
               skills: [],
             } as const satisfies ServerProvider;
+            let current: ServerProvider = provider;
             return {
               instanceId,
               driverKind: driver,
@@ -2629,8 +2619,15 @@ it.layer(
                       packageName: null,
                     }),
                   ),
-                getSnapshot: Effect.succeed(provider),
-                refresh: Effect.succeed(provider),
+                getSnapshot: Effect.sync(() => current),
+                refresh: Effect.sync(() => {
+                  current = {
+                    ...provider,
+                    installed: installedAfterProbe,
+                    status: installedAfterProbe ? "ready" : "error",
+                  };
+                  return current;
+                }),
                 streamChanges: Stream.empty,
                 applyUsageLimits: () => Effect.void,
               },
@@ -2638,7 +2635,11 @@ it.layer(
               textGeneration: {} as ProviderInstance["textGeneration"],
             };
           };
-          const instances = [makeInstance("present", true), makeInstance("missing", false)];
+          const instances = [
+            makeInstance("present", true),
+            makeInstance("missing", false),
+            makeInstance("missing-after-probe", true, false),
+          ];
           const rebuilt: Array<ReadonlyArray<ProviderInstanceId>> = [];
           const changes = yield* PubSub.unbounded<void>();
           const registry = yield* ProviderRegistry.ProviderRegistry.pipe(
@@ -2663,6 +2664,14 @@ it.layer(
                     prefix: "t3-provider-registry-path-",
                   }),
                 ),
+                Layer.provide(
+                  layerMockSpawner(() => ({
+                    stdout:
+                      "__T3CODE_ENV_PATH_START__\n/opt/late:/usr/bin\n__T3CODE_ENV_PATH_END__\n",
+                    stderr: "",
+                    code: 0,
+                  })),
+                ),
                 Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
               ),
             ),
@@ -2672,6 +2681,11 @@ it.layer(
 
           assert.strictEqual(env.PATH, host.expectedPath);
           assert.deepStrictEqual(rebuilt, [[ProviderInstanceId.make("missing")]]);
+          yield* registry.refresh();
+          assert.deepStrictEqual(rebuilt, [
+            [ProviderInstanceId.make("missing")],
+            [ProviderInstanceId.make("missing-after-probe")],
+          ]);
         }).pipe(
           Effect.provideService(HostProcess.Platform, host.platform),
           Effect.provideService(HostProcess.Environment, env),

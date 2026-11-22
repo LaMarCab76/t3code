@@ -2926,6 +2926,7 @@ export const make = Effect.gen(function* () {
       cwd,
       preferredName: companion.repository.split("/")[0] || "private",
       url: companion.url,
+      pushOnlyToFetchUrl: true,
     });
     // Recorded before the push, so a later push of this branch, by T3 or by plain `git push`,
     // goes to the companion too and never publishes the branch.
@@ -2947,6 +2948,24 @@ export const make = Effect.gen(function* () {
         ),
         Effect.tapError(() => invalidateStatus(cwd)),
       );
+    if (
+      input.baseBranch === undefined &&
+      status.upstreamRef !== null &&
+      (yield* gitCore.readBranchBase(cwd, branch)) === null &&
+      (yield* gitCore.readConfigValue(cwd, `branch.${branch}.t3-merge-base-ref`)) === null
+    ) {
+      const baseRef =
+        status.upstreamRef === baseBranch
+          ? `refs/heads/${baseBranch}`
+          : `refs/remotes/${status.upstreamRef}`;
+      if ((yield* gitCore.resolveBranchName(cwd, baseRef)) === baseBranch) {
+        yield* gitCore.writeConfigValue({
+          cwd,
+          key: `branch.${branch}.t3-merge-base-ref`,
+          value: baseRef,
+        });
+      }
+    }
     // The companion branch is the pull request's head, so status finds it through the upstream.
     yield* gitCore
       .setBranchUpstream({ cwd, branch, remoteName, remoteBranch: branch })

@@ -752,32 +752,45 @@ export const layer = Layer.effect(
     // Compared with the last PATH seen here, since other features re-read the login shell too.
     const hostEnvironment = yield* HostProcess.Environment;
     const readHostPath = () => hostEnvironment.PATH ?? hostEnvironment.Path ?? hostEnvironment.path;
-    const lastHostPathRef = yield* Ref.make(readHostPath());
+    const initialHostPath = readHostPath();
+    type HostPathRebuilds = {
+      readonly path: string | undefined;
+      readonly rebuilt: ReadonlySet<ProviderInstanceId>;
+      readonly refreshed: boolean;
+    };
+    const pathRebuilds = yield* Ref.make<HostPathRebuilds>({
+      path: initialHostPath,
+      rebuilt: new Set(),
+      refreshed: false,
+    });
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const refreshHostPath = yield* refreshWindowsPath().pipe(
+    const readRefreshedHostPath = yield* refreshWindowsPath().pipe(
       Effect.andThen(refreshPathFromLoginShell()),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-      Effect.andThen(
-        Effect.suspend(() => {
-          const path = readHostPath();
-          return Ref.getAndSet(lastHostPathRef, path).pipe(Effect.map((last) => last !== path));
-        }),
-      ),
-      Effect.flatMap((changed) =>
-        changed
-          ? Ref.get(providersRef).pipe(
-              Effect.flatMap((providers) =>
-                instanceRegistryMutator.rebuild(
-                  providers
-                    .filter((provider) => provider.enabled && !provider.installed)
-                    .map((provider) => provider.instanceId),
-                ),
-              ),
-            )
-          : Effect.void,
-      ),
       Effect.cachedWithTTL(Duration.seconds(10)),
     );
+    const refreshHostPath = Effect.fn("ProviderRegistry.refreshHostPath")(function* () {
+      yield* readRefreshedHostPath;
+      const path = readHostPath();
+      const providers = yield* Ref.get(providersRef);
+      const missing = yield* Ref.modify<HostPathRebuilds, ReadonlyArray<ProviderInstanceId>>(
+        pathRebuilds,
+        (current) => {
+          const rebuilt = current.path === path ? current.rebuilt : new Set<ProviderInstanceId>();
+          if (!current.refreshed && current.path === path) return [[], current];
+          const candidates = providers.flatMap((provider) =>
+            provider.enabled && !provider.installed && !rebuilt.has(provider.instanceId)
+              ? [provider.instanceId]
+              : [],
+          );
+          return [
+            candidates,
+            { path, rebuilt: new Set([...rebuilt, ...candidates]), refreshed: true },
+          ];
+        },
+      );
+      if (missing.length > 0) yield* instanceRegistryMutator.rebuild(missing);
+    });
     const refreshAllInFlightRef = yield* Ref.make<Option.Option<RefreshAllCompletion>>(
       Option.none(),
     );
@@ -786,7 +799,7 @@ export const layer = Layer.effect(
     const probedManifestUpdatedAt = yield* Ref.make(initialManifest.updatedAt);
 
     const refreshAll = Effect.fn("refreshAll")(function* () {
-      yield* refreshHostPath;
+      yield* refreshHostPath();
       const claimed = yield* Ref.modify(
         refreshAllInFlightRef,
         (
@@ -840,7 +853,7 @@ export const layer = Layer.effect(
     const refreshInstance = Effect.fn("refreshInstance")(function* (
       instanceId: ProviderInstanceId,
     ) {
-      yield* refreshHostPath;
+      yield* refreshHostPath();
       yield* syncLiveSourcesAndContinue;
       const instance = (yield* Ref.get(liveSubsRef)).get(instanceId);
       if (!instance) {

@@ -1393,6 +1393,46 @@ describe("AntigravityAdapterV2 work after the prompt ends", () => {
     }).pipe(Effect.provide(layerSession)),
   );
 
+  it.effect("keeps a steered prompt alive past the previous command hold", () =>
+    Effect.gen(function* () {
+      const opened = yield* openSessionWithRunningCommand({ WaitMsBeforeAsync: 10000 }, undefined, {
+        agentVersion: "1.5.11",
+        holdsFirstPrompt: false,
+      });
+      const { session, providerThread, command, send, startTurn, until } = opened;
+      yield* startTurn(1, false);
+      const started = yield* opened.throughPromptSettled;
+      const turn = started.find((event) => event.type === "provider_turn.updated");
+      if (turn?.type !== "provider_turn.updated") return assert.fail("the turn must start");
+      yield* session.steerTurn({
+        threadId: ThreadId.make("thread-antigravity-wake"),
+        runId: RunId.make("run-antigravity-wake-1"),
+        providerThread,
+        providerTurnId: turn.providerTurn.id,
+        message: {
+          messageId: MessageId.make("message-antigravity-steer"),
+          text: "Keep working while the command runs",
+          attachments: [],
+          createdBy: "user",
+          creationSource: "web",
+        },
+      });
+      yield* TestClock.adjust("31 minutes");
+      const reply = "Still working on the steered prompt.";
+      yield* send({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: reply } });
+      yield* send({
+        sessionUpdate: "tool_call_update",
+        ...command,
+        status: "completed",
+        rawOutput: { output: "Command exited with code 0.", exit_code: 0 },
+      });
+      yield* opened.releaseSteer;
+      yield* TestClock.adjust("3 seconds");
+      const events = yield* until((event) => event.type === "turn.terminal");
+      assert.include(JSON.stringify(events), reply);
+    }).pipe(Effect.provide(layerSession)),
+  );
+
   it.effect("keeps a silent scheduled wake in its run past the command hold bound", () =>
     Effect.gen(function* () {
       const { usage, offers, send, startTurn, until, throughPromptSettled } =

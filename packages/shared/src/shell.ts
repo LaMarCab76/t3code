@@ -587,7 +587,7 @@ export const CommandResolutionCache = Context.Reference<Map<string, CommandResol
 );
 
 interface PathDirectoryListing {
-  readonly modified: number | null | undefined;
+  readonly stamp: string | null | undefined;
   /** Lowercased entry names; undefined when the directory cannot be listed. */
   readonly names: ReadonlySet<string> | undefined;
   readonly reusable: boolean;
@@ -622,11 +622,16 @@ function isReusableListing(
   return isAbsolute(directory) && listedAtMs - modified >= PATH_DIRECTORY_SETTLE_MS;
 }
 
-const directoryMtime = (directory: string) =>
+const directoryListingInfo = (directory: string) =>
   FileSystem.FileSystem.use((fileSystem) => fileSystem.stat(directory)).pipe(
-    Effect.map((info) =>
-      info.type === "Directory" ? Option.getOrUndefined(info.mtime)?.getTime() : undefined,
-    ),
+    Effect.map((info) => {
+      const modified =
+        info.type === "Directory" ? Option.getOrUndefined(info.mtime)?.getTime() : undefined;
+      if (modified === undefined) return undefined;
+      const inode = Option.getOrUndefined(info.ino);
+      const stamp = inode ? [info.dev, inode, modified].join(":") : undefined;
+      return { modified, stamp };
+    }),
     Effect.catch((error) => Effect.succeed(error.reason._tag === "NotFound" ? null : undefined)),
   );
 
@@ -635,20 +640,22 @@ const listPathDirectory = Effect.fnUntraced(function* (
   directory: string,
 ): Effect.fn.Return<PathDirectoryListing, never, FileSystem.FileSystem | Path.Path> {
   const path = yield* Path.Path;
-  const modified = yield* directoryMtime(directory);
-  if (modified === null) {
-    return { modified, names: NO_DIRECTORY_NAMES, reusable: path.isAbsolute(directory) };
+  const info = yield* directoryListingInfo(directory);
+  if (info === null) {
+    return { stamp: null, names: NO_DIRECTORY_NAMES, reusable: path.isAbsolute(directory) };
   }
-  if (modified === undefined) return { modified, names: undefined, reusable: false };
+  if (!info) return { stamp: undefined, names: undefined, reusable: false };
   const listedAtMs = yield* Clock.currentTimeMillis;
   const entries = yield* FileSystem.FileSystem.use((fileSystem) =>
     fileSystem.readDirectory(directory),
   ).pipe(Effect.orElseSucceed(() => undefined));
   return {
-    modified,
+    stamp: info.stamp,
     names: entries && new Set(entries.map((entry) => entry.toLowerCase())),
     reusable:
-      entries !== undefined && isReusableListing(directory, modified, listedAtMs, path.isAbsolute),
+      entries !== undefined &&
+      info.stamp !== undefined &&
+      isReusableListing(directory, info.modified, listedAtMs, path.isAbsolute),
   };
 });
 
@@ -667,7 +674,7 @@ export const PathDirectoryListings = Context.Reference(
 
 const resolverPathDirectoryListings = new Map<
   string,
-  { readonly modified: number; readonly names: ReadonlySet<string> }
+  { readonly stamp: string; readonly names: ReadonlySet<string> }
 >();
 
 // The spawn resolver's counterpart of `PathDirectoryListings`, under the same rules.
@@ -676,15 +683,17 @@ async function listResolverPathDirectory(
   isAbsolute: (path: string) => boolean,
 ): Promise<ReadonlySet<string> | undefined> {
   let modified: number;
+  let stamp: string | undefined;
   try {
-    const stats = await NodeFS.promises.stat(directory);
+    const stats = await NodeFS.promises.stat(directory, { bigint: true });
     if (!stats.isDirectory()) return undefined;
-    modified = stats.mtimeMs;
+    modified = Number(stats.mtimeMs);
+    if (stats.ino !== 0n) stamp = [stats.dev, stats.ino, stats.mtimeNs].join(":");
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ENOENT" ? NO_DIRECTORY_NAMES : undefined;
   }
   const cached = resolverPathDirectoryListings.get(directory);
-  if (cached?.modified === modified) return cached.names;
+  if (cached && cached.stamp === stamp) return cached.names;
   resolverPathDirectoryListings.delete(directory);
   // This resolver runs outside Effect, so it has no Clock to read.
   // @effect-diagnostics-next-line globalDate:off
@@ -695,12 +704,12 @@ async function listResolverPathDirectory(
   } catch {
     return undefined;
   }
-  if (isReusableListing(directory, modified, listedAtMs, isAbsolute)) {
+  if (stamp !== undefined && isReusableListing(directory, modified, listedAtMs, isAbsolute)) {
     if (resolverPathDirectoryListings.size >= PATH_DIRECTORY_LISTINGS_MAX_ENTRIES) {
       const oldest = resolverPathDirectoryListings.keys().next().value;
       if (oldest !== undefined) resolverPathDirectoryListings.delete(oldest);
     }
-    resolverPathDirectoryListings.set(directory, { modified, names });
+    resolverPathDirectoryListings.set(directory, { stamp, names });
   }
   return names;
 }
@@ -779,9 +788,12 @@ const findOnPath = Effect.fnUntraced(function* (
   const matches: string[] = [];
   for (const pathEntry of pathEntries) {
     let listing = listings && (yield* Cache.get(listings, pathEntry));
-    if (listings && listing?.names && listing.modified !== (yield* directoryMtime(pathEntry))) {
-      yield* Cache.invalidate(listings, pathEntry);
-      listing = yield* Cache.get(listings, pathEntry);
+    if (listings && listing?.names) {
+      const current = yield* directoryListingInfo(pathEntry);
+      if (listing.stamp !== (current === null ? null : current?.stamp)) {
+        yield* Cache.invalidate(listings, pathEntry);
+        listing = yield* Cache.get(listings, pathEntry);
+      }
     }
     for (const candidate of commandCandidates) {
       if (isAbsentFromListing(listing?.names, candidate)) continue;

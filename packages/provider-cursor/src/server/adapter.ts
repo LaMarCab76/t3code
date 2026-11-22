@@ -2597,10 +2597,10 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
             (input.status === "failed" || input.status === "cancelled") &&
             !input.context.compacted &&
             input.context.prompt !== undefined &&
-            !(yield* (
+            (yield* (
               input.context.session.runCheckpointed?.(input.context.run.runId) ??
               Effect.succeed(false)
-            ).pipe(Effect.orElseSucceed(() => false)));
+            ).pipe(Effect.orElseSucceed(() => undefined))) === false;
           yield* emitProviderEvent({
             type: "provider_turn.updated",
             driver: CursorAgentSdk.CURSOR_PROVIDER,

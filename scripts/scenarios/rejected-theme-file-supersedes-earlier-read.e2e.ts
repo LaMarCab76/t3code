@@ -5,7 +5,7 @@ import { test, WEB } from "./t3.ts";
 
 declare global {
   interface Window {
-    releaseOldThemeRead: () => void;
+    releaseOldThemeRead: () => Promise<void>;
   }
 }
 
@@ -31,11 +31,22 @@ test(
       });
       const first = new File([theme], "earlier.json", { type: "application/json" });
       const text = File.prototype.text;
+      const oldRead = gate.promise.then(() => theme);
       File.prototype.text = function () {
-        if (this.name === first.name) return gate.promise.then(() => theme);
-        return text.call(this);
+        return this.name === first.name ? oldRead : text.call(this);
       };
-      window.releaseOldThemeRead = gate.resolve;
+      window.releaseOldThemeRead = async () => {
+        File.prototype.text = text;
+        gate.resolve();
+        await oldRead;
+        // Run after the file response and any React work queued from it.
+        const { scheduler } = window as Window & {
+          scheduler: {
+            postTask: (task: () => void, options: { priority: "background" }) => Promise<void>;
+          };
+        };
+        await scheduler.postTask(() => undefined, { priority: "background" });
+      };
 
       const drop = (file: File) => {
         const files = new DataTransfer();
@@ -51,11 +62,7 @@ test(
 
     await dialog.getByText(/That file is/).waitFor();
     await browser.evaluate(async () => {
-      window.releaseOldThemeRead();
-      // Let the earlier file response and its React update reach the dialog.
-      await new Promise<void>((resolve) =>
-        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-      );
+      await window.releaseOldThemeRead();
       return null;
     });
     await app.screenshot("dialog-after-earlier-theme-read-finishes");

@@ -8,7 +8,7 @@ import {
   ThreadId,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
-import { useImperativeHandle, type RefObject } from "react";
+import { useImperativeHandle, useLayoutEffect, useRef, type RefObject } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   ATTACHMENT_ONLY_BOOTSTRAP_PROMPT,
@@ -125,14 +125,24 @@ function Harness(props: {
   readonly runStatus: string;
   readonly hookRef: RefObject<HookResult | null>;
   readonly messages: ReadonlyArray<unknown>;
+  readonly promptRef?: { current: string };
 }) {
+  const routeKey = runsKey(props.threadRef);
+  const currentRouteThreadKeyRef = useRef<string | null>(routeKey);
+  useLayoutEffect(() => {
+    currentRouteThreadKeyRef.current = routeKey;
+    return () => {
+      currentRouteThreadKeyRef.current = null;
+    };
+  }, [routeKey]);
   const result = useQueuedRunEdit({
     environmentId: ENV,
     routeThreadRef: props.threadRef,
+    currentRouteThreadKeyRef,
     threadDraftTarget: props.threadRef,
     activeThreadId: props.threadRef.threadId,
     serverProjection: projection([{ id: RUN, status: props.runStatus }], props.messages),
-    promptRef: { current: "" },
+    promptRef: props.promptRef ?? { current: "" },
     composerRef: { current: null },
   });
   useImperativeHandle(props.hookRef, () => result);
@@ -168,10 +178,17 @@ function view(
   runStatus: string,
   hook: { current: HookResult | null },
   messages: ReadonlyArray<unknown> = [],
+  promptRef?: { current: string },
 ) {
   return (
     <AppAtomRegistryProvider>
-      <Harness threadRef={threadRef} runStatus={runStatus} hookRef={hook} messages={messages} />
+      <Harness
+        threadRef={threadRef}
+        runStatus={runStatus}
+        hookRef={hook}
+        messages={messages}
+        {...(promptRef ? { promptRef } : {})}
+      />
     </AppAtomRegistryProvider>
   );
 }
@@ -608,6 +625,22 @@ describe("useQueuedRunEdit", () => {
       }
     },
   );
+
+  it("leaves the current prompt alone when another thread's edit finishes saving", async () => {
+    const { hook } = setup();
+    const promptRef = { current: "" };
+    const response = Promise.withResolvers<{ readonly _tag: "Success" }>();
+    mocks.editQueuedRun.mockReturnValue(response.promise);
+    await using screen = await render(view(THREAD_A, "queued", hook, [], promptRef));
+    await beginChangedEdit(hook);
+    const saved = requireHook(hook).saveEdit(savedContent("changed"), () => {});
+    await vi.waitFor(() => expect(mocks.editQueuedRun).toHaveBeenCalledOnce());
+    await screen.rerender(view(THREAD_B, "queued", hook, [], promptRef));
+    promptRef.current = "other thread";
+    response.resolve({ _tag: "Success" });
+    await act(() => saved);
+    expect(promptRef.current).toBe("other thread");
+  });
 
   it("leaves a newer edit alone when a save from before navigation finishes", async () => {
     const { hook } = setup();

@@ -184,6 +184,7 @@ export const ProviderAdapterV2Event = Schema.Union([
     driver: ProviderDriverKind,
     threadId: ThreadId,
     providerThreadId: ProviderThreadId,
+    sourceRunId: Schema.optional(RunId),
     tasks: Schema.Array(OrchestrationV2PendingBackgroundTask),
   }),
   /** Unpersisted deltas go only to clients showing the row; final output arrives in turn_item.updated. */

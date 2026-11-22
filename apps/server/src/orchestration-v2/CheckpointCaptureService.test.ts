@@ -93,6 +93,8 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
             taskIds: [taskId],
           },
         };
+        const earlierLoss = { kind: "task", id: "earlier", label: "Earlier task" } as const;
+        const newerLoss = { kind: "task", id: "later", label: "Later task" } as const;
         const staleRun: OrchestrationV2Run = {
           id: runId,
           threadId,
@@ -110,6 +112,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
           checkpointId: null,
           contextHandoffId: null,
           delegatedCompletion: staleDelegatedCompletion,
+          restartCancelledBackgroundWork: [earlierLoss],
         };
         const rootNode = {
           id: rootNodeId,
@@ -366,6 +369,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
             "checkpoint capture must omit delegatedCompletion so ProjectionStore can keep a newer cohort",
           );
 
+          assert.isUndefined(runUpdated.payload.restartCancelledBackgroundWork);
           yield* projectionStore.apply({
             id: EventId.make("event:checkpoint-capture:newer-cohort"),
             type: "run.updated",
@@ -377,6 +381,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
             payload: {
               ...staleRun,
               delegatedCompletion: newerCohort,
+              restartCancelledBackgroundWork: [earlierLoss, newerLoss],
             },
           });
 
@@ -390,6 +395,7 @@ it.layer(layerProjectionStoreTest)("CheckpointCaptureServiceV2", (it) => {
           assert.equal(projectedRun?.status, "completed");
           assert.equal(projectedRun?.checkpointId, runUpdated.payload.checkpointId);
           assert.deepEqual(projectedRun?.delegatedCompletion, newerCohort);
+          assert.deepEqual(projectedRun?.restartCancelledBackgroundWork, [earlierLoss, newerLoss]);
           assert.equal(projectedRun?.delegatedCompletion?.delivery?.messageId, deliveryMessageId);
           assert.deepEqual(projectedRun?.delegatedCompletion?.delivery?.taskIds, [taskId]);
           yield* Ref.set(committed, []);

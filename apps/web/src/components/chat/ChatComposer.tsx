@@ -3044,8 +3044,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       bypassAutoAttachment,
       htmlHasImageAndText: htmlImageContent === "image-and-text",
     });
+    const folded = foldPastedText(plainText, bypassAutoAttachment);
     if (imagesBesideText.length > 0) void addComposerAttachments(imagesBesideText);
-    if (!foldPastedText(plainText, bypassAutoAttachment)) {
+    if (!folded) {
       return;
     }
 

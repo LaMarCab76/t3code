@@ -52,6 +52,7 @@ import * as CheckpointService from "./CheckpointService.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import {
   withCheckpointRestoreReservation,
+  withCheckoutMutationReservation,
   withWorkspaceLease,
 } from "../workspace/workspaceLease.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
@@ -2393,6 +2394,44 @@ effectIt.effect.each([
     }),
 );
 
+effectIt.effect(
+  "carries a handoff deferred by the slash command a continuation actually sent",
+  () =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Now write the tests",
+        sideChat: { contextRun: "failed" },
+      });
+      const projection = harness.projection();
+      const source = projection.runs[0]!;
+      const attempt = projection.attempts.at(-1)!;
+      const slash = {
+        ...projection.messages[0]!,
+        id: MessageId.make("review-from-resume"),
+        text: "/review",
+      };
+      harness.setProjection({
+        ...projection,
+        messages: [...projection.messages, slash],
+        runs: [{ ...source, status: "completed" }, ...projection.runs.slice(1)],
+        attempts: [
+          ...projection.attempts,
+          {
+            ...attempt,
+            id: source.activeAttemptId!,
+            runId: source.id,
+            promptMessageId: slash.id,
+            status: "completed",
+          },
+        ],
+      });
+      yield* harness.start;
+      expect(harness.startTurn.mock.calls[0]?.[0].message.text).toBe(
+        withInlineContext("SIDE_CHAT_CONTEXT", "Now write the tests"),
+      );
+    }),
+);
+
 effectIt.effect.each([
   { scheduled: false, status: "superseded" },
   { scheduled: true, status: "ready" },
@@ -2891,6 +2930,14 @@ effectIt.effect.each(["cleanup-first", "startup-first"])(
 // lease before the restore is released; realPath models the symlink alias and missing worktrees.
 effectIt.effect.each([
   {
+    overlap: "a project-root thread during a checkout switch",
+    restorePath: "/tmp/native-account-project",
+    worktreePath: undefined,
+    realPaths: {},
+    missing: [],
+    reservation: withCheckoutMutationReservation,
+  },
+  {
     overlap: "a project-root thread during a restore of the project checkout",
     restorePath: "/tmp/native-account-project",
     worktreePath: undefined,
@@ -2923,7 +2970,7 @@ effectIt.effect.each([
   },
 ] as const)(
   "does not start provider work in $overlap until the restore finishes",
-  ({ restorePath, worktreePath, realPaths, missing }) =>
+  ({ restorePath, worktreePath, realPaths, missing, ...scenario }) =>
     Effect.gen(function* () {
       const order: Array<string> = [];
       const releaseRestore = yield* Deferred.make<void>();
@@ -2954,7 +3001,9 @@ effectIt.effect.each([
       );
       // The reservation CheckpointRollbackServiceV2.execute holds around its
       // isolation check, provider rollback, and git restore of `restorePath`.
-      const restore = yield* withCheckpointRestoreReservation(
+      const reserve =
+        "reservation" in scenario ? scenario.reservation : withCheckpointRestoreReservation;
+      const restore = yield* reserve(
         fileSystem,
         yield* Path.Path,
         restorePath,
@@ -3174,6 +3223,19 @@ effectIt.effect("fails rather than retries a provider thread request with an unk
 
     expect(harness.startRootRun).not.toHaveBeenCalled();
     expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+  }),
+);
+
+effectIt.effect("retries a config read timeout before the provider receives thread/start", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      ensureThreadFailure: { _tag: "CodexAppServerUnresponsiveError", method: "config/read" },
+    });
+
+    expect((yield* Effect.exit(harness.startWithRetry))._tag).toBe("Failure");
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    expect(harness.projection().runs.at(-1)?.status).toBe("starting");
   }),
 );
 

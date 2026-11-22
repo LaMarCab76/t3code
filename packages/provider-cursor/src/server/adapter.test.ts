@@ -784,7 +784,14 @@ describe("CursorAdapterV2", () => {
               listMessages: Effect.succeed([]),
               close: Effect.void,
               runCheckpointed: (runId) =>
-                Effect.succeed(runId !== undefined && checkpointedRuns.has(runId)),
+                runId === "native-cursor-run-3"
+                  ? Effect.fail(
+                      new CursorAgentSdk.CursorAgentSdkRunnerError({
+                        method: "runCheckpointed",
+                        cause: "checkpoint unavailable",
+                      }),
+                    )
+                  : Effect.succeed(runId !== undefined && checkpointedRuns.has(runId)),
               send: () =>
                 Effect.sync(() => {
                   sendCalls += 1;
@@ -891,6 +898,11 @@ describe("CursorAdapterV2", () => {
       assert.equal(checkpointed.terminal?.status, "failed");
       assert.isUndefined(checkpointed.terminal?.promptDropped);
       assert.isUndefined(checkpointed.turn?.promptDropped);
+
+      const unknown = yield* runFailed(3);
+      assert.equal(unknown.terminal?.status, "failed");
+      assert.isUndefined(unknown.terminal?.promptDropped);
+      assert.isUndefined(unknown.turn?.promptDropped);
     }).pipe(
       Effect.scoped,
       Effect.provide(

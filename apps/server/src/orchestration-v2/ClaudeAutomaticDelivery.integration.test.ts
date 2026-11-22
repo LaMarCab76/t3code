@@ -18,6 +18,7 @@ import {
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as TestClock from "effect/testing/TestClock";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -1376,6 +1377,7 @@ it.effect.each([
 const exitWhileIdle = (options: {
   readonly awaited: boolean;
   readonly signal: "SIGKILL" | "SIGTERM" | "SIGTERM-roster-first";
+  readonly failFirstLossWrite?: boolean;
 }) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -1384,6 +1386,7 @@ const exitWhileIdle = (options: {
       const processes: Array<Queue.Queue<SDKMessage, Cause.Done>> = [];
       const offers: SDKUserMessage[] = [];
       const taskId = "b8sleep180";
+      const lossWriteFailed = yield* Deferred.make<void>();
       const registry = Layer.unwrap(
         Effect.gen(function* () {
           const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
@@ -1522,6 +1525,8 @@ const exitWhileIdle = (options: {
         yield* worker.drain();
         const beforeExit = yield* orchestrator.getThreadProjection(threadId);
         const firstRun = beforeExit.runs[0]!;
+        const providerSessionId = beforeExit.providerThreads[0]!.providerSessionId!;
+        const originalSession = Option.getOrUndefined(yield* sessions.get(providerSessionId));
         assert.deepEqual(
           beforeExit.providerThreads[0]?.pendingBackgroundTasks?.map((task) => [
             task.taskId,
@@ -1569,7 +1574,19 @@ const exitWhileIdle = (options: {
         }
         // The CLI exits while the thread is idle, after its last frames; the T3 server keeps running.
         yield* Queue.end(firstProcess);
+        if (options.failFirstLossWrite) {
+          yield* Deferred.await(lossWriteFailed);
+          yield* TestClock.adjust("1 second");
+        }
         yield* Fiber.join(recorded);
+        if (options.failFirstLossWrite) {
+          assert.isDefined(originalSession);
+          assert.strictEqual(
+            Option.getOrUndefined(yield* sessions.get(providerSessionId)),
+            originalSession,
+            "retry must keep the original provider session",
+          );
+        }
         yield* worker.drain();
 
         const afterExit = yield* orchestrator.getThreadProjection(threadId);
@@ -1580,14 +1597,15 @@ const exitWhileIdle = (options: {
           [taskId],
           "the run must record the awaited task the exited process took with it",
         );
-        // Drained effects already dispatched any wake, so a missing one fails here instead of hanging.
+        if (awaited) yield* Fiber.join(woken);
+        // The loss's outbox executor awaits restart dispatch, including the decision to skip it.
+        const afterContinuation = yield* orchestrator.getThreadProjection(threadId);
         assert.equal(
-          afterExit.runs.some((run) => run.id !== firstRun.id),
+          afterContinuation.runs.some((run) => run.id !== firstRun.id),
           awaited,
           "only awaited work wakes the agent without a user message",
         );
         if (!awaited) return;
-        yield* Fiber.join(woken);
         yield* worker.drain();
         const afterWake = yield* orchestrator.getThreadProjection(threadId);
         assert.lengthOf(
@@ -1610,7 +1628,27 @@ const exitWhileIdle = (options: {
           ProviderReplayHarness.layerWithRegistry(
             { name: "claude-idle-exit-awaited-task" },
             registry,
-            { runEffectWorker: false, runContinuationWorker: true },
+            {
+              runEffectWorker: false,
+              runContinuationWorker: true,
+              ...(options.failFirstLossWrite
+                ? {
+                    wrapEventSink: (delegate) => ({
+                      ...delegate,
+                      writeWithEffects: (input) =>
+                        Effect.gen(function* () {
+                          const loss = input.events.some(
+                            (event) => event.type === "run.background-work-cancelled",
+                          );
+                          if (loss && (yield* Deferred.succeed(lossWriteFailed, undefined))) {
+                            return yield* Effect.die(new Error("simulated loss commit failure"));
+                          }
+                          return yield* delegate.writeWithEffects(input);
+                        }),
+                    }),
+                  }
+                : {}),
+            },
           ),
         ),
       );
@@ -1640,4 +1678,8 @@ it.effect("wakes the agent when Claude empties its roster before stopping awaite
 
 it.effect("records but does not wake for an unawaited shell lost when Claude's process exits", () =>
   exitWhileIdle({ awaited: false, signal: "SIGKILL" }),
+);
+
+it.effect("retries persisting lost Claude work after the roster is cleared", () =>
+  exitWhileIdle({ awaited: true, signal: "SIGTERM-roster-first", failFirstLossWrite: true }),
 );

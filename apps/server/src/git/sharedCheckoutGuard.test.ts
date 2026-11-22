@@ -5,6 +5,7 @@ import * as Layer from "effect/Layer";
 
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as WorkspaceFolders from "../workspace/WorkspaceFolders.ts";
 import * as GitWorkflowService from "./GitWorkflowService.ts";
 import { assertCheckoutIdle, busyThreadsInCheckout } from "./sharedCheckoutGuard.ts";
 
@@ -67,6 +68,8 @@ describe("assertCheckoutIdle", () => {
     readonly repositoryRoot: string;
     readonly threads: ReadonlyArray<ReturnType<typeof thread>>;
     readonly failWorktreeLookup?: boolean;
+    readonly nestedWorkspaceRoot?: string;
+    readonly parentTracksCheckout?: boolean;
   }) =>
     Layer.mergeAll(
       Layer.mock(GitWorkflowService.GitWorkflowService)({
@@ -77,11 +80,30 @@ describe("assertCheckoutIdle", () => {
         snapshot: Effect.succeed({
           projects: [
             { id: projectId, workspaceRoot: "/repo" },
-            { id: nestedProjectId, workspaceRoot: "/repo/packages/app" },
+            {
+              id: nestedProjectId,
+              workspaceRoot: input.nestedWorkspaceRoot ?? "/repo/packages/app",
+            },
             { id: childRepositoryProjectId, workspaceRoot: "/repo/child" },
-            { id: otherProjectId, workspaceRoot: "/other" },
+            {
+              id: otherProjectId,
+              workspaceRoot: input.parentTracksCheckout ? "/parent" : "/other",
+              trackedFolders: input.parentTracksCheckout
+                ? [{ path: input.repositoryRoot, name: "Checkout" }]
+                : [],
+            },
           ],
         } as never),
+      }),
+      Layer.mock(WorkspaceFolders.WorkspaceFolders)({
+        forThread: ({ projectId }) =>
+          Effect.succeed({
+            folders:
+              projectId === otherProjectId && input.parentTracksCheckout
+                ? [{ path: input.repositoryRoot, name: "Checkout", isGitRepository: true }]
+                : [],
+            extraRoots: [],
+          }),
       }),
       Layer.mock(ThreadManagementService.ThreadManagementService)({
         getShellSnapshot: (options) =>
@@ -131,6 +153,18 @@ describe("assertCheckoutIdle", () => {
     }),
   );
 
+  it.effect("refuses a switch when an activity lookup could not establish checkout state", () =>
+    Effect.gen(function* () {
+      const error = yield* assertCheckoutIdle("test", "/repo").pipe(
+        Effect.flip,
+        Effect.provide(
+          guardLayer({ repositoryRoot: "/repo", threads: [], failWorktreeLookup: true }),
+        ),
+      );
+      expect(error.detail).toContain("Could not verify");
+    }),
+  );
+
   it.effect("refuses a switch while a nested project or archived thread is working", () =>
     Effect.gen(function* () {
       const error = yield* assertCheckoutIdle("test", "/repo").pipe(
@@ -151,6 +185,38 @@ describe("assertCheckoutIdle", () => {
       expect(error.detail).toMatch(
         /^'(nested|archived) running' and '(nested|archived) running' are still working/,
       );
+    }),
+  );
+
+  it.effect("recognizes a Windows project inside the checkout with Git path separators", () =>
+    Effect.gen(function* () {
+      const error = yield* assertCheckoutIdle("test", "C:/repo").pipe(
+        Effect.flip,
+        Effect.provide(
+          guardLayer({
+            repositoryRoot: "C:/repo",
+            nestedWorkspaceRoot: "C:\\repo\\packages\\app",
+            threads: [thread("nested running", { projectId: nestedProjectId })],
+          }),
+        ),
+      );
+      expect(error.detail).toContain("'nested running'");
+    }),
+  );
+
+  it.effect("refuses a switch in a checkout tracked by a parent project", () =>
+    Effect.gen(function* () {
+      const error = yield* assertCheckoutIdle("test", "/parent/repo").pipe(
+        Effect.flip,
+        Effect.provide(
+          guardLayer({
+            repositoryRoot: "/parent/repo",
+            parentTracksCheckout: true,
+            threads: [thread("parent running", { projectId: otherProjectId })],
+          }),
+        ),
+      );
+      expect(error.detail).toContain("'parent running'");
     }),
   );
 

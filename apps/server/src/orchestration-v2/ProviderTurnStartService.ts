@@ -166,11 +166,12 @@ const refusedBeforePrompt = (error: unknown): boolean =>
   (Predicate.hasProperty(error, "cause") && refusedBeforePrompt(error.cause));
 
 // The provider may have acted on a request it never answered, so a retry could duplicate it.
-const OUTCOME_UNKNOWN_TAGS = ["CodexAppServerUnresponsiveError"] as const;
-
-const outcomeUnknown = (error: unknown): boolean =>
-  OUTCOME_UNKNOWN_TAGS.some((tag) => Predicate.isTagged(error, tag)) ||
-  (Predicate.hasProperty(error, "cause") && outcomeUnknown(error.cause));
+const outcomeUnknown = (error: unknown): boolean => {
+  if (Predicate.isTagged(error, "CodexAppServerUnresponsiveError")) {
+    return !Predicate.hasProperty(error, "method") || error.method !== "config/read";
+  }
+  return Predicate.hasProperty(error, "cause") && outcomeUnknown(error.cause);
+};
 
 /**
  * Whether a non-truncating provider's native session lost the conversation kept before `run`.
@@ -573,6 +574,23 @@ export const layer: Layer.Layer<
           .filter((transfer) => transfer.type === "subagent_result")
           .map((transfer) => transfer.id),
       );
+      const attemptsById = new Map(projection.attempts.map((attempt) => [attempt.id, attempt]));
+      const slashMessageIds = new Set(
+        projection.messages.filter(isSlashCommandMessage).map((message) => message.id),
+      );
+      const sentSlashCommand = (
+        source: OrchestrationV2Run,
+        sourceAttempt?: OrchestrationV2RunAttempt,
+      ) => {
+        const resumedSource =
+          sourceAttempt?.promptMessageId === undefined &&
+          sourceAttempt?.reason !== "steering_restart"
+            ? unsentManualContinuationSource(source, projection)
+            : undefined;
+        return slashMessageIds.has(
+          sourceAttempt?.promptMessageId ?? resumedSource?.userMessageId ?? source.userMessageId,
+        );
+      };
       const isPendingForRun = (handoff: OrchestrationV2ContextHandoff, anyProviderThread = false) =>
         handoff.status === "ready" &&
         (handoff.targetRunId === run.id ||
@@ -597,9 +615,11 @@ export const layer: Layer.Layer<
                   (source.status === "completed" &&
                     handoff.delivery === undefined &&
                     // Slash command turns defer history to the next turn.
-                    projection.messages.some(
-                      (message) =>
-                        message.id === source.userMessageId && isSlashCommandMessage(message),
+                    sentSlashCommand(
+                      source,
+                      source.activeAttemptId === null
+                        ? undefined
+                        : attemptsById.get(source.activeAttemptId),
                     ))),
             )));
       const isSideChatHandoff = (handoff: OrchestrationV2ContextHandoff) =>
@@ -1064,7 +1084,7 @@ export const layer: Layer.Layer<
         )
         .map((source) => source.id);
       const stoppedTasks =
-        stoppedRunIds.length === 0 || compactionMessageIds().has(run.userMessageId)
+        stoppedRunIds.length === 0 || slashCommand
           ? []
           : pendingStoppedDelegatedTasks({
               providerThreadId: run.providerThreadId,
@@ -1286,14 +1306,12 @@ export const layer: Layer.Layer<
           // until a later run's is accepted. Slash command starts carry none. A missed run's
           // own accepted attempt predates its unsent steering input, so it does not count.
           const runsById = new Map(projection.runs.map((source) => [source.id, source]));
-          const messagesById = new Map(projection.messages.map((message) => [message.id, message]));
           let lastPromptOrdinal = 0;
           for (const attempt of acceptedAttempts) {
             if (missedRunIds.has(attempt.runId)) continue;
             const source = runsById.get(attempt.runId);
             if (source === undefined) continue;
-            const message = messagesById.get(source.userMessageId);
-            if (message !== undefined && isSlashCommandMessage(message)) continue;
+            if (sentSlashCommand(source, attempt)) continue;
             lastPromptOrdinal = Math.max(lastPromptOrdinal, source.ordinal);
           }
           const attachments = missedHistory.flatMap((item) =>
@@ -1954,6 +1972,7 @@ export const layer: Layer.Layer<
       };
       const runningAttempt: OrchestrationV2RunAttempt = {
         ...attempt,
+        promptMessageId: providerMessage.id,
         ...(runningProviderThread.nativeThreadRef?.nativeId == null
           ? {}
           : { nativeThreadId: runningProviderThread.nativeThreadRef.nativeId }),
