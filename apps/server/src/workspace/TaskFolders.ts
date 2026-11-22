@@ -865,13 +865,26 @@ const make = Effect.gen(function* () {
     baseBranch: string | undefined,
   ) {
     const worktreePath = mapped(taskFolder, repository.path);
-    // The project's own checkout (a post-checkout hook, say) already provided this repository.
-    // A link counts even to an empty folder: Git would write the worktree through it.
-    if (
-      Option.isSome(yield* fileSystem.readLink(worktreePath).pipe(Effect.option)) ||
-      (yield* occupied(worktreePath))
-    )
-      return null;
+    // A hook may place a link anywhere along the path to a tracked repository.
+    const segments = path.relative(taskFolder.root, worktreePath).split(path.sep);
+    let target = taskFolder.root;
+    for (const segment of segments) {
+      target = path.join(target, segment);
+      if (Option.isSome(yield* fileSystem.readLink(target).pipe(Effect.option))) return null;
+      const info = yield* fileSystem.stat(target).pipe(Effect.option);
+      if (Option.isNone(info)) break;
+      if (info.value.type !== "Directory") return null;
+    }
+    const checkout = {
+      repositoryPath: repository.path,
+      worktreePath,
+      name: repository.name,
+    } satisfies TaskFolderRepository;
+    if (yield* occupied(worktreePath)) {
+      return (yield* unadoptable(checkout, branch)) === null
+        ? { repository: checkout, fromOrigin: false }
+        : null;
+    }
     yield* fileSystem.makeDirectory(path.dirname(worktreePath), { recursive: true });
     const start = yield* repositoryStart(repository.path, startFromOrigin, baseBranch);
     yield* git.createWorktree({
@@ -882,11 +895,7 @@ const make = Effect.gen(function* () {
       path: worktreePath,
     });
     return {
-      repository: {
-        repositoryPath: repository.path,
-        worktreePath,
-        name: repository.name,
-      } satisfies TaskFolderRepository,
+      repository: checkout,
       fromOrigin: start.refName !== start.baseRefName,
     };
   });
@@ -1024,8 +1033,6 @@ const make = Effect.gen(function* () {
           yield* linkFolder(taskPlan.projectRoot, empty.projectPath, taskPlan.trackedRepositories);
         }
         let finished = 0;
-        // Whatever the project put at a skipped path also stands for the repositories inside it.
-        const skipped: string[] = [];
         // A repository inside another waits for the one that holds it.
         const levels = Map.groupBy(
           taskPlan.repositories,
@@ -1041,21 +1048,17 @@ const make = Effect.gen(function* () {
           const exits = yield* Effect.forEach(
             levels.get(level)!,
             (repository) =>
-              (skipped.some((outer) => isWithinRoot(path, repository.path, outer))
-                ? Effect.succeed(null)
-                : createRepositoryWorktree(
-                    empty,
-                    repository,
-                    branch,
-                    input.startFromOrigin,
-                    input.baseBranch,
-                  )
+              createRepositoryWorktree(
+                empty,
+                repository,
+                branch,
+                input.startFromOrigin,
+                input.baseBranch,
               ).pipe(
                 Effect.tap((worktree) =>
                   Effect.suspend(() => {
                     finished += 1;
-                    if (worktree === null) skipped.push(repository.path);
-                    else {
+                    if (worktree !== null) {
                       created.push(worktree.repository);
                       repositoriesStartedFromOrigin ||= worktree.fromOrigin;
                     }

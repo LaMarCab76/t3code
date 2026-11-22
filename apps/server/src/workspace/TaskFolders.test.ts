@@ -375,6 +375,48 @@ it.live("creates the task folder when the project's checkout hook already linked
   ),
 );
 
+it.live.each(["clone", "worktree"] as const)(
+  "creates a missing tracked descendant of a hook's %s",
+  (kind) =>
+    withState((state) =>
+      Effect.gen(function* () {
+        const { fileSystem, path, tmp, run, repository } = yield* fixture;
+        const project = yield* repository("p");
+        yield* fileSystem.writeFileString(path.join(project, ".gitignore"), "vendor/\n");
+        yield* run(project, "add", ".");
+        yield* run(project, "commit", "-m", "ignore vendor");
+        const lib = yield* repository("p/vendor/lib");
+        yield* fileSystem.writeFileString(path.join(lib, ".gitignore"), "inner/\n");
+        yield* run(lib, "add", ".");
+        yield* run(lib, "commit", "-m", "ignore inner");
+        const inner = yield* repository("p/vendor/lib/inner");
+        const checkout =
+          kind === "clone"
+            ? `git clone "${lib}" vendor/lib`
+            : `git -C "${lib}" worktree add -b feature "$PWD/vendor/lib"`;
+        const hooks = path.join(tmp, "hooks");
+        yield* fileSystem.makeDirectory(hooks);
+        yield* fileSystem.writeFileString(
+          path.join(hooks, "post-checkout"),
+          `#!/bin/sh\nmkdir -p vendor && ${checkout}\n`,
+          { mode: 0o755 },
+        );
+        yield* run(project, "config", "core.hooksPath", hooks);
+        state.workspaceRoot = project;
+        state.trackedFolders = tracked(lib, inner);
+
+        const { taskFolder } = yield* create("feature");
+        const libPath = path.join(taskFolder.projectPath, "vendor", "lib");
+        const innerPath = path.join(libPath, "inner");
+        assert.deepStrictEqual(
+          taskFolder.repositories.map((repo) => repo.worktreePath),
+          kind === "clone" ? [innerPath] : [libPath, innerPath],
+        );
+        assert.equal(yield* run(innerPath, "symbolic-ref", "--short", "HEAD"), "feature");
+      }),
+    ),
+);
+
 it.live("leaves a hook's link to an empty folder alone", () =>
   withState((state) =>
     Effect.gen(function* () {
