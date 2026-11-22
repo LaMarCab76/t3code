@@ -1,5 +1,7 @@
 name: Fork CodeRabbit gate
 on:
+  push:
+    branches: ["integration/fork-main-*"]
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, edited]
   pull_request_review:
@@ -8,7 +10,7 @@ permissions:
   contents: read
   pull-requests: read
 concurrency:
-  group: fork-coderabbit-gate-${{ github.event.pull_request.number }}
+  group: fork-coderabbit-gate-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 jobs:
   threads:
@@ -20,7 +22,18 @@ jobs:
         with:
           script: |
             const { owner, repo } = context.repo;
-            const number = context.payload.pull_request.number;
+            let number = context.payload.pull_request?.number;
+            if (number === undefined) {
+              const branch = context.ref.slice('refs/heads/'.length);
+              const pulls = await github.paginate(github.rest.pulls.list, {
+                owner, repo, head: owner + ':' + branch, base: 'main', state: 'open',
+              });
+              number = pulls.find((pull) => pull.head.sha === context.sha)?.number;
+              if (number === undefined) {
+                core.setFailed('No open pull request to main matches this integration commit.');
+                return;
+              }
+            }
             const open = [];
             let cursor = null;
             do {
