@@ -3103,9 +3103,13 @@ it.effect("emits run_interrupt_result when superseded attempt still has a hard-s
 it.effect("keeps a Stop that commits while a workspace handoff completes the run", () =>
   Effect.gen(function* () {
     const stopCommitted = yield* Ref.make(false);
+    const handoff = { id: "handoff:racing-stop" } as unknown as OrchestrationV2ContextHandoff;
     const { written, finalEvents, committedEffects } = yield* captureRootRunTermination({
       key: "stop-races-workspace-handoff",
       shouldFinalizeRun: () => Effect.succeed(true),
+      loadDroppedInlineHandoffs: () => Effect.succeed([handoff]),
+      events: (ids) =>
+        Stream.make({ ...rootTerminalEvent(ids, "interrupted"), promptDropped: true as const }),
       // Stop commits after the handoff is detected and before the terminal write.
       hasWorkspaceMoved: () => Ref.set(stopCommitted, true).pipe(Effect.as(true)),
       // The sink refuses a guarded write once the Stop request is stored.
@@ -3120,6 +3124,11 @@ it.effect("keeps a Stop that commits while a workspace handoff completes the run
       );
     assert.deepEqual(statuses("run.updated"), ["interrupted"]);
     assert.deepEqual(statuses("run-attempt.updated"), ["interrupted"]);
+    assert.isTrue(
+      finalEvents.some(
+        (event) => event.type === "context-handoff.updated" && event.payload.id === handoff.id,
+      ),
+    );
     assert.deepEqual(
       written.map((item) => item.type),
       ["run_interrupt_result"],
@@ -3745,59 +3754,63 @@ it.effect.each([
     }),
 );
 
-it.effect("restores dropped inline handoffs when ingestion fails before the terminal", () =>
-  Effect.gen(function* () {
-    const key = "dropped-turn-ingest-error";
-    const ids = backgroundScenarioIds(key);
-    const handoff = { id: `handoff:${key}` } as unknown as OrchestrationV2ContextHandoff;
-    const { finalEvents } = yield* captureRootRunTermination({
-      key,
-      shouldFinalizeRun: () => Effect.succeed(true),
-      loadDroppedInlineHandoffs: () => Effect.succeed([handoff]),
-      events: () =>
-        Stream.make({
-          type: "provider_turn.updated" as const,
-          driver,
-          threadId: ids.threadId,
-          providerTurn: {
-            id: ids.rootProviderTurnId,
-            providerThreadId: ids.providerThreadId,
-            runAttemptId: ids.attemptId,
-            ordinal: 1,
-            status: "failed",
-            promptDropped: true,
-          } as OrchestrationV2ProviderTurn,
-        }),
-      interruptTurn: () =>
-        Effect.fail(
-          new ProviderAdapter.ProviderAdapterProtocolError({
+it.effect.each(["current", "superseded"] as const)(
+  "restores dropped inline handoffs after ingestion failure only for the owner (%s)",
+  (ownership) =>
+    Effect.gen(function* () {
+      const key = `dropped-turn-ingest-error:${ownership}`;
+      const ids = backgroundScenarioIds(key);
+      const handoff = { id: `handoff:${key}` } as unknown as OrchestrationV2ContextHandoff;
+      const { finalEvents } = yield* captureRootRunTermination({
+        key,
+        shouldFinalizeRun: () => Effect.succeed(true),
+        loadDroppedInlineHandoffs: () => Effect.succeed([handoff]),
+        beforeTerminalWrite: () => Effect.succeed(ownership === "current"),
+        events: () =>
+          Stream.make({
+            type: "provider_turn.updated" as const,
             driver,
-            detail: "provider already ended",
+            threadId: ids.threadId,
+            providerTurn: {
+              id: ids.rootProviderTurnId,
+              providerThreadId: ids.providerThreadId,
+              runAttemptId: ids.attemptId,
+              ordinal: 1,
+              status: "failed",
+              promptDropped: true,
+            } as OrchestrationV2ProviderTurn,
           }),
+        interruptTurn: () =>
+          Effect.fail(
+            new ProviderAdapter.ProviderAdapterProtocolError({
+              driver,
+              detail: "provider already ended",
+            }),
+          ),
+        ingestNormalized: ({ event }) =>
+          event.type === "provider_turn.updated"
+            ? Effect.fail(
+                new ProviderEventIngestor.ProviderEventPublishError({
+                  providerSessionId: ProviderSessionId.make(`session:${key}`),
+                  eventCount: 1,
+                  cause: new Error("SQLITE_FULL: database or disk is full"),
+                }),
+              )
+            : Effect.succeed([]),
+      });
+      assert.equal(
+        finalEvents.some(
+          (event) => event.type === "provider-turn.updated" && event.payload.promptDropped === true,
         ),
-      ingestNormalized: ({ event }) =>
-        event.type === "provider_turn.updated"
-          ? Effect.fail(
-              new ProviderEventIngestor.ProviderEventPublishError({
-                providerSessionId: ProviderSessionId.make(`session:${key}`),
-                eventCount: 1,
-                cause: new Error("SQLITE_FULL: database or disk is full"),
-              }),
-            )
-          : Effect.succeed([]),
-    });
-    assert.isTrue(
-      finalEvents.some(
-        (event) => event.type === "provider-turn.updated" && event.payload.promptDropped === true,
-      ),
-    );
-    assert.deepEqual(
-      finalEvents.flatMap((event) =>
-        event.type === "context-handoff.updated" ? [event.payload.id] : [],
-      ),
-      [handoff.id],
-    );
-  }),
+        ownership === "current",
+      );
+      assert.deepEqual(
+        finalEvents.flatMap((event) =>
+          event.type === "context-handoff.updated" ? [event.payload.id] : [],
+        ),
+        ownership === "current" ? [handoff.id] : [],
+      );
+    }),
 );
 
 it.effect("does not interrupt a provider when ingestion fails before the root turn is known", () =>

@@ -776,6 +776,19 @@ export const layer: Layer.Layer<
                 })),
               )
             : Effect.succeed([]);
+        const guard = input.writeIfRunCurrent;
+        const restoreHandoffsWhileCurrent = (events: ReadonlyArray<OrchestrationV2DomainEvent>) =>
+          events.length > 0 && guard !== undefined
+            ? eventSink
+                .writeIfRunCurrent({
+                  threadId: input.run.threadId,
+                  runId: input.run.id,
+                  activeAttemptId: guard.activeAttemptId,
+                  expectedStatus: guard.expectedStatus,
+                  events,
+                })
+                .pipe(Effect.map((result) => result.committed))
+            : Effect.succeed(false);
         const shouldFinalizeRun =
           input.shouldFinalizeRun === undefined ? true : yield* input.shouldFinalizeRun();
         if (!shouldFinalizeRun) {
@@ -808,17 +821,7 @@ export const layer: Layer.Layer<
                   },
                 ]
               : [];
-          const guard = input.writeIfRunCurrent;
-          const restored =
-            restoredHandoffEvents.length > 0 && guard !== undefined
-              ? (yield* eventSink.writeIfRunCurrent({
-                  threadId: input.run.threadId,
-                  runId: input.run.id,
-                  activeAttemptId: guard.activeAttemptId,
-                  expectedStatus: guard.expectedStatus,
-                  events: restoredHandoffEvents,
-                })).committed
-              : false;
+          const restored = yield* restoreHandoffsWhileCurrent(restoredHandoffEvents);
           if (unpairedInterruptEvents.length > 0) {
             yield* eventSink.writeWithEffects({
               effects: [],
@@ -1044,13 +1047,13 @@ export const layer: Layer.Layer<
             ...restoredHandoffEvents,
           ],
         } satisfies Parameters<typeof eventSink.writeWithEffects>[0];
-        if (input.writeIfRunCurrent !== undefined) {
+        if (guard !== undefined) {
           const result = yield* eventSink.writeIfRunCurrent({
             threadId: input.run.threadId,
             runId: input.run.id,
-            activeAttemptId: input.writeIfRunCurrent.activeAttemptId,
-            expectedStatus: input.writeIfRunCurrent.expectedStatus,
-            ...(input.writeIfRunCurrent.unlessInterruptRequested === true
+            activeAttemptId: guard.activeAttemptId,
+            expectedStatus: guard.expectedStatus,
+            ...(guard.unlessInterruptRequested === true
               ? {
                   unlessInterruptRequested: {
                     requestId: idAllocator.derive.runSignalTurnItem({
@@ -1068,11 +1071,10 @@ export const layer: Layer.Layer<
             effects: finalization.effects,
           });
           if (!result.committed) {
-            if (restoredHandoffEvents.length > 0) {
-              yield* eventSink.writeWithEffects({
-                effects: [],
-                events: restoredHandoffEvents,
-              });
+            if (
+              guard.unlessInterruptRequested === true &&
+              (yield* restoreHandoffsWhileCurrent(restoredHandoffEvents))
+            ) {
               yield* input.refreshAfterTurn;
             }
             return false;
