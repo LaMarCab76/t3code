@@ -599,10 +599,6 @@ function remarkNormalizeLinksAndTagInlineCode() {
   };
 }
 
-export function shouldPreserveAssistantLineBreaks(text: string): boolean {
-  return /^★ Insight(?:\s|─)/mu.test(text);
-}
-
 function rewriteAssistantInsights(source: string, tree: Root) {
   const protectedRanges: { start: number; end: number; code: boolean }[] = [];
   const inspect = (node: RootContent | PhrasingContent) => {
