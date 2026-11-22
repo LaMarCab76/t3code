@@ -2261,7 +2261,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
   // A fetch reads only the remote's first url, while a push writes every push URL (pushurl, else
   // each url). A fetched ref is evidence of the push destination only when those are the same one.
   const pushesOnlyToFetchUrl = Effect.fn("GitVcsDriver.pushesOnlyToFetchUrl")(
-    function* (cwd: string, remoteName: string) {
+    function* (cwd: string, remoteName: string, expectedFetchUrl?: string) {
       const [fetchUrl, pushUrls] = yield* Effect.all([
         runGitStdout("GitVcsDriver.pushesOnlyToFetchUrl.fetchUrl", cwd, [
           "remote",
@@ -2280,7 +2280,10 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ]);
       // Preserve whitespace in URLs and reject ambiguous multiline fetch URLs.
       return (
-        fetchUrl.endsWith("\n") && !fetchUrl.slice(0, -1).includes("\n") && pushUrls === fetchUrl
+        fetchUrl.endsWith("\n") &&
+        !fetchUrl.slice(0, -1).includes("\n") &&
+        pushUrls === fetchUrl &&
+        (expectedFetchUrl === undefined || fetchUrl === expectedFetchUrl + "\n")
       );
     },
     Effect.orElseSucceed(() => false),
@@ -2297,14 +2300,33 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       ["remote", "-v"],
     ).pipe(Effect.map((stdout) => parseRemoteFetchUrls(stdout)));
     const findMatchingRemote = (remoteFetchUrls: Map<string, string>) =>
-      Array.from(remoteFetchUrls.entries()).find(
-        ([, remoteUrl]) =>
-          sourceControlDefinitions.repositoryKeyFromRemote(remoteUrl) === normalizedTargetUrl,
+      Array.from(remoteFetchUrls.entries()).find(([, remoteUrl]) =>
+        input.pushOnlyToFetchUrl
+          ? remoteUrl === input.url
+          : sourceControlDefinitions.repositoryKeyFromRemote(remoteUrl) === normalizedTargetUrl,
       )?.[0];
+
+    const checkPushDestination = (remoteName: string) =>
+      !input.pushOnlyToFetchUrl
+        ? Effect.succeed(remoteName)
+        : pushesOnlyToFetchUrl(input.cwd, remoteName, input.url).pipe(
+            Effect.flatMap((safe) =>
+              safe
+                ? Effect.succeed(remoteName)
+                : Effect.fail(
+                    new GitCommandError({
+                      operation: "GitVcsDriver.ensureRemote",
+                      command: "git remote get-url",
+                      cwd: input.cwd,
+                      detail: "The remote must push exclusively to the requested repository.",
+                    }),
+                  ),
+            ),
+          );
 
     const remoteFetchUrls = yield* listRemoteFetchUrls;
     const existing = findMatchingRemote(remoteFetchUrls);
-    if (existing !== undefined) return existing;
+    if (existing !== undefined) return yield* checkPushDestination(existing);
 
     let remoteName = preferredName;
     let suffix = 1;
@@ -2330,6 +2352,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           }),
         ),
       ),
+      Effect.flatMap(checkPushDestination),
     );
   });
 

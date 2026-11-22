@@ -2335,9 +2335,6 @@ export default function ChatView(props: ChatViewProps) {
     pendingServerThreadBranchEntry?.threadId === activeThread?.id
       ? pendingServerThreadBranchEntry
       : null;
-  const setPendingServerThreadBranch = (branch: string | null) => {
-    if (activeThread) setPendingServerThreadBranchEntry({ threadId: activeThread.id, branch });
-  };
   const envMode: DraftThreadEnvMode = canOverrideServerThreadEnvMode
     ? (pendingServerThreadEnvMode ?? draftThread?.envMode ?? derivedEnvMode)
     : derivedEnvMode;
@@ -2345,6 +2342,12 @@ export default function ChatView(props: ChatViewProps) {
     canOverrideServerThreadEnvMode && pendingServerThreadBranchEntryForThread !== null
       ? pendingServerThreadBranchEntryForThread.branch
       : (activeThread?.branch ?? null);
+  const setPendingServerThreadBranch = (branch: string | null) => {
+    if (activeThread === undefined || activeThread === null || branch === activeThreadBranch)
+      return;
+    cancelHeldComposerSend(composerTargetKey(composerDraftTarget));
+    setPendingServerThreadBranchEntry({ threadId: activeThread.id, branch });
+  };
   const startFromOrigin = isLocalDraftThread
     ? (draftThread?.startFromOrigin ?? false)
     : canOverrideServerThreadEnvMode

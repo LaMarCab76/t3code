@@ -2567,21 +2567,6 @@ it.layer(
         }),
     );
 
-    // A login shell stand-in that prints the capture with one more PATH entry, as a profile edited
-    // after launch would.
-    const withLateLoginShell = <A, E, R>(effect: (shell: string) => Effect.Effect<A, E, R>) =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const dir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-login-shell-" });
-        const shell = `${dir}/sh`;
-        yield* fs.writeFileString(
-          shell,
-          '#!/bin/sh\nPATH=/opt/late:/usr/bin exec /bin/sh -c "$2"\n',
-        );
-        yield* fs.chmod(shell, 0o755);
-        return yield* effect(shell);
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
-
     it.effect.each([
       {
         name: "Windows PATH",
@@ -2596,8 +2581,8 @@ it.layer(
         expectedPath: "/opt/late:/usr/bin",
       },
     ])("rebuilds only instances missing their CLI when a refresh finds a new $name", (host) =>
-      withLateLoginShell((shell) => {
-        const env: NodeJS.ProcessEnv = { PATH: host.path, SHELL: shell };
+      Effect.suspend(() => {
+        const env: NodeJS.ProcessEnv = { PATH: host.path, SHELL: "/bin/sh" };
         return Effect.gen(function* () {
           const driver = ProviderDriverKind.make("codex");
           const makeInstance = (id: string, installed: boolean): ProviderInstance => {
@@ -2662,6 +2647,14 @@ it.layer(
                   ServerConfig.layerTest(process.cwd(), {
                     prefix: "t3-provider-registry-path-",
                   }),
+                ),
+                Layer.provide(
+                  layerMockSpawner(() => ({
+                    stdout:
+                      "__T3CODE_ENV_PATH_START__\n/opt/late:/usr/bin\n__T3CODE_ENV_PATH_END__\n",
+                    stderr: "",
+                    code: 0,
+                  })),
                 ),
                 Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
               ),

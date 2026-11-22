@@ -3,6 +3,7 @@ import {
   type OrchestrationV2ThreadShell,
   type ProjectId,
 } from "@t3tools/contracts";
+import { isWindowsAbsolutePath, normalizeProjectPathForComparison } from "@t3tools/shared/path";
 import * as Effect from "effect/Effect";
 
 import * as GitWorkflowService from "./GitWorkflowService.ts";
@@ -20,13 +21,19 @@ export function busyThreadsInCheckout<T extends CheckoutThread>(input: {
   readonly projectIds: ReadonlySet<ProjectId>;
   readonly threads: ReadonlyArray<T>;
 }): ReadonlyArray<T> {
+  const checkoutIds = new Set(input.checkoutPaths.map(checkoutIdentity));
   return input.threads.filter(
     (thread) =>
       (thread.activityRunStatus ?? null) !== null &&
       (thread.worktreePath === null
         ? input.projectIds.has(thread.projectId)
-        : input.checkoutPaths.includes(thread.worktreePath)),
+        : checkoutIds.has(checkoutIdentity(thread.worktreePath))),
   );
+}
+
+function checkoutIdentity(path: string): string {
+  const normalized = normalizeProjectPathForComparison(path);
+  return isWindowsAbsolutePath(normalized) ? normalized.replaceAll("\\", "/") : normalized;
 }
 
 function describeBusyCheckout(titles: ReadonlyArray<string>): string {
@@ -49,6 +56,9 @@ export const assertCheckoutIdle = Effect.fn("sharedCheckoutGuard.assertCheckoutI
   // `git checkout` from a subdirectory moves the whole checkout; records may hold either spelling.
   const root = yield* gitWorkflow.repositoryRoot(cwd).pipe(Effect.orElseSucceed(() => null));
   const checkoutPaths = [...new Set([cwd, ...(root === null ? [] : [root])])];
+  const checkoutIds = new Set(checkoutPaths.map(checkoutIdentity));
+  const rootId = root === null ? null : checkoutIdentity(root);
+  const rootPrefix = rootId === null ? null : rootId.endsWith("/") ? rootId : rootId + "/";
   const projects = yield* projectService.snapshot.pipe(
     Effect.map((snapshot) => snapshot.projects),
     Effect.orElseSucceed(() => []),
@@ -56,22 +66,22 @@ export const assertCheckoutIdle = Effect.fn("sharedCheckoutGuard.assertCheckoutI
   // A project rooted inside the checkout shares it, as in a monorepo package, unless it is its
   // own repository nested there.
   const nested = yield* Effect.forEach(
-    projects.filter(
-      ({ workspaceRoot }) =>
-        root !== null &&
-        !checkoutPaths.includes(workspaceRoot) &&
-        workspaceRoot.startsWith(`${root}/`),
-    ),
+    projects.filter(({ workspaceRoot }) => {
+      const id = checkoutIdentity(workspaceRoot);
+      return rootPrefix !== null && !checkoutIds.has(id) && id.startsWith(rootPrefix);
+    }),
     (project) =>
       gitWorkflow.repositoryRoot(project.workspaceRoot).pipe(
-        Effect.map((projectRoot) => (projectRoot === root ? [project] : [])),
+        Effect.map((projectRoot) =>
+          projectRoot !== null && checkoutIdentity(projectRoot) === rootId ? [project] : [],
+        ),
         Effect.orElseSucceed(() => []),
       ),
     { concurrency: "unbounded" },
   );
   const projectIds = new Set(
     [
-      ...projects.filter(({ workspaceRoot }) => checkoutPaths.includes(workspaceRoot)),
+      ...projects.filter(({ workspaceRoot }) => checkoutIds.has(checkoutIdentity(workspaceRoot))),
       ...nested.flat(),
     ].map(({ id }) => id),
   );

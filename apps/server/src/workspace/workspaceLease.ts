@@ -30,7 +30,7 @@ export const withWorkspaceLease = <A, E, R>(
 // restores call Git work that leases the project root.
 interface Reservation {
   readonly cwd: string;
-  readonly kind: "restore" | "turn-start";
+  readonly kind: "mutation" | "turn-start";
 }
 
 const reservations = new Set<Reservation>();
@@ -47,7 +47,7 @@ const contains = (path: Path.Path, parent: string, child: string) => {
 };
 
 const conflicts = (path: Path.Path, a: Reservation, b: Reservation) =>
-  (a.kind === "restore" || b.kind === "restore") &&
+  (a.kind === "mutation" || b.kind === "mutation") &&
   (contains(path, a.cwd, b.cwd) || contains(path, b.cwd, a.cwd));
 
 const reserve = (path: Path.Path, reservation: Reservation): Effect.Effect<void> =>
@@ -108,7 +108,10 @@ const withReservation =
     );
 
 /** Exclusive over every overlapping workspace while checkpoint files are restored. */
-export const withCheckpointRestoreReservation = withReservation("restore");
+export const withCheckpointRestoreReservation = withReservation("mutation");
 
-/** Waits out overlapping restores; turn startups never wait on each other. */
+/** Holds the checkout steady between its idle check and the ref change. */
+export const withCheckoutMutationReservation = withReservation("mutation");
+
+/** Waits out overlapping workspace mutations; turn startups never wait on each other. */
 export const withTurnStartReservation = withReservation("turn-start");

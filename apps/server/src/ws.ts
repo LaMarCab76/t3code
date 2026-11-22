@@ -226,6 +226,7 @@ import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import { assertCheckoutIdle } from "./git/sharedCheckoutGuard.ts";
+import { withCheckoutMutationReservation } from "./workspace/workspaceLease.ts";
 import { refreshPushedPullRequests } from "./git/refreshPushedPullRequests.ts";
 import { linkCreatedPullRequest } from "./git/linkCreatedPullRequest.ts";
 import * as ReviewService from "./review/ReviewService.ts";
@@ -1578,6 +1579,24 @@ export const layerWsRpc = (
       const workspaceFolders = yield* WorkspaceFolders.WorkspaceFolders;
       const taskFolders = yield* TaskFolders.TaskFolders;
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
+      const checkoutFileSystem = yield* FileSystem.FileSystem;
+      const checkoutPath = yield* Path.Path;
+      const withIdleCheckout = <A, E, R>(
+        operation: string,
+        cwd: string,
+        effect: Effect.Effect<A, E, R>,
+      ) =>
+        gitWorkflow.repositoryRoot(cwd).pipe(
+          Effect.orElseSucceed(() => null),
+          Effect.flatMap((root) =>
+            withCheckoutMutationReservation(
+              checkoutFileSystem,
+              checkoutPath,
+              root ?? cwd,
+              assertCheckoutIdle(operation, cwd).pipe(Effect.andThen(effect)),
+            ),
+          ),
+        );
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
@@ -3276,12 +3295,13 @@ export const layerWsRpc = (
         [WS_METHODS.gitResolvePullRequest]: (input) => gitWorkflow.resolvePullRequest(input),
         [WS_METHODS.gitPreparePullRequestThread]: (input) =>
           (input.mode === "local"
-            ? assertCheckoutIdle("GitWorkflowService.preparePullRequestThread", input.cwd)
-            : Effect.void
-          ).pipe(
-            Effect.andThen(gitWorkflow.preparePullRequestThread(input)),
-            Effect.tap(() => refreshGitStatus(input.cwd)),
-          ),
+            ? withIdleCheckout(
+                "GitWorkflowService.preparePullRequestThread",
+                input.cwd,
+                gitWorkflow.preparePullRequestThread(input),
+              )
+            : gitWorkflow.preparePullRequestThread(input)
+          ).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
         [WS_METHODS.vcsListRefs]: (input) => gitWorkflow.listRefs(input),
         [WS_METHODS.vcsCreateWorktree]: (input) =>
           // A project that tracks repositories gets a task folder, as its new worktree threads do.
@@ -3327,10 +3347,13 @@ export const layerWsRpc = (
           ),
         [WS_METHODS.vcsCreateRef]: (input) =>
           (input.switchRef
-            ? assertCheckoutIdle("GitWorkflowService.createRef", input.cwd)
-            : Effect.void
+            ? withIdleCheckout(
+                "GitWorkflowService.createRef",
+                input.cwd,
+                gitWorkflow.createRef(input),
+              )
+            : gitWorkflow.createRef(input)
           ).pipe(
-            Effect.andThen(gitWorkflow.createRef(input)),
             Effect.tap(() =>
               input.switchRef
                 ? vcsStatusBroadcaster.refreshAfterCheckout(input.cwd)
@@ -3338,10 +3361,11 @@ export const layerWsRpc = (
             ),
           ),
         [WS_METHODS.vcsSwitchRef]: (input) =>
-          assertCheckoutIdle("GitWorkflowService.switchRef", input.cwd).pipe(
-            Effect.andThen(gitWorkflow.switchRef(input)),
-            Effect.tap(() => vcsStatusBroadcaster.refreshAfterCheckout(input.cwd)),
-          ),
+          withIdleCheckout(
+            "GitWorkflowService.switchRef",
+            input.cwd,
+            gitWorkflow.switchRef(input),
+          ).pipe(Effect.tap(() => vcsStatusBroadcaster.refreshAfterCheckout(input.cwd))),
         [WS_METHODS.vcsInit]: (input) =>
           vcsProvisioning.initRepository(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
         [WS_METHODS.reviewGetBranchCommits]: (input) => review.getBranchCommits(input),

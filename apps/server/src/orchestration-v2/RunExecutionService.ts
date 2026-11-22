@@ -808,14 +808,24 @@ export const layer: Layer.Layer<
                   },
                 ]
               : [];
-          const earlyEvents = [...unpairedInterruptEvents, ...restoredHandoffEvents];
-          if (earlyEvents.length > 0) {
+          const guard = input.writeIfRunCurrent;
+          const restored =
+            restoredHandoffEvents.length > 0 && guard !== undefined
+              ? (yield* eventSink.writeIfRunCurrent({
+                  threadId: input.run.threadId,
+                  runId: input.run.id,
+                  activeAttemptId: guard.activeAttemptId,
+                  expectedStatus: guard.expectedStatus,
+                  events: restoredHandoffEvents,
+                })).committed
+              : false;
+          if (unpairedInterruptEvents.length > 0) {
             yield* eventSink.writeWithEffects({
               effects: [],
-              events: earlyEvents,
+              events: unpairedInterruptEvents,
             });
-            yield* input.refreshAfterTurn;
           }
+          if (restored || unpairedInterruptEvents.length > 0) yield* input.refreshAfterTurn;
           return false;
         }
         const reason =
@@ -2146,17 +2156,21 @@ export const layer: Layer.Layer<
                             // A failed interrupt leaves the stored turn running so the next start
                             // retries it. The snapshot is cached before it is published, so it may
                             // not be stored: replay a terminal one as-is.
-                            Effect.map((interrupted) =>
-                              !interrupted || rootProviderTurn === null
-                                ? null
-                                : isTerminalProviderTurnStatus(rootProviderTurn.status)
+                            Effect.map((interrupted) => {
+                              if (rootProviderTurn === null) return null;
+                              if (isTerminalProviderTurnStatus(rootProviderTurn.status)) {
+                                return interrupted || rootProviderTurn.promptDropped === true
                                   ? rootProviderTurn
-                                  : {
-                                      ...rootProviderTurn,
-                                      status: "interrupted" as const,
-                                      completedAt,
-                                    },
-                            ),
+                                  : null;
+                              }
+                              return interrupted
+                                ? {
+                                    ...rootProviderTurn,
+                                    status: "interrupted" as const,
+                                    completedAt,
+                                  }
+                                : null;
+                            }),
                           )
                       : null;
                   const latestItemOrdinal = yield* Ref.get(latestTurnItemOrdinal);

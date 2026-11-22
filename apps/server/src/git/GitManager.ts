@@ -2926,6 +2926,7 @@ export const make = Effect.gen(function* () {
       cwd,
       preferredName: companion.repository.split("/")[0] || "private",
       url: companion.url,
+      pushOnlyToFetchUrl: true,
     });
     // Recorded before the push, so a later push of this branch, by T3 or by plain `git push`,
     // goes to the companion too and never publishes the branch.

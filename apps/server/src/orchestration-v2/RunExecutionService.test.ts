@@ -3768,6 +3768,13 @@ it.effect("restores dropped inline handoffs when ingestion fails before the term
             promptDropped: true,
           } as OrchestrationV2ProviderTurn,
         }),
+      interruptTurn: () =>
+        Effect.fail(
+          new ProviderAdapter.ProviderAdapterProtocolError({
+            driver,
+            detail: "provider already ended",
+          }),
+        ),
       ingestNormalized: ({ event }) =>
         event.type === "provider_turn.updated"
           ? Effect.fail(
@@ -3779,6 +3786,11 @@ it.effect("restores dropped inline handoffs when ingestion fails before the term
             )
           : Effect.succeed([]),
     });
+    assert.isTrue(
+      finalEvents.some(
+        (event) => event.type === "provider-turn.updated" && event.payload.promptDropped === true,
+      ),
+    );
     assert.deepEqual(
       finalEvents.flatMap((event) =>
         event.type === "context-handoff.updated" ? [event.payload.id] : [],

@@ -67,6 +67,7 @@ describe("assertCheckoutIdle", () => {
     readonly repositoryRoot: string;
     readonly threads: ReadonlyArray<ReturnType<typeof thread>>;
     readonly failWorktreeLookup?: boolean;
+    readonly nestedWorkspaceRoot?: string;
   }) =>
     Layer.mergeAll(
       Layer.mock(GitWorkflowService.GitWorkflowService)({
@@ -77,7 +78,10 @@ describe("assertCheckoutIdle", () => {
         snapshot: Effect.succeed({
           projects: [
             { id: projectId, workspaceRoot: "/repo" },
-            { id: nestedProjectId, workspaceRoot: "/repo/packages/app" },
+            {
+              id: nestedProjectId,
+              workspaceRoot: input.nestedWorkspaceRoot ?? "/repo/packages/app",
+            },
             { id: childRepositoryProjectId, workspaceRoot: "/repo/child" },
             { id: otherProjectId, workspaceRoot: "/other" },
           ],
@@ -151,6 +155,22 @@ describe("assertCheckoutIdle", () => {
       expect(error.detail).toMatch(
         /^'(nested|archived) running' and '(nested|archived) running' are still working/,
       );
+    }),
+  );
+
+  it.effect("recognizes a Windows project inside the checkout with Git path separators", () =>
+    Effect.gen(function* () {
+      const error = yield* assertCheckoutIdle("test", "C:/repo").pipe(
+        Effect.flip,
+        Effect.provide(
+          guardLayer({
+            repositoryRoot: "C:/repo",
+            nestedWorkspaceRoot: "C:\\repo\\packages\\app",
+            threads: [thread("nested running", { projectId: nestedProjectId })],
+          }),
+        ),
+      );
+      expect(error.detail).toContain("'nested running'");
     }),
   );
 
