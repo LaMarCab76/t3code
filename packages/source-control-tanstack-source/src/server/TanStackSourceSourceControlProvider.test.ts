@@ -37,6 +37,8 @@ function checkout(options: {
   readonly isAncestor: boolean;
   readonly pull?: Partial<typeof PULL>;
   readonly force?: boolean;
+  readonly branches?: string[];
+  readonly failPin?: boolean;
 }) {
   const git: Array<string> = [];
   const config = new Map<string, string>(
@@ -69,8 +71,18 @@ function checkout(options: {
         ),
       readConfigValue: (_cwd, key) =>
         Effect.succeed(key === "remote.origin.url" ? REMOTE : (config.get(key) ?? null)),
-      writeConfigValue: (input) => Effect.sync(() => void config.set(input.key, input.value)),
-      listLocalBranchNames: () => Effect.succeed(["main", "pr-42"]),
+      writeConfigValue: (input) =>
+        options.failPin && input.key.endsWith(".pushRemote")
+          ? Effect.fail(
+              new GitCommandError({
+                operation: "writeConfigValue",
+                command: "git config",
+                cwd: input.cwd,
+                detail: "Could not lock config",
+              }),
+            )
+          : Effect.sync(() => void config.set(input.key, input.value)),
+      listLocalBranchNames: () => Effect.succeed(options.branches ?? ["main", "pr-42"]),
       createBranch: (input) => Effect.sync(() => void git.push(`create ${input.branch}`)),
       switchRef: (input) =>
         Effect.sync(() => {
@@ -165,12 +177,47 @@ describe("TanStackSourceSourceControlProvider.checkoutChangeRequest", () => {
       assert.deepStrictEqual(git, [
         `remote source ${REMOTE}`,
         "remote acme https://source.tanstack.com/@acme/web.private.git",
-        "fetch acme fix-thing:fix-thing",
-        "upstream fix-thing acme/fix-thing",
+        "create fix-thing",
         "switch fix-thing",
+        "upstream fix-thing acme/fix-thing",
       ]);
     });
   });
+
+  it.effect("only fast-forwards an existing private branch", () =>
+    Effect.gen(function* () {
+      const input = {
+        recordedOwner: null,
+        pull: { head: "acme:fix-thing", headRepo: "acme/web.private" },
+        branches: ["main", "fix-thing"],
+      };
+      const diverged = checkout({ ...input, isAncestor: false });
+      assert.include(
+        (yield* Effect.flip(diverged.run)).detail,
+        "has commits pull request #42 does not",
+      );
+      assert.isFalse(diverged.config.has("branch.fix-thing.pushRemote"));
+      assert.isFalse(diverged.git.includes("switch fix-thing"));
+      const behind = checkout({ ...input, isAncestor: true });
+      yield* behind.run;
+      assert.include(behind.git, "merge --ff-only refs/remotes/acme/fix-thing");
+      assert.strictEqual(behind.config.get("branch.fix-thing.pushRemote"), "acme");
+    }),
+  );
+
+  it.effect("stops a private checkout when recording its route fails", () =>
+    Effect.gen(function* () {
+      const failed = checkout({
+        recordedOwner: null,
+        isAncestor: true,
+        pull: { head: "acme:fix-thing", headRepo: "acme/web.private" },
+        force: true,
+        failPin: true,
+      });
+      yield* Effect.flip(failed.run);
+      assert.isFalse(failed.git.some((command) => /^(checkout|switch|create) /u.test(command)));
+    }),
+  );
 });
 
 describe("TanStackSourceSourceControlProvider private pull requests", () => {

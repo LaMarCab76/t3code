@@ -550,35 +550,63 @@ export const make = Effect.gen(function* () {
                       cwd: input.cwd,
                       preferredName: companion.split("/")[0] ?? "private",
                       url: `${Hosts.webRepositoryUrl(HOST, companion)}.git`,
+                      pushOnlyToFetchUrl: true,
                     }),
               remoteBranch: localBranch,
             };
-            if (input.force !== true && !branches.includes(localBranch))
-              yield* git.fetchRemoteBranch({ ...remoteBranch, localBranch });
-            else yield* git.fetchRemoteTrackingBranch(remoteBranch);
-            if (input.force === true)
-              yield* git.execute({
-                operation,
-                cwd: input.cwd,
-                // The upstream is recorded next, through the host's serialized config write.
-                args: [
-                  "checkout",
-                  "--no-track",
-                  "-B",
-                  localBranch,
-                  `refs/remotes/${remoteBranch.remoteName}/${localBranch}`,
-                  "--",
-                ],
-              });
-            yield* git.setBranchUpstream({ ...remoteBranch, branch: localBranch });
-            // Whatever push defaults say, this branch must not be published to the public remote.
-            if (companion !== null)
+            const exists = branches.includes(localBranch);
+            const tracking = `refs/remotes/${remoteBranch.remoteName}/${localBranch}`;
+            if (input.force === true || exists || companion !== null)
+              yield* git.fetchRemoteTrackingBranch(remoteBranch);
+            if (companion !== null) {
+              if (exists && input.force !== true) {
+                const canFastForward = yield* git
+                  .execute({
+                    operation,
+                    cwd: input.cwd,
+                    args: ["merge-base", "--is-ancestor", `refs/heads/${localBranch}`, tracking],
+                  })
+                  .pipe(
+                    Effect.as(true),
+                    Effect.orElseSucceed(() => false),
+                  );
+                if (!canFastForward)
+                  return yield* error(
+                    "checkoutChangeRequest",
+                    input.cwd,
+                    `Local branch ${localBranch} has commits pull request #${pull.number} does not. Rename it, or check out with force to replace it.`,
+                  );
+              }
+              // Pin the private route before writing a local ref that contains private commits.
               yield* git.writeConfigValue({
                 cwd: input.cwd,
                 key: `branch.${localBranch}.pushRemote`,
                 value: remoteBranch.remoteName,
               });
+            }
+            if (input.force === true)
+              yield* git.execute({
+                operation,
+                cwd: input.cwd,
+                args: ["checkout", "--no-track", "-B", localBranch, tracking, "--"],
+              });
+            else if (!exists) {
+              if (companion !== null)
+                yield* git.createBranch({
+                  cwd: input.cwd,
+                  branch: localBranch,
+                  startPoint: tracking,
+                });
+              else yield* git.fetchRemoteBranch({ ...remoteBranch, localBranch });
+            }
             yield* Effect.scoped(git.switchRef({ cwd: input.cwd, refName: localBranch }));
+            if (companion !== null && exists && input.force !== true)
+              yield* git.execute({
+                operation,
+                cwd: input.cwd,
+                args: ["merge", "--ff-only", tracking],
+              });
+            yield* git.setBranchUpstream({ ...remoteBranch, branch: localBranch });
             return;
           }
           // A fork's head, or one synced from GitHub, is only reachable through its pull ref.

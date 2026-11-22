@@ -207,6 +207,7 @@ function useEditQueuedRunCommand() {
 export function useQueuedRunEdit(input: {
   readonly environmentId: EnvironmentId;
   readonly routeThreadRef: ScopedThreadRef;
+  readonly currentRouteThreadKeyRef: { readonly current: string | null };
   readonly threadDraftTarget: ComposerThreadTarget;
   readonly activeThreadId: ThreadId | null;
   readonly serverProjection: ThreadStructure | null;
@@ -216,6 +217,7 @@ export function useQueuedRunEdit(input: {
   const {
     environmentId,
     routeThreadRef,
+    currentRouteThreadKeyRef,
     threadDraftTarget,
     activeThreadId,
     serverProjection,
@@ -247,7 +249,9 @@ export function useQueuedRunEdit(input: {
         }));
 
   const focusComposerSoon = () => {
-    window.requestAnimationFrame(() => composerRef.current?.focusAtEnd());
+    window.requestAnimationFrame(() => {
+      if (currentRouteThreadKeyRef.current === editKey) composerRef.current?.focusAtEnd();
+    });
   };
   const clearEditDraft = (runId: RunId) => {
     const target = queuedRunEditDraftId(routeThreadRef, runId);
@@ -461,10 +465,12 @@ export function useQueuedRunEdit(input: {
     if (error !== null) return;
     if (changedAfterSave) return;
     releaseDraftAttachments(newAttachments);
-    promptRef.current = "";
     clearEditDraft(editing.runId);
-    composerRef.current?.resetCursorState();
-    focusComposerSoon();
+    if (currentRouteThreadKeyRef.current === editKey) {
+      promptRef.current = "";
+      composerRef.current?.resetCursorState();
+      focusComposerSoon();
+    }
     // A plain submit means "Update queued message"; only the opposite-action shortcut or
     // modifier-click asks to steer, as it does for a new follow-up.
     if (submission?.submissionIntent === "alternate" && submission.dispatchMode === "steer") {

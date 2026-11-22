@@ -779,6 +779,32 @@ export const layer: Layer.Layer<
                 })),
               )
             : Effect.succeed([]);
+        const guard = input.writeIfRunCurrent;
+        const restoreHandoffsWhileCurrent = Effect.fnUntraced(function* (
+          events: ReadonlyArray<OrchestrationV2DomainEvent>,
+        ) {
+          if (events.length === 0 || guard === undefined) return false;
+          const restore = (expectedStatus: OrchestrationV2Run["status"]) =>
+            eventSink.writeIfRunCurrent({
+              threadId: input.run.threadId,
+              runId: input.run.id,
+              activeAttemptId: guard.activeAttemptId,
+              expectedStatus,
+              ...(expectedStatus === "interrupted"
+                ? {
+                    withoutNewerProviderRun: {
+                      providerThreadId: input.providerThread.id,
+                      runOrdinal: input.run.ordinal,
+                    },
+                  }
+                : {}),
+              events,
+            });
+          const current = yield* restore(guard.expectedStatus);
+          if (current.committed || guard.expectedStatus !== "running") return current.committed;
+          // Stop can settle this attempt before its provider reports the dropped prompt.
+          return (yield* restore("interrupted")).committed;
+        });
         const shouldFinalizeRun =
           input.shouldFinalizeRun === undefined ? true : yield* input.shouldFinalizeRun();
         if (!shouldFinalizeRun) {
@@ -811,14 +837,14 @@ export const layer: Layer.Layer<
                   },
                 ]
               : [];
-          const earlyEvents = [...unpairedInterruptEvents, ...restoredHandoffEvents];
-          if (earlyEvents.length > 0) {
+          const restored = yield* restoreHandoffsWhileCurrent(restoredHandoffEvents);
+          if (unpairedInterruptEvents.length > 0) {
             yield* eventSink.writeWithEffects({
               effects: [],
-              events: earlyEvents,
+              events: unpairedInterruptEvents,
             });
-            yield* input.refreshAfterTurn;
           }
+          if (restored || unpairedInterruptEvents.length > 0) yield* input.refreshAfterTurn;
           return false;
         }
         const reason =
@@ -1037,13 +1063,13 @@ export const layer: Layer.Layer<
             ...restoredHandoffEvents,
           ],
         } satisfies Parameters<typeof eventSink.writeWithEffects>[0];
-        if (input.writeIfRunCurrent !== undefined) {
+        if (guard !== undefined) {
           const result = yield* eventSink.writeIfRunCurrent({
             threadId: input.run.threadId,
             runId: input.run.id,
-            activeAttemptId: input.writeIfRunCurrent.activeAttemptId,
-            expectedStatus: input.writeIfRunCurrent.expectedStatus,
-            ...(input.writeIfRunCurrent.unlessInterruptRequested === true
+            activeAttemptId: guard.activeAttemptId,
+            expectedStatus: guard.expectedStatus,
+            ...(guard.unlessInterruptRequested === true
               ? {
                   unlessInterruptRequested: {
                     requestId: idAllocator.derive.runSignalTurnItem({
@@ -1061,11 +1087,7 @@ export const layer: Layer.Layer<
             effects: finalization.effects,
           });
           if (!result.committed) {
-            if (restoredHandoffEvents.length > 0) {
-              yield* eventSink.writeWithEffects({
-                effects: [],
-                events: restoredHandoffEvents,
-              });
+            if (yield* restoreHandoffsWhileCurrent(restoredHandoffEvents)) {
               yield* input.refreshAfterTurn;
             }
             return false;
@@ -2149,17 +2171,21 @@ export const layer: Layer.Layer<
                             // A failed interrupt leaves the stored turn running so the next start
                             // retries it. The snapshot is cached before it is published, so it may
                             // not be stored: replay a terminal one as-is.
-                            Effect.map((interrupted) =>
-                              !interrupted || rootProviderTurn === null
-                                ? null
-                                : isTerminalProviderTurnStatus(rootProviderTurn.status)
+                            Effect.map((interrupted) => {
+                              if (rootProviderTurn === null) return null;
+                              if (isTerminalProviderTurnStatus(rootProviderTurn.status)) {
+                                return interrupted || rootProviderTurn.promptDropped === true
                                   ? rootProviderTurn
-                                  : {
-                                      ...rootProviderTurn,
-                                      status: "interrupted" as const,
-                                      completedAt,
-                                    },
-                            ),
+                                  : null;
+                              }
+                              return interrupted
+                                ? {
+                                    ...rootProviderTurn,
+                                    status: "interrupted" as const,
+                                    completedAt,
+                                  }
+                                : null;
+                            }),
                           )
                       : null;
                   const latestItemOrdinal = yield* Ref.get(latestTurnItemOrdinal);

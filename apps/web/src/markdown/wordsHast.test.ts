@@ -1,3 +1,5 @@
+import { shouldPreserveAssistantLineBreaks } from "@t3tools/shared/assistantInsights";
+import { decodeMarkdownLinkEscapes } from "./markdownText";
 import type { Element, Root } from "hast";
 import { toHtml } from "hast-util-to-html";
 import { describe, expect, it } from "vite-plus/test";
@@ -204,6 +206,17 @@ describe("wordsHast", () => {
     expect(slices).toEqual(["[a](u)", "- [ ] task", "```sh\nls\n```", "-      [b](./b.ts)"]);
   });
 
+  it("preserves line breaks for both insight opener spellings", () => {
+    expect(shouldPreserveAssistantLineBreaks("`★ Insight ───`\nFirst\nSecond\n───")).toBe(true);
+    expect(shouldPreserveAssistantLineBreaks("★ Insight ───\nFirst\nSecond\n───")).toBe(true);
+  });
+
+  it("decodes link destinations without expanding escaped ampersands", () => {
+    expect(decodeMarkdownLinkEscapes("docs/a\\&amp;.ts")).toBe("docs/a&amp;.ts");
+    expect(decodeMarkdownLinkEscapes("docs/a&amp;b.ts")).toBe("docs/a&b.ts");
+    expect(decodeMarkdownLinkEscapes("C:\\path\\a&amp;b.ts")).toBe("C:\\path\\a&b.ts");
+  });
+
   it("renders insight blocks as remarkAssistantInsights did", () => {
     const markdown =
       "Intro\n\n`★ Insight ─────────────────────────────────────`\n- one\n- two\n`─────────────────────────────────────────────────`\n\nAfter\n\n```\n★ Insight ─────\n```";
@@ -245,6 +258,13 @@ describe("wordsHast", () => {
       /^Plan one x two <span[^>]* data-markdown-math="inline"[^>]*><svg [^>]*aria-label="a"/,
     );
     expect(wordsHtml("x".repeat(30), options)).toBe("x".repeat(24));
+    expect(wordsHtml("$a$" + "x".repeat(30), options)).toMatch(/<\/span>x{23}$/);
+    expect(
+      wordsHtml("$xyz$ more", {
+        math: true,
+        extensions: { preview: { maxLength: 2, fallback: "Empty" } },
+      }),
+    ).toBe("Empty");
     expect(wordsHtml("<!-- only -->", options)).toBe("Thinking");
   });
 
@@ -328,6 +348,11 @@ describe("wordsHast", () => {
       '<p dir="ltr">Status<br>\n<img src="https://x.dev/b.png"><br>\ncontinues</p>',
     ],
     [
+      "Intro\n![shot](https://x.dev/a.png)  \nNext",
+      '<p dir="ltr">Intro<br>\n<img src="https://x.dev/a.png" alt="shot"><br>\nNext</p>',
+      '<p dir="ltr">Intro<br>\n<img src="https://x.dev/a.png" alt="shot"><br>\nNext</p>',
+    ],
+    [
       "Hard  \nbreak and a\\\nbackslash",
       '<p dir="ltr">Hard<br>\nbreak and a<br>\nbackslash</p>',
       '<p dir="ltr">Hard<br>\nbreak and a<br>\nbackslash</p>',
@@ -339,6 +364,12 @@ describe("wordsHast", () => {
       expect(wordsHtml(markdown, { breaks: true })).toBe(withBreaks);
     },
   );
+
+  it("keeps explicit table sections beside the implicit body", () => {
+    expect(
+      wordsHtml("<table><tr><td>Row</td></tr><tfoot><tr><td>Foot</td></tr></tfoot></table>"),
+    ).toContain("<tbody><tr><td>Row</td></tr></tbody><tfoot><tr><td>Foot</td></tr></tfoot>");
+  });
 
   it("reads raw HTML attributes as an HTML parser does", () => {
     expect(wordsHtml('<a href="https://x.dev/?q=1&copy=2&amp;b">x</a>')).toContain(
@@ -369,12 +400,37 @@ describe("wordsHast", () => {
     ).toEqual(["pick {a} or [b]"]);
   });
 
+  it("resolves both color-scheme sources on the pull request forge", () => {
+    const html = wordsHtml(
+      '<picture><source media="(prefers-color-scheme: dark)" srcset="/api/attachments/2"><source media="(prefers-color-scheme: light)" srcset="/api/attachments/3"><img src="/api/attachments/1" alt="Screenshot"></picture>',
+      {
+        extensions: {
+          changeRequest: { repositoryUrl: "https://github.com/octo/project", autolinks: null },
+        },
+      },
+    );
+    expect(html).toContain('data-dark-src="https://github.com/api/attachments/2"');
+    expect(html).toContain('data-light-src="https://github.com/api/attachments/3"');
+  });
+
+  it("counts the rendered whitespace in a preview budget", () => {
+    expect(
+      toHtml(
+        wordsHast("A    **B**", {
+          ...ASSISTANT,
+          extensions: { preview: { maxLength: 3, fallback: "empty" } },
+        }),
+      ),
+    ).toBe("A B");
+  });
+
   it.each([
     ["# Title\n[a]: https://x.dev", ["[a]: <https://x.dev>"]],
     ['> [a]:\n> https://x.dev "The\n> guide"', ['[a]: <https://x.dev> "The guide"']],
     ["- [a]: https://x.dev\n\n[A]: https://second.dev", ["[a]: <https://x.dev>"]],
     ["<div>\n[a]: https://x.dev\n</div>", []],
     ["- ```\n  [a]: https://x.dev\n  ```", []],
+    ["[a]\n\n[a]: https://x.dev\n\n```\ncode", ["[a]: <https://x.dev>"]],
     ["text\n[a]: https://x.dev", []],
   ])("finds the reference definitions in %j as Words reads them", (markdown, definitions) => {
     expect(markdownReferenceDefinitions(markdown)).toEqual(definitions);

@@ -5123,7 +5123,8 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         const companionDir = yield* createBareRemote();
         yield* runGit(repoDir, ["remote", "add", "origin", originDir]);
         yield* runGit(repoDir, ["push", "-u", "origin", "main"]);
-        yield* runGit(repoDir, ["checkout", "-b", "sec/fix"]);
+        yield* runGit(repoDir, ["push", "origin", "main:refs/heads/release"]);
+        yield* runGit(repoDir, ["checkout", "-b", "sec/fix", "--track", "origin/release"]);
         NodeFS.writeFileSync(NodePath.join(repoDir, "fix.txt"), "fix\n");
         yield* runGit(repoDir, ["add", "fix.txt"]);
         yield* runGit(repoDir, ["commit", "-m", "Fix"]);
@@ -5149,7 +5150,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         const unsupported = yield* makeManager({ providerScenario: { prListSequence: [[]] } });
         const refused = yield* Effect.flip(createPrivate(unsupported.manager));
         expect(refused.message).toContain("has no private pull requests");
-        expect(yield* heads("origin")).toEqual(["refs/heads/main"]);
+        expect(yield* heads("origin")).toEqual(["refs/heads/main", "refs/heads/release"]);
         expect(created(unsupported.providerCalls)).toEqual([]);
 
         const privateRemote = { url: companionDir, repository: "pingdotgg/codething-mvp.private" };
@@ -5157,7 +5158,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
           number: 9,
           title: "Fix",
           url: "https://source.tanstack.com/@pingdotgg/codething-mvp/pull/9",
-          baseRefName: "main",
+          baseRefName: "release",
           headRefName: "sec/fix",
           headRepositoryNameWithOwner: privateRemote.repository,
         };
@@ -5169,7 +5170,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
           number: 9,
         });
         expect(yield* heads(companionDir)).toEqual(["refs/heads/sec/fix"]);
-        expect(yield* heads("origin")).toEqual(["refs/heads/main"]);
+        expect(yield* heads("origin")).toEqual(["refs/heads/main", "refs/heads/release"]);
         // The branch tracks the companion, which is how status finds its pull request.
         expect(
           (yield* runGit(repoDir, [
@@ -5185,7 +5186,13 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
           supported.providerCalls.flatMap((call) =>
             call.operation === "createChangeRequest" ? [call] : [],
           ),
-        ).toMatchObject([{ baseRefName: "main", headSelector: "sec/fix", private: true }]);
+        ).toMatchObject([{ baseRefName: "release", headSelector: "sec/fix", private: true }]);
+
+        const retry = yield* makeManager({
+          providerScenario: { privateRemote, prListSequence: [[], [open]] },
+        });
+        yield* createPrivate(retry.manager);
+        expect(created(retry.providerCalls)).toMatchObject([{ baseRefName: "release" }]);
 
         // Later commits follow the recorded push remote.
         NodeFS.writeFileSync(NodePath.join(repoDir, "late.txt"), "late\n");
@@ -5202,7 +5209,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         expect(
           (yield* runGit(repoDir, ["ls-remote", companionDir, "refs/heads/sec/fix"])).stdout,
         ).toContain(localHead);
-        expect(yield* heads("origin")).toEqual(["refs/heads/main"]);
+        expect(yield* heads("origin")).toEqual(["refs/heads/main", "refs/heads/release"]);
         expect(created(again.providerCalls)).toEqual([]);
 
         // A lookup answered before the create must not hide the pull request the create returns.
@@ -5235,7 +5242,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
             body: "Body",
           }),
         );
-        expect(yield* heads("origin")).toEqual(["refs/heads/main"]);
+        expect(yield* heads("origin")).toEqual(["refs/heads/main", "refs/heads/release"]);
       }),
   );
 

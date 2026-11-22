@@ -19,6 +19,7 @@ import * as FiberHandle from "effect/FiberHandle";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import type * as EffectAcpErrors from "effect-acp/errors";
@@ -249,13 +250,20 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
       thinkingLevels.set(model.currentValue, antigravityThinkingConfig(configOptions) ?? null);
     }
   };
-  const rememberRuntimeModes = Effect.fn("AntigravityProvider.rememberRuntimeModes")(function* (
-    previous: ReadonlyArray<RuntimeMode> | undefined,
-    next: ReadonlyArray<RuntimeMode>,
-  ) {
-    if (options.rememberRuntimeModes && previous?.join() !== next.join()) {
-      yield* options.rememberRuntimeModes(next);
-    }
+  const runtimeModesWriteGate = yield* Semaphore.make(1);
+  let rememberedRuntimeModes = initialDraft.supportedRuntimeModes;
+  const rememberRuntimeModes = Effect.fn("AntigravityProvider.rememberRuntimeModes")(function* () {
+    const remember = options.rememberRuntimeModes;
+    if (!remember) return;
+    yield* runtimeModesWriteGate.withPermit(
+      Effect.gen(function* () {
+        const { draft } = yield* SubscriptionRef.get(metadata);
+        const current = draft.supportedRuntimeModes;
+        if (!current || rememberedRuntimeModes?.join() === current.join()) return;
+        yield* remember(current);
+        rememberedRuntimeModes = current;
+      }),
+    );
   });
   const getSnapshot = SubscriptionRef.get(metadata).pipe(
     Effect.flatMap((state) => options.stampIdentity(state.draft)),
@@ -412,12 +420,12 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
     const supportsTextGeneration = yield* options.supportsTextGeneration;
     const updatedAt = DateTime.formatIso(yield* DateTime.now);
     const supportedRuntimeModes = antigravityRuntimeModes(started.sessionSetupResult);
-    const previousModes = yield* SubscriptionRef.modify(metadata, (state) => {
+    const accepted = yield* SubscriptionRef.modify(metadata, (state) => {
       if (
         state.authRevision !== before.authRevision &&
         state.draft.auth.status === "unauthenticated"
       ) {
-        return [supportedRuntimeModes, state] as const;
+        return [false, state] as const;
       }
       const { message: _previousMessage, ...draft } = state.draft;
       const workspaces = draft.workspaceSnapshots ?? [];
@@ -453,9 +461,9 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
             : {}),
         },
       } satisfies AntigravityProviderState;
-      return [draft.supportedRuntimeModes, next] as const;
+      return [true, next] as const;
     });
-    yield* rememberRuntimeModes(previousModes, supportedRuntimeModes);
+    if (accepted) yield* rememberRuntimeModes();
     if (!before.draft.usageLimits || before.draft.usageLimits.unavailable) yield* refreshUsage();
   });
 
@@ -509,30 +517,31 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
     yield* resetUsage;
     if (!settings.enabled) return;
     const updatedAt = DateTime.formatIso(yield* DateTime.now);
-    const previousModes = yield* SubscriptionRef.modify(metadata, (state) => [
-      state.draft.supportedRuntimeModes,
-      {
-        authRevision: state.authRevision + 1,
-        draft: {
-          ...state.draft,
-          auth: {
-            status: "unauthenticated",
-            ...(usesCredentials ? options.auth : {}),
+    yield* SubscriptionRef.update(
+      metadata,
+      (state) =>
+        ({
+          authRevision: state.authRevision + 1,
+          draft: {
+            ...state.draft,
+            auth: {
+              status: "unauthenticated",
+              ...(usesCredentials ? options.auth : {}),
+            },
+            status: "warning",
+            message: signInMessage,
+            checkedAt: updatedAt,
+            models: [],
+            slashCommands: [],
+            skills: [],
+            workspaceSnapshots: [],
+            supportedRuntimeModes: RUNTIME_MODES_WITHOUT_AUTO,
+            supportsTextGeneration: false,
+            usageLimits: undefined,
           },
-          status: "warning",
-          message: signInMessage,
-          checkedAt: updatedAt,
-          models: [],
-          slashCommands: [],
-          skills: [],
-          workspaceSnapshots: [],
-          supportedRuntimeModes: RUNTIME_MODES_WITHOUT_AUTO,
-          supportsTextGeneration: false,
-          usageLimits: undefined,
-        },
-      } satisfies AntigravityProviderState,
-    ]);
-    yield* rememberRuntimeModes(previousModes, RUNTIME_MODES_WITHOUT_AUTO);
+        }) satisfies AntigravityProviderState,
+    );
+    yield* rememberRuntimeModes();
     discoveredSkills.clear();
     thinkingLevels.clear();
   });

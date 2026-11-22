@@ -207,6 +207,7 @@ interface ComposerSendInput {
   readonly activeThread: EnvironmentThreadShell | undefined;
   readonly activeThreadKey: string | null;
   readonly activeThreadBranch: string | null;
+  readonly readCurrentSendBranch: (routeKey: string) => { readonly branch: string | null } | null;
   readonly activeProject: EnvironmentProject | null;
   readonly activeProjectIsScratch: boolean;
   readonly activeProjectDefaultModelSelection: ModelSelection | null;
@@ -309,7 +310,8 @@ export function useComposerSend(input: ComposerSendInput) {
     draftThread,
     activeThread,
     activeThreadKey,
-    activeThreadBranch,
+    activeThreadBranch: initialActiveThreadBranch,
+    readCurrentSendBranch,
     activeProject,
     activeProjectIsScratch,
     activeProjectDefaultModelSelection,
@@ -428,6 +430,7 @@ export function useComposerSend(input: ComposerSendInput) {
     },
   ) => {
     e?.preventDefault();
+    let activeThreadBranch = initialActiveThreadBranch;
     // What the user pressed send on; uploads below can take a while, and a redirect must not
     // decline approvals for a draft that changed meanwhile.
     let promptAtSend = detachedOverride ? detachedOverride.prompt : promptRef.current;
@@ -552,6 +555,8 @@ export function useComposerSend(input: ComposerSendInput) {
     const heldForImages = directAnnotation ? null : holdComposerSend(composerDraftTarget);
     if (heldForImages) {
       if ((await heldForImages).status === "cancelled") return;
+      const latestBranch = readCurrentSendBranch(routeThreadKey);
+      if (latestBranch !== null) activeThreadBranch = latestBranch.branch;
       const draftAfterHold = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
       if (!draftAfterHold) return;
       // A dictation sent after leaving the thread carries its transcript outside the draft.
