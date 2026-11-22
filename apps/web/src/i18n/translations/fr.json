@@ -7542,6 +7542,7 @@
   "cfa4521f8239a22f": "Composer les formules LaTeX, comme $x^2$ ou \\[x^2\\], dans les messages et les aperçus Markdown. La zone de saisie garde la source TeX modifiable.",
   "14a7693909929fde": "Réinitialiser le rendu des mathématiques à la valeur par défaut",
   "eeca51fe648d9317": "Afficher les formules",
+  "b442d0806fb59405": "Replier les encadrés Insight de Claude",
   "5f5df3703ab56499": "Définissez la vitesse d’ouverture et de fermeture des panneaux.",
   "afa318f40bb22567": "Durée d’animation des panneaux",
   "cda243654f5bf0a7": "Réinitialiser les animations des panneaux à la valeur par défaut",

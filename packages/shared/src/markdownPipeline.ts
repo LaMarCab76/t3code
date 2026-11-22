@@ -599,61 +599,142 @@ function remarkNormalizeLinksAndTagInlineCode() {
   };
 }
 
+export function shouldPreserveAssistantLineBreaks(text: string): boolean {
+  return /^★ Insight(?:\s|─)/mu.test(text);
+}
+
+function rewriteAssistantInsights(source: string, tree: Root) {
+  const protectedRanges: { start: number; end: number; code: boolean }[] = [];
+  const inspect = (node: RootContent | PhrasingContent) => {
+    const start = node.position?.start.offset;
+    const end = node.position?.end.offset;
+    if (start !== undefined && end !== undefined) {
+      const code =
+        node.type === "code" ||
+        node.type === "html" ||
+        (node.type === "inlineCode" && node.position?.start.line !== node.position?.end.line);
+      if (code || node.type === "list" || node.type === "blockquote")
+        protectedRanges.push({ start, end, code });
+    }
+    if ("children" in node) node.children.forEach(inspect);
+  };
+  tree.children.forEach(inspect);
+  const blocks: Array<{
+    line: number;
+    indent: string;
+    start: number;
+    bodyStart: number;
+    bodyEnd?: number;
+    end?: number;
+  }> = [];
+  const offsets: { original: number; rewritten: number; prefix: number }[] = [];
+  let open: (typeof blocks)[number] | undefined;
+  let original = 0;
+  let rewritten = 0;
+  const lines = source.split(/(?<=\n)|(?<=\r)(?!\n)/u).map((line, index) => {
+    const value = line.replace(/[\r\n]+$/u, "");
+    const blocked = protectedRanges.some(
+      (range) => original >= range.start && original < range.end && (!open || range.code),
+    );
+    const opening =
+      !open && !blocked ? /^( {0,3})(`?)★ Insight[ \t]+─{3,}\2[ \t]*$/u.exec(value) : null;
+    const closing = open && !blocked ? /^( {0,3})(`?)─{3,}\2[ \t]*$/u.exec(value) : null;
+    let prefix = 0;
+    let output = line;
+    if (opening) {
+      open = {
+        line: index + 1,
+        indent: opening[1] ?? "",
+        start: original,
+        bodyStart: original + line.length,
+      };
+      blocks.push(open);
+      output = ">" + line.slice(value.length);
+    } else if (open && closing && closing[1] === open.indent) {
+      open.bodyEnd = original;
+      open.end = original + line.length;
+      open = undefined;
+      output = line.slice(value.length);
+    } else if (open) {
+      prefix = 2;
+      output = "> " + line;
+    }
+    offsets.push({ original, rewritten, prefix });
+    original += line.length;
+    rewritten += output.length;
+    return output;
+  });
+  return { blocks, lines, offsets };
+}
+
+const assistantInsightParser = unified().use(remarkParse).use(remarkGfm).freeze();
+
+type AssistantInsightSegment =
+  | { readonly kind: "markdown"; readonly markdown: string; readonly sourceOffset: number }
+  | {
+      readonly kind: "insight";
+      readonly body: string;
+      readonly preview: string;
+      readonly sourceOffset: number;
+    };
+
+export function splitAssistantInsights(source: string): ReadonlyArray<AssistantInsightSegment> {
+  if (!source.includes("★ Insight"))
+    return [{ kind: "markdown", markdown: source, sourceOffset: 0 }];
+  const { blocks } = rewriteAssistantInsights(source, assistantInsightParser.parse(source));
+  const segments: AssistantInsightSegment[] = [];
+  let offset = 0;
+  for (const block of blocks) {
+    if (block.end === undefined || block.bodyEnd === undefined) continue;
+    if (offset < block.start) {
+      segments.push({
+        kind: "markdown",
+        markdown: source.slice(offset, block.start),
+        sourceOffset: offset,
+      });
+    }
+    const body = source.slice(block.bodyStart, block.bodyEnd);
+    segments.push({
+      kind: "insight",
+      body,
+      preview: firstInsightParagraph(assistantInsightParser.parse(body))
+        .replace(/\s+/g, " ")
+        .trim(),
+      sourceOffset: block.start,
+    });
+    offset = block.end;
+  }
+  if (offset < source.length || segments.length === 0) {
+    segments.push({ kind: "markdown", markdown: source.slice(offset), sourceOffset: offset });
+  }
+  return segments;
+}
+
+function firstInsightParagraph(node: Root | RootContent | PhrasingContent): string {
+  if (node.type === "paragraph" || node.type === "heading") {
+    const text = (child: PhrasingContent): string => {
+      if (child.type === "text" || child.type === "inlineCode") return child.value;
+      if (child.type === "break") return " ";
+      return "children" in child ? child.children.map(text).join("") : "";
+    };
+    return node.children.map(text).join("");
+  }
+  if ("children" in node) {
+    for (const child of node.children) {
+      const preview = firstInsightParagraph(child);
+      if (preview.trim()) return preview;
+    }
+  }
+  return "";
+}
+
 export function remarkAssistantInsights(this: Processor) {
   return (tree: Root, file: { value: unknown }) => {
     const source = String(file.value);
     if (!source.includes("★ Insight")) return;
-    const protectedRanges: { start: number; end: number; code: boolean }[] = [];
-    const inspect = (node: RootContent | PhrasingContent) => {
-      const start = node.position?.start.offset;
-      const end = node.position?.end.offset;
-      if (start !== undefined && end !== undefined) {
-        const code =
-          node.type === "code" ||
-          node.type === "html" ||
-          (node.type === "inlineCode" && node.position?.start.line !== node.position?.end.line);
-        if (code || node.type === "list" || node.type === "blockquote")
-          protectedRanges.push({ start, end, code });
-      }
-      if ("children" in node) node.children.forEach(inspect);
-    };
-    tree.children.forEach(inspect);
-    const starts = new Set<number>();
-    const offsets: { original: number; rewritten: number; prefix: number }[] = [];
-    let indent: string | undefined;
-    let original = 0;
-    let rewritten = 0;
-    const lines = source.split(/(?<=\n)|(?<=\r)(?!\n)/u).map((line, index) => {
-      const value = line.replace(/[\r\n]+$/u, "");
-      const blocked = protectedRanges.some(
-        (range) =>
-          original >= range.start && original < range.end && (indent === undefined || range.code),
-      );
-      const opening =
-        indent === undefined && !blocked
-          ? /^( {0,3})(`?)★ Insight[ \t]+─{3,}\2[ \t]*$/u.exec(value)
-          : null;
-      const closing =
-        indent !== undefined && !blocked ? /^( {0,3})(`?)─{3,}\2[ \t]*$/u.exec(value) : null;
-      let prefix = 0;
-      let output = line;
-      if (opening) {
-        indent = opening[1] ?? "";
-        starts.add(index + 1);
-        output = ">" + line.slice(value.length);
-      } else if (closing && closing[1] === indent) {
-        indent = undefined;
-        output = line.slice(value.length);
-      } else if (indent !== undefined) {
-        prefix = 2;
-        output = "> " + line;
-      }
-      offsets.push({ original, rewritten, prefix });
-      original += line.length;
-      rewritten += output.length;
-      return output;
-    });
-    if (starts.size === 0) return;
+    const { blocks, lines, offsets } = rewriteAssistantInsights(source, tree);
+    if (blocks.length === 0) return;
+    const endsByLine = new Map(blocks.map((block) => [block.line, block.end]));
     const parsed = this.parse(lines.join("")) as Root;
     const restorePosition = (node: RootContent | PhrasingContent) => {
       if (node.position) {
@@ -668,8 +749,16 @@ export function remarkAssistantInsights(this: Processor) {
       if ("children" in node) node.children.forEach(restorePosition);
     };
     for (const node of parsed.children) {
-      if (node.type === "blockquote" && starts.has(node.position?.start.line ?? 0)) {
-        node.data = { ...node.data, hProperties: { dataAlert: "insight" } };
+      if (node.type === "blockquote" && endsByLine.has(node.position?.start.line ?? 0)) {
+        node.data = {
+          ...node.data,
+          hProperties: {
+            dataAlert: "insight",
+            ...(endsByLine.get(node.position?.start.line ?? 0) !== undefined
+              ? { dataInsightComplete: "" }
+              : {}),
+          },
+        };
       }
       restorePosition(node);
     }

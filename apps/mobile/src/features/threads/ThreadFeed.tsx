@@ -189,7 +189,7 @@ import { FONT_FAMILIES } from "../../lib/fontFamilies";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { downloadAndShareAttachment } from "../../lib/attachmentDownload";
-import { splitMarkdownDetails } from "../../lib/markdownDetails";
+import { splitAssistantMarkdownFolds } from "../../lib/markdownDetails";
 import { markdownReferenceDefinitions, withReferenceDefinitions } from "../../lib/markdownDocument";
 import { hasWideMarkdownBlock } from "../../lib/wideMarkdownBlocks";
 import {
@@ -1429,8 +1429,8 @@ function AssistantMarkdownBlocks(props: {
 }) {
   const m = useMessages();
   const { blocks, definitions } = useMemo(() => {
-    const blocks = splitMarkdownDetails(props.markdown, m).map((block) =>
-      block.kind === "details"
+    const blocks = splitAssistantMarkdownFolds(props.markdown, m).map((block) =>
+      block.kind !== "markdown"
         ? block
         : { ...block, segments: splitCodexArtifactTemplateMarkdown(block.markdown) },
     );
@@ -1443,12 +1443,14 @@ function AssistantMarkdownBlocks(props: {
     };
   }, [m, props.markdown, props.definitions]);
   return blocks.map((block, blockIndex) => {
-    if (block.kind === "details") {
+    if (block.kind !== "markdown") {
       return (
         <MarkdownDetailsFold
-          key={`details:${block.sourceOffset}`}
-          summary={block.summary}
-          initiallyOpen={block.open}
+          key={`${block.kind}:${block.sourceOffset}`}
+          summary={block.kind === "details" ? block.summary : m(msg("Insight"))}
+          {...(block.kind === "details"
+            ? { initiallyOpen: block.open }
+            : { insightPreview: block.preview })}
         >
           <AssistantMarkdownBlocks
             {...props}
@@ -1499,22 +1501,29 @@ function AssistantMarkdownBlocks(props: {
 
 function MarkdownDetailsFold(props: {
   readonly summary: string;
-  readonly initiallyOpen: boolean;
+  readonly initiallyOpen?: boolean;
+  readonly insightPreview?: string;
   readonly children: ReactNode;
 }) {
-  const [expanded, setExpanded] = useState(props.initiallyOpen);
+  const { assistantInsightsCollapsed } = useAppearancePreferences();
+  const [openOverride, setOpenOverride] = useState<boolean>();
+  const expanded = openOverride ?? props.initiallyOpen ?? !assistantInsightsCollapsed;
+  const preview = expanded ? undefined : props.insightPreview;
   const iconSubtleColor = useUniwindTheme()["--color-icon-subtle"];
   return (
     <View className="my-2 border-y border-border">
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={props.summary}
+        accessibilityLabel={preview ? `${props.summary}. ${preview}` : props.summary}
         accessibilityState={{ expanded }}
         hitSlop={4}
-        className="min-h-10 flex-row items-center gap-2 py-2"
+        className={cn(
+          "flex-row items-center gap-2 py-2",
+          props.insightPreview === undefined ? "min-h-10" : "min-h-[44px] android:min-h-[48px]",
+        )}
         onPress={() => {
           void Haptics.selectionAsync();
-          setExpanded((value) => !value);
+          setOpenOverride(!expanded);
         }}
       >
         <ThreadDisclosureChevron
@@ -1526,6 +1535,11 @@ function MarkdownDetailsFold(props: {
         <Text className="min-w-0 shrink font-t3-medium text-sm text-foreground">
           {props.summary}
         </Text>
+        {preview ? (
+          <Text numberOfLines={1} className="min-w-0 flex-1 text-sm text-muted-foreground">
+            {preview}
+          </Text>
+        ) : null}
       </Pressable>
       {expanded ? <View className="pb-3 pl-5">{props.children}</View> : null}
     </View>

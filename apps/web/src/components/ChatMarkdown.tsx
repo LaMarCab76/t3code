@@ -224,6 +224,7 @@ import { MarkdownFileLink } from "./chat/MarkdownFileLink";
 import { canUseMarkdownFileShellActions } from "./chat/MarkdownFileLink.logic";
 import { handleMarkdownFragmentClick } from "./chat/markdownFragments";
 import { hastHasText, hastPlainTextDeep, plainHastText } from "./chat/markdownHast.logic";
+import { MarkdownInsight } from "./chat/MarkdownInsight";
 import {
   extractCodeBlock,
   extractFenceLanguage,
@@ -1170,9 +1171,20 @@ const CHAT_MARKDOWN_COMPONENTS = {
       </p>
     );
   },
-  blockquote: function MarkdownBlockquote({ node: _node, children, ...props }) {
+  blockquote: function MarkdownBlockquote({ node, children, ...props }) {
     const m = useMessages();
     const alertKind = String((props as Record<string, unknown>)["data-alert"] ?? "");
+    if (alertKind === "insight" && node?.properties.dataInsightComplete !== undefined) {
+      return (
+        <MarkdownInsight
+          node={node}
+          dir={props.dir}
+          label={m(GITHUB_ALERT_PRESENTATIONS.insight!.label)}
+        >
+          {children}
+        </MarkdownInsight>
+      );
+    }
     const alert = GITHUB_ALERT_PRESENTATIONS[alertKind];
     if (!alert) {
       return <blockquote {...props}>{children}</blockquote>;
