@@ -1525,6 +1525,8 @@ const exitWhileIdle = (options: {
         yield* worker.drain();
         const beforeExit = yield* orchestrator.getThreadProjection(threadId);
         const firstRun = beforeExit.runs[0]!;
+        const providerSessionId = beforeExit.providerThreads[0]!.providerSessionId!;
+        const originalSession = Option.getOrUndefined(yield* sessions.get(providerSessionId));
         assert.deepEqual(
           beforeExit.providerThreads[0]?.pendingBackgroundTasks?.map((task) => [
             task.taskId,
@@ -1577,6 +1579,14 @@ const exitWhileIdle = (options: {
           yield* TestClock.adjust("1 second");
         }
         yield* Fiber.join(recorded);
+        if (options.failFirstLossWrite) {
+          assert.isDefined(originalSession);
+          assert.strictEqual(
+            Option.getOrUndefined(yield* sessions.get(providerSessionId)),
+            originalSession,
+            "retry must keep the original provider session",
+          );
+        }
         yield* worker.drain();
 
         const afterExit = yield* orchestrator.getThreadProjection(threadId);
