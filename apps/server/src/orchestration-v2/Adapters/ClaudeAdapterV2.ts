@@ -7136,6 +7136,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             readonly status?: OrchestrationV2ProviderThread["status"];
             /** The process exited on its own, taking work whose outcome had not reached the agent. */
             readonly exitedUnexpectedly?: boolean;
+            readonly emitRoster?: boolean;
+            readonly sourceRunId?: RunId;
           },
         ) {
           const roster = rosterForNativeThread(
@@ -7203,10 +7205,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               driver: CLAUDE_PROVIDER,
               threadId: remembered.appThreadId,
               providerThreadId: remembered.id,
+              ...(options?.sourceRunId === undefined ? {} : { sourceRunId: options.sourceRunId }),
               tasks: lostBackgroundTasks,
             });
           }
-          if (!hadRoster && !hadPersistedRoster) {
+          if (options?.emitRoster === false || (!hadRoster && !hadPersistedRoster)) {
             return;
           }
           const activeContext = yield* Ref.get(activeTurn);
@@ -10079,6 +10082,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const subagents = yield* Ref.get(sessionSubagentsByTaskId);
           const buffered = (yield* Ref.get(wakeBuffers)).get(closedQuery.nativeThreadId)?.messages;
           if (current === context) {
+            if (!interrupted)
+              yield* resetBackgroundTaskStateForNativeThreadProcess(closedQuery.nativeThreadId, {
+                exitedUnexpectedly: true,
+                emitRoster: false,
+                sourceRunId: context.input.runId,
+              });
             yield* finalizeActiveTurn({
               context,
               status: interrupted ? "interrupted" : "failed",
@@ -10096,6 +10105,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           } else {
             yield* resetBackgroundTaskStateForNativeThreadProcess(closedQuery.nativeThreadId, {
               exitedUnexpectedly: !interrupted,
+              sourceRunId: context.input.runId,
             });
           }
           // Preserve buffered outcomes before Stop clears the wake buffer.

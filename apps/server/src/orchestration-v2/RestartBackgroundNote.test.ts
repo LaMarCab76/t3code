@@ -308,14 +308,26 @@ it("tells the next completed turn about delegated tasks its Stop interrupted, on
     task("finished", { status: "completed" }),
     task("delivered", { completionDelivery: { state: "delivered", observedByRunId: null } }),
   ];
-  const pending = (runs: ReadonlyArray<OrchestrationV2Run>, providerThreadId = claudeThread) =>
+  const pending = (
+    runs: ReadonlyArray<OrchestrationV2Run>,
+    providerThreadId = claudeThread,
+    slashMessageIds: ReadonlySet<string> = new Set(),
+    droppedRunId?: RunId,
+  ) =>
     pendingStoppedDelegatedTasks({
       providerThreadId,
       runs,
-      providerTurns: runs.map(turnFor),
-      attempts: runs.map((source) => ({ id: source.activeAttemptId!, runId: source.id })),
+      providerTurns: runs.map((source) =>
+        source.id === droppedRunId ? { ...turnFor(source), promptDropped: true } : turnFor(source),
+      ),
+      attempts: runs.map((source) => ({
+        id: source.activeAttemptId!,
+        runId: source.id,
+        attemptOrdinal: 1,
+        reason: "initial",
+      })),
       subagents,
-      compactionMessageIds: new Set(),
+      compactionMessageIds: slashMessageIds,
     });
 
   assert.deepEqual(pending([spawning]), [stopped]);
@@ -326,6 +338,22 @@ it("tells the next completed turn about delegated tasks its Stop interrupted, on
   const racing = run(2, claudeThread, { requestedAt: at(0), startedAt: at(2) });
   assert.deepEqual(pending([spawning, racing]), [stopped]);
   assert.deepEqual(pending([spawning, racing, run(3, claudeThread, { requestedAt: at(2) })]), []);
+  const rolledBack = run(3, claudeThread, { requestedAt: at(2), status: "rolled_back" });
+  assert.deepEqual(pending([spawning, racing, rolledBack]), [stopped]);
+  const slash = run(4, claudeThread, { requestedAt: at(2) });
+  const resumedSlash = run(5, claudeThread, {
+    requestedAt: at(3),
+    manualContinuationOfRunId: slash.id,
+  });
+  assert.deepEqual(
+    pending(
+      [spawning, slash, resumedSlash],
+      claudeThread,
+      new Set([slash.userMessageId]),
+      slash.id,
+    ),
+    [stopped],
+  );
   // A fresh-context turn on another provider thread never carried the note.
   assert.deepEqual(pending([spawning, run(3, codexThread, { requestedAt: at(2) })]), [stopped]);
 });

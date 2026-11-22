@@ -14299,6 +14299,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       yield* Queue.shutdown(harness.sdkMessages);
       assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "failed");
       assert.deepStrictEqual(
+        harness.events.flatMap((event) =>
+          event.type === "background_work.lost" ? event.tasks.map((task) => task.taskId) : [],
+        ),
+        [WAKE_TASK_ID],
+      );
+      assert.deepStrictEqual(
         providerThreadRosterEvents(harness.events)
           .at(-1)
           ?.providerThread.pendingBackgroundTasks?.map((task) => task.taskId) ?? [],

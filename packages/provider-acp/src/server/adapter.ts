@@ -8861,10 +8861,13 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             const timeoutMillis = Duration.toMillis(hold.timeout);
             const isRunningCommand = (tool: AcpToolCallState) =>
               toolStatus(tool.status) === "running" && hold.isCommand(tool);
+            const sequence = context.promptSequence;
+            const stillHolding = () =>
+              !context.finalized && context.promptSettled && context.promptSequence === sequence;
             let quietSince = yield* Clock.currentTimeMillis;
             // Armed even without a command yet: a pending reply can still start one.
             yield* Effect.gen(function* () {
-              while (!context.finalized) {
+              while (stillHolding()) {
                 quietSince = Math.max(quietSince, context.lastProgressAt);
                 const now = yield* Clock.currentTimeMillis;
                 const remaining = quietSince + timeoutMillis - now;
@@ -8873,6 +8876,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                   continue;
                 }
                 if (
+                  stillHolding() &&
                   context.tools.values().some(isRunningCommand) &&
                   !hasDeferredBackgroundWork(context, isRunningCommand)
                 ) {

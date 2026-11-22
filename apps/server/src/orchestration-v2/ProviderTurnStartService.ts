@@ -1064,7 +1064,7 @@ export const layer: Layer.Layer<
         )
         .map((source) => source.id);
       const stoppedTasks =
-        stoppedRunIds.length === 0 || compactionMessageIds().has(run.userMessageId)
+        stoppedRunIds.length === 0 || slashCommand
           ? []
           : pendingStoppedDelegatedTasks({
               providerThreadId: run.providerThreadId,

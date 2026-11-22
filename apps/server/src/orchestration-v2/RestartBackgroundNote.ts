@@ -13,6 +13,7 @@ import {
 } from "@t3tools/contracts";
 import { subagentHoldsCompletion } from "@t3tools/provider-core/server/subagentProjection";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import { unsentManualContinuationSource } from "@t3tools/shared/orchestrationV2ManualContinuation";
 import * as DateTime from "effect/DateTime";
 import { latestRootProviderFailure, runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 
@@ -159,8 +160,12 @@ export function restartCancelledBackgroundWorkNote(
 export function pendingStoppedDelegatedTasks(input: {
   readonly providerThreadId: OrchestrationV2Run["providerThreadId"];
   readonly runs: ReadonlyArray<OrchestrationV2Run>;
-  readonly providerTurns: ReadonlyArray<Pick<ProviderTurnState, "runAttemptId" | "status">>;
-  readonly attempts: ReadonlyArray<Attempt>;
+  readonly providerTurns: ReadonlyArray<
+    Pick<ProviderTurnState, "runAttemptId" | "status" | "promptDropped">
+  >;
+  readonly attempts: ReadonlyArray<
+    Attempt & Pick<OrchestrationV2RunAttempt, "attemptOrdinal" | "reason">
+  >;
   readonly subagents: ReadonlyArray<OrchestrationV2Subagent>;
   readonly compactionMessageIds: ReadonlySet<string>;
 }): ReadonlyArray<OrchestrationV2Subagent> {
@@ -176,18 +181,34 @@ export function pendingStoppedDelegatedTasks(input: {
   if (stoppedRunIds.size === 0) return [];
   const completedAttemptIds = new Set(
     input.providerTurns
-      .filter((turn) => turn.status === "completed")
+      .filter((turn) => turn.status === "completed" && isDeliveredProviderTurn(turn))
       .map((turn) => turn.runAttemptId),
   );
+  const attemptsByRun = new Map<OrchestrationV2Run["id"], Array<(typeof input.attempts)[number]>>();
+  for (const attempt of input.attempts) {
+    if (!completedAttemptIds.has(attempt.id)) continue;
+    const attempts = attemptsByRun.get(attempt.runId) ?? [];
+    attempts.push(attempt);
+    attemptsByRun.set(attempt.runId, attempts);
+  }
   const toldRunRequests = input.runs
-    .filter(
-      (run) =>
-        run.providerThreadId === input.providerThreadId &&
-        !input.compactionMessageIds.has(run.userMessageId) &&
-        input.attempts.some(
-          (attempt) => attempt.runId === run.id && completedAttemptIds.has(attempt.id),
-        ),
-    )
+    .filter((run) => {
+      if (run.providerThreadId !== input.providerThreadId || run.status === "rolled_back")
+        return false;
+      const attempts = attemptsByRun.get(run.id);
+      if (attempts === undefined) return false;
+      const resumed =
+        input.compactionMessageIds.size === 0
+          ? undefined
+          : unsentManualContinuationSource(run, input);
+      return attempts.some((attempt) => {
+        const messageId =
+          attempt.reason === "steering_restart"
+            ? run.userMessageId
+            : (resumed?.userMessageId ?? run.userMessageId);
+        return !input.compactionMessageIds.has(messageId);
+      });
+    })
     .map((run) => DateTime.toEpochMillis(run.requestedAt));
   return input.subagents.filter(
     (task) =>

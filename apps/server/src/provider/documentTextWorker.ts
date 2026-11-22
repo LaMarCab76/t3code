@@ -618,14 +618,21 @@ async function* document(path: string, extension: string): AsyncGenerator<TextPa
       );
     if (extension === ".docx") {
       // The package relationship names the main part; Word for the web saves word/document2.xml.
-      const target = files.has("_rels/.rels")
-        ? [...all(read("_rels/.rels"), "Relationship")].find(
-            (rel) =>
-              rel.attrs.Type?.endsWith("/officeDocument") && rel.attrs.TargetMode !== "External",
-          )?.attrs.Target
-        : undefined;
+      const foldPartName = (name: string) => name.replace(/[A-Z]/g, (char) => char.toLowerCase());
+      const partNames = new Map(Array.from(files.keys(), (name) => [foldPartName(name), name]));
+      const findPart = (name: string) =>
+        files.has(name) ? name : partNames.get(foldPartName(name));
+      const relationships = findPart("_rels/.rels");
+      const target =
+        relationships !== undefined
+          ? [...all(read(relationships), "Relationship")].find(
+              (rel) =>
+                rel.attrs.Type?.endsWith("/officeDocument") && rel.attrs.TargetMode !== "External",
+            )?.attrs.Target
+          : undefined;
       const main = target && NodePath.posix.normalize(target).replace(/^\//, "");
-      yield* paragraphs(read(main && files.has(main) ? main : "word/document.xml"));
+      const documentPart = (main ? findPart(main) : undefined) ?? findPart("word/document.xml");
+      yield* paragraphs(read(documentPart ?? "word/document.xml"));
     } else if ([".odt", ".ods", ".odp"].includes(extension)) {
       const content = read("content.xml");
       if (extension === ".odt") yield* paragraphs(content);
