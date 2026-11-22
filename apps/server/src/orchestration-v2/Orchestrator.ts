@@ -17238,8 +17238,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               .withProviderBatch(
                 Effect.gen(function* () {
                   // Provider events can update the turn and its questions without the thread lock.
-                  const { thread, runs, runtimeRequests } = yield* projectionStore
-                    .getThreadRecords(input.threadId, ["runs", "runtimeRequests"])
+                  const { thread, runs, runtimeRequests, turnItems } = yield* projectionStore
+                    .getThreadRecords(input.threadId, ["runs", "runtimeRequests", "turnItems"], {
+                      turnItemTypes: ["link_request"],
+                      turnItemStatuses: ["waiting"],
+                    })
                     .pipe(
                       Effect.mapError(
                         (cause) =>
@@ -17279,6 +17282,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     latest.status !== "completed" ||
                     runs.some((run) => run.status === "queued" || isActiveRun(run)) ||
                     runtimeRequests.some((request) => request.status === "pending") ||
+                    turnItems.some(
+                      (item) => item.type === "link_request" && item.linkStatus === "pending",
+                    ) ||
                     thread.archivedAt !== null ||
                     thread.deletedAt !== null ||
                     thread.settledOverride === "settled" ||
