@@ -375,7 +375,7 @@ it.live("creates the task folder when the project's checkout hook already linked
   ),
 );
 
-it.live.each(["clone", "worktree"] as const)(
+it.live.each(["clone", "worktree", "worktree with relative paths"] as const)(
   "creates a missing tracked descendant of a hook's %s",
   (kind) =>
     withState((state) =>
@@ -390,10 +390,12 @@ it.live.each(["clone", "worktree"] as const)(
         yield* run(lib, "add", ".");
         yield* run(lib, "commit", "-m", "ignore inner");
         const inner = yield* repository("p/vendor/lib/inner");
+        const gitConfig =
+          kind === "worktree with relative paths" ? "-c worktree.useRelativePaths=true " : "";
         const checkout =
           kind === "clone"
             ? `git clone "${lib}" vendor/lib`
-            : `git -C "${lib}" worktree add -b feature "$PWD/vendor/lib"`;
+            : `git -C "${lib}" ${gitConfig}worktree add -b feature "$PWD/vendor/lib"`;
         const hooks = path.join(tmp, "hooks");
         yield* fileSystem.makeDirectory(hooks);
         yield* fileSystem.writeFileString(

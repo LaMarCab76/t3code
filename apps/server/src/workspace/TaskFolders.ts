@@ -362,8 +362,9 @@ const make = Effect.gen(function* () {
     const registered = (yield* fileSystem
       .readFileString(path.join(resolved, "gitdir"))
       .pipe(Effect.orElseSucceed(() => ""))).trim();
-    return registered !== "" &&
-      (yield* real(path.dirname(registered))) === (yield* real(checkout.worktreePath))
+    if (registered === "") return null;
+    const registeredDirectory = path.dirname(path.resolve(resolved, registered));
+    return (yield* real(registeredDirectory)) === (yield* real(checkout.worktreePath))
       ? resolved
       : null;
   });
