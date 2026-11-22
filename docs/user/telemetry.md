@@ -48,10 +48,11 @@ and you can decline the old one. Tool inputs and outputs, files, and attachments
 show you at most 3 report cards and send 3 reports on its own per turn, and `t3 feedback` can
 send at most 10 an hour.
 
-Before anything is saved, T3 Code removes file paths (when text mentions one, the rest of that line
-goes with it), your user name, machine name, project title, branch, and git remote, and anything
-that looks like a key, token, email address, or URL with a password. It cannot recognise your code
-or a name written in a sentence, so only include the conversation when it holds nothing you would
+Before saving a report, T3 Code makes a best-effort attempt to remove absolute paths with at least
+two segments, known private values such as your user name, machine name, project title, branch, and
+git remote, and text that looks like a key, token, email address, or URL with a password. Relative
+paths, single-segment absolute paths, values shorter than three characters, source code, and names
+in sentences can remain, so only include the conversation when it holds nothing you would
 not send. Reports from agents also name the provider, and the model when it is from the provider's
 public model list. No thread IDs or project IDs are sent.
 

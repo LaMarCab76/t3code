@@ -148,8 +148,9 @@ Keep analytics payloads to product metadata and normalized measurements. The one
 exception is `agent.feedback`, sent only while the user has turned on agent
 feedback: its `expected`, `actual`, and `workaround` fields are agent-written text,
 which [FeedbackService](../../apps/server/src/feedback/FeedbackService.ts) scrubs of
-file paths, values the server knows are private to the caller, and secret-shaped
-strings, and caps at 300 characters each. `userRequested: true` means the user saw the
+absolute file paths with at least two segments, known private values of at least three
+characters, and secret-shaped strings. It caps each field at 300 characters. Relative
+paths and single-segment absolute paths can remain unless they match a known private value. `userRequested: true` means the user saw the
 report in its preview card and pressed Send; only such a report carries
 `trace`, which the server builds from the thread when the card is shown: an outline of
 at least the last 5 turns with no text, plus the scrubbed message text of the turns the

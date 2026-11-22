@@ -16,7 +16,7 @@ import * as ServerSettings from "../serverSettings.ts";
 import {
   FEEDBACK_CLI_CLIENT_LABEL,
   FeedbackInput,
-  FeedbackOffError,
+  FEEDBACK_OFF_MESSAGE,
   FeedbackSubmitResult,
 } from "../feedback/FeedbackReport.ts";
 import {
@@ -43,36 +43,57 @@ const feedbackUnavailable = ({ tool }: { readonly tool: string }) =>
   );
 
 class FeedbackListError extends Schema.TaggedError<FeedbackListError>()("FeedbackListError", {
-  detail: Schema.String,
-  cause: Schema.Defect(),
+  stage: Schema.Literals([
+    "configuration",
+    "settings",
+    "database lookup",
+    "report query",
+    "disabled",
+  ]),
+  resource: Schema.optional(Schema.String),
+  cause: Schema.optional(Schema.Defect()),
 }) {
   override readonly [Runtime.errorReported] = false;
   override get message(): string {
-    return this.detail;
+    if (this.stage === "disabled") return FEEDBACK_OFF_MESSAGE;
+    const resource = this.resource?.replaceAll(/[\r\n\u2028\u2029]/g, " ");
+    return (
+      "Could not read this machine's feedback reports: " +
+      (resource === undefined ? this.stage : this.stage + " at " + resource) +
+      "."
+    );
   }
 }
-
-const firstLine = (error: { readonly _tag: string; readonly message?: unknown }) =>
-  (typeof error.message === "string" && error.message.trim() !== ""
-    ? error.message
-    : error._tag
-  ).split("\n")[0];
 
 /** Reads this machine's database and settings directly, whether or not its server runs. */
 const listReports = Effect.fn("cli.feedback.listReports")(function* (flags: CliAuthLocationFlags) {
   const config = yield* resolveCliAuthConfig(flags, yield* GlobalFlag.LogLevel, {
     quietLogs: true,
-  });
+  }).pipe(Effect.mapError((cause) => new FeedbackListError({ stage: "configuration", cause })));
   return yield* Effect.gen(function* () {
+    const { dbPath, settingsPath } = yield* ServerConfig.ServerConfig;
     // Settings first, from the file alone, so Off never opens the database.
-    const { agentFeedback } = yield* ServerSettings.readServerSettingsFromDisk;
-    if (agentFeedback.mode === "off") return yield* new FeedbackOffError({});
-    const { dbPath } = yield* ServerConfig.ServerConfig;
+    const { agentFeedback } = yield* ServerSettings.readServerSettingsFromDisk.pipe(
+      Effect.mapError(
+        (cause) => new FeedbackListError({ stage: "settings", resource: settingsPath, cause }),
+      ),
+    );
+    if (agentFeedback.mode === "off") return yield* new FeedbackListError({ stage: "disabled" });
     const fs = yield* FileSystem.FileSystem;
-    if (!(yield* fs.exists(dbPath))) return [];
+    const databaseExists = yield* fs
+      .exists(dbPath)
+      .pipe(
+        Effect.mapError(
+          (cause) => new FeedbackListError({ stage: "database lookup", resource: dbPath, cause }),
+        ),
+      );
+    if (!databaseExists) return [];
     // Read-only: no setup, no migrations, no writes, whether or not a server runs.
     return yield* readFeedbackReports.pipe(
       Effect.provide(NodeSqliteClient.layer({ filename: dbPath, readonly: true })),
+      Effect.mapError(
+        (cause) => new FeedbackListError({ stage: "report query", resource: dbPath, cause }),
+      ),
     );
   }).pipe(
     Effect.provide(ManagedPolicy.layer.pipe(Layer.provideMerge(ServerConfig.layer(config)))),
@@ -110,15 +131,7 @@ const feedbackListCommand = Command.make("list", { ...authLocationFlags, json: j
         }
       },
       // Every failure is one line on stderr; the runtime does not log it again.
-      Effect.catch((error) => {
-        const detail =
-          error._tag === "FeedbackOffError"
-            ? error.message
-            : `Could not read this machine's feedback reports: ${firstLine(error)}`;
-        return Console.error(detail).pipe(
-          Effect.andThen(Effect.fail(new FeedbackListError({ detail, cause: error }))),
-        );
-      }),
+      Effect.tapError((error) => Console.error(error.message)),
     ),
   ),
 );

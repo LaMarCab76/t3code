@@ -968,6 +968,30 @@ const file = {
 } satisfies ComposerFileAttachment;
 
 describe("composer context undo lifetime", () => {
+  it("reports a selection-stable undo as history when it restores a stale skill", async () => {
+    const onChange = vi.fn<NonNullable<ComposerPromptEditorProps["onChange"]>>();
+    await using screen = await mountEditor("Keep $babysit after", true, [babysit], onChange);
+    const { editor } = screen;
+    await act(async () => {
+      editor.commands.setTextSelection(1);
+      let skillPosition: number | undefined;
+      editor.state.doc.descendants((node, position) => {
+        if (node.type.name === "composer-skill") skillPosition = position;
+      });
+      expect(skillPosition).toBeDefined();
+      editor.view.dispatch(editor.state.tr.delete(skillPosition!, skillPosition! + 1));
+    });
+    await screen.rerender(composer("", true, [], onChange));
+    onChange.mockClear();
+    await act(async () => {
+      editor.commands.undo();
+    });
+    expect(editor.state.selection.from).toBe(1);
+    expect(serializeEditorDoc(editor.state.doc).value).toBe("Keep $babysit after");
+    expect(editor.state.doc.nodeAt(6)?.type.name).toBe("text");
+    expect(onChange.mock.lastCall?.[6]).toBe(true);
+  });
+
   async function mountComposer(destinationValue = "", disabled = false) {
     const initialValue = `Draft A ${formatInlineContextReference(fileContextReference(file))}`;
     const editorRef = createRef<ComposerPromptEditorHandle>();

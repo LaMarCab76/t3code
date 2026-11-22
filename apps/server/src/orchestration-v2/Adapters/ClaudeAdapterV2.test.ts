@@ -918,6 +918,9 @@ describe("ClaudeAdapterV2 T3 tool instructions", () => {
     readonly mcp: boolean;
     readonly deviceToolsAvailable: boolean;
     readonly agentFeedback?: "off" | "on-request" | "auto";
+    readonly onUserPromptSubmit?: Parameters<
+      typeof ClaudeAdapterV2.makeClaudeQueryOptions
+    >[0]["onUserPromptSubmit"];
   }) =>
     ClaudeAdapterV2.makeClaudeQueryOptions({
       modelSelection: {
@@ -932,6 +935,9 @@ describe("ClaudeAdapterV2 T3 tool instructions", () => {
         : {}),
       deviceToolsAvailable: input.deviceToolsAvailable,
       agentFeedback: input.agentFeedback ?? "off",
+      ...(input.onUserPromptSubmit === undefined
+        ? {}
+        : { onUserPromptSubmit: input.onUserPromptSubmit }),
       environment: {},
     });
   const append = (input: Parameters<typeof options>[0]) =>
@@ -957,6 +963,39 @@ describe("ClaudeAdapterV2 T3 tool instructions", () => {
     );
     assert.isFalse(feedback(true, "off"));
     assert.isFalse(feedback(false, "auto"));
+  });
+
+  it("applies feedback changes on the same SDK query without repeating stable guidance", async () => {
+    let mode: NonNullable<Parameters<typeof options>[0]["agentFeedback"]> = "off";
+    const live = options({
+      mcp: true,
+      deviceToolsAvailable: false,
+      onUserPromptSubmit: ClaudeAdapterV2.makeClaudeFeedbackUpdateHook(mode, () =>
+        Promise.resolve(mode),
+      ),
+    });
+    const submitted = live.hooks?.UserPromptSubmit?.[0]?.hooks[0];
+    assert.isDefined(submitted);
+    const prompt = () =>
+      submitted!(
+        {
+          hook_event_name: "UserPromptSubmit",
+          session_id: "native-thread-claude-devices",
+          transcript_path: "/transcript.jsonl",
+          cwd: "/workspace",
+          prompt: "Continue the work.",
+        },
+        undefined,
+        { signal: new AbortController().signal },
+      );
+    assert.deepEqual(await prompt(), {});
+    mode = "auto";
+    assert.include(JSON.stringify(await prompt()), AGENT_FEEDBACK_INSTRUCTIONS.auto);
+    assert.deepEqual(await prompt(), {});
+    mode = "on-request";
+    assert.include(JSON.stringify(await prompt()), AGENT_FEEDBACK_INSTRUCTIONS["on-request"]);
+    mode = "off";
+    assert.include(JSON.stringify(await prompt()), "Do not call t3_feedback.");
   });
 
   it("gives native subagents the device block only in a session with device access", async () => {

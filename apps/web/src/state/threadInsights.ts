@@ -12,6 +12,8 @@ import { environmentPresentations } from "./presentation";
 import { environmentThreadShells } from "./threads";
 import { createThreadInsightsRefreshAtom } from "./threadInsightsRefresh";
 
+const environmentFailure = msg("An environment could not report tasks and usage.");
+
 export const threadInsightsViewAtom = Atom.family((key: string) => {
   const target = parseScopedThreadKey(key);
   if (target === null) throw new Error("Invalid thread insights target");
@@ -22,7 +24,7 @@ export const threadInsightsViewAtom = Atom.family((key: string) => {
     const visited = new Set<string>();
     const rowKeys = new Set<string>();
     const queries: ReturnType<typeof orchestrationEnvironment.threadInsights>[] = [];
-    const errors = new Set<string>();
+    let environmentFailed = false;
     let loading = false;
     for (let index = 0; index < queue.length && visited.size < 200 && rowKeys.size < 200; index++) {
       const ref = queue[index]!;
@@ -38,9 +40,7 @@ export const threadInsightsViewAtom = Atom.family((key: string) => {
       rowKeys.add(nextKey);
       const result = get(query);
       loading ||= AsyncResult.isInitial(result) || result.waiting;
-      if (AsyncResult.isFailure(result)) {
-        errors.add(m(msg("An environment could not report tasks and usage.")));
-      }
+      environmentFailed ||= AsyncResult.isFailure(result);
       const data = Option.getOrNull(AsyncResult.value(result));
       if (data === null) continue;
       answers.set(nextKey, { target: ref, data });
@@ -53,7 +53,7 @@ export const threadInsightsViewAtom = Atom.family((key: string) => {
     return {
       ...mergeThreadInsights(target, answers, m, omitted),
       queries,
-      errors: [...errors],
+      errors: environmentFailed ? [environmentFailure] : [],
       loading,
     };
   });

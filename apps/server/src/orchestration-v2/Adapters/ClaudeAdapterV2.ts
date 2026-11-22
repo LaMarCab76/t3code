@@ -222,7 +222,10 @@ import {
   T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH,
   T3_CODE_ORCHESTRATION_INSTRUCTIONS,
 } from "@t3tools/provider-core/server/orchestrationInstructions";
-import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
+import {
+  AGENT_FEEDBACK_INSTRUCTIONS,
+  buildRuntimeInstructions,
+} from "@t3tools/provider-core/server/runtimeInstructions";
 import {
   mcpToolPresentation,
   normalizeMcpText,
@@ -2302,6 +2305,29 @@ const subagentDeviceInstructions: HookCallback = () =>
     },
   });
 
+export function makeClaudeFeedbackUpdateHook(
+  initialMode: AgentFeedbackMode,
+  readMode: () => Promise<AgentFeedbackMode | undefined>,
+): HookCallback {
+  let deliveredMode = initialMode;
+  return async () => {
+    const mode = await readMode();
+    if (mode === undefined || mode === deliveredMode) return {};
+    deliveredMode = mode;
+    const guidance =
+      mode === "off"
+        ? "Agent feedback is disabled. Do not call t3_feedback."
+        : AGENT_FEEDBACK_INSTRUCTIONS[mode];
+    return {
+      hookSpecificOutput: {
+        hookEventName: "UserPromptSubmit",
+        additionalContext:
+          "The current agent feedback setting supersedes earlier guidance. " + guidance,
+      },
+    };
+  };
+}
+
 export function makeClaudeQueryOptions(input: {
   readonly modelSelection: ModelSelection;
   readonly modelCatalog?: ClaudeModelCatalog;
@@ -2329,6 +2355,7 @@ export function makeClaudeQueryOptions(input: {
   readonly onUserDialog?: ClaudeQueryOptions["onUserDialog"];
   readonly onElicitation?: ClaudeQueryOptions["onElicitation"];
   readonly onStop?: HookCallback;
+  readonly onUserPromptSubmit?: HookCallback;
   readonly supportedDialogKinds?: ClaudeQueryOptions["supportedDialogKinds"];
   readonly allowDangerouslySkipPermissions?: boolean;
   readonly appendSystemPromptFileText?: string;
@@ -2494,13 +2521,16 @@ export function makeClaudeQueryOptions(input: {
         ...launchAppendSystemPrompt,
       ].join("\n\n"),
     },
-    ...(deviceInstructions || input.onStop !== undefined
+    ...(deviceInstructions || input.onStop !== undefined || input.onUserPromptSubmit !== undefined
       ? {
           hooks: {
             ...(deviceInstructions
               ? { SubagentStart: [{ hooks: [subagentDeviceInstructions] }] }
               : {}),
             ...(input.onStop === undefined ? {} : { Stop: [{ hooks: [input.onStop] }] }),
+            ...(input.onUserPromptSubmit === undefined
+              ? {}
+              : { UserPromptSubmit: [{ hooks: [input.onUserPromptSubmit] }] }),
           },
         }
       : {}),
@@ -13299,8 +13329,24 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             turnInput.nativeThreadHasTurns ?? turnInput.providerTurnOrdinal > 1;
           const shouldResume =
             resumeSessionAt !== undefined || openedWithResume || hasPersistedProviderTurn;
+          const initialFeedback = turnInput.agentFeedback ?? "off";
+          const onUserPromptSubmit =
+            mcpOverrides.mcpServers === undefined
+              ? undefined
+              : makeClaudeFeedbackUpdateHook(initialFeedback, () =>
+                  runPromise(
+                    Ref.get(activeTurn).pipe(
+                      Effect.map((active) =>
+                        active?.nativeThreadId === nativeThreadId
+                          ? (active.input.agentFeedback ?? "off")
+                          : undefined,
+                      ),
+                    ),
+                  ),
+                );
           const queryOptions = makeClaudeQueryOptions({
-            agentFeedback: turnInput.agentFeedback ?? "off",
+            agentFeedback: initialFeedback,
+            ...(onUserPromptSubmit === undefined ? {} : { onUserPromptSubmit }),
             modelSelection: turnInput.modelSelection,
             modelCatalog: catalog,
             nativeThreadId,

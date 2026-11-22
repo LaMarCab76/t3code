@@ -731,6 +731,7 @@ class EnvironmentMcpOAuthHttpApi extends HttpApiGroup.make("mcpOAuth")
     HttpApiEndpoint.post("revoke", "/oauth/mcp/revoke", {
       payload: AuthMcpRevokeRequest,
       success: HttpApiSchema.Empty(200),
+      error: AuthMcpTokenError,
     }),
   ) {}
 

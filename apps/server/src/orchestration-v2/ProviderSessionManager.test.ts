@@ -488,6 +488,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly backgroundTasksEndWithProcess?: boolean;
     readonly hangSessionScopeClose?: boolean;
     readonly startTurn?: Effect.Effect<void, ProviderAdapter.ProviderAdapterProtocolError>;
+    readonly resumeTurn?: ProviderAdapter.ProviderAdapterV2SessionRuntime["resumeTurn"];
     readonly interruptTurn?: Effect.Effect<void>;
     readonly beforeResume?: (nativeId: string | null | undefined) => Effect.Effect<void>;
     readonly beforeUnload?: Effect.Effect<void>;
@@ -620,6 +621,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
               Effect.as(threadInput.providerThread),
             ),
           startTurn: () => options.startTurn ?? Effect.void,
+          ...(options.resumeTurn === undefined ? {} : { resumeTurn: options.resumeTurn }),
           steerTurn: () => Effect.void,
           interruptTurn: () =>
             Ref.update(state, (current) => ({
@@ -685,6 +687,7 @@ function layerTest(input: {
   readonly backgroundTasksEndWithProcess?: boolean;
   readonly hangSessionScopeClose?: boolean;
   readonly startTurn?: Effect.Effect<void, ProviderAdapter.ProviderAdapterProtocolError>;
+  readonly resumeTurn?: ProviderAdapter.ProviderAdapterV2SessionRuntime["resumeTurn"];
   readonly interruptTurn?: Effect.Effect<void>;
   readonly beforeResume?: (nativeId: string | null | undefined) => Effect.Effect<void>;
   readonly beforeUnload?: Effect.Effect<void>;
@@ -738,6 +741,7 @@ function layerTest(input: {
         ? {}
         : { hangSessionScopeClose: input.hangSessionScopeClose }),
       ...(input.startTurn === undefined ? {} : { startTurn: input.startTurn }),
+      ...(input.resumeTurn === undefined ? {} : { resumeTurn: input.resumeTurn }),
       ...(input.interruptTurn === undefined ? {} : { interruptTurn: input.interruptTurn }),
       ...(input.beforeResume === undefined ? {} : { beforeResume: input.beforeResume }),
       ...(input.beforeUnload === undefined ? {} : { beforeUnload: input.beforeUnload }),
@@ -1766,6 +1770,65 @@ it.effect("ProviderSessionManagerV2 resumes a thread natively again after its st
               detail: "query ended before the turn could start",
             }),
           ),
+        }),
+      ),
+    );
+  }),
+);
+
+it.effect("ProviderSessionManagerV2 forwards feedback mode to a native turn resume", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const resumed =
+      yield* Ref.make<ProviderAdapter.ProviderAdapterV2ResumeTurnInput["agentFeedback"]>(undefined);
+    yield* Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread-provider-session-manager-resume-feedback");
+      const providerSessionId = idAllocator.derive.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+      });
+      yield* eventSink.write({
+        events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+      });
+      const runtime = yield* manager.open({
+        threadId,
+        providerSessionId,
+        modelSelection,
+        runtimePolicy,
+      });
+      const providerThread = makeProviderThread({
+        idAllocator,
+        threadId,
+        providerSessionId,
+        now,
+        nativeThreadId: "native-feedback",
+      });
+      const runId = idAllocator.derive.run({ threadId, ordinal: 1 });
+      yield* runtime.resumeTurn!({
+        appThread: (yield* projectionStore.getThreadProjection(threadId)).thread,
+        threadId,
+        runId,
+        runOrdinal: 1,
+        providerTurnOrdinal: 1,
+        attemptId: idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 }),
+        rootNodeId: idAllocator.derive.rootNode({ runId }),
+        providerThread,
+        messageId: yield* idAllocator.allocate.message({ threadId, ordinal: 1 }),
+        modelSelection,
+        runtimePolicy,
+      });
+      assert.equal(yield* Ref.get(resumed), "auto");
+    }).pipe(
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 60_000,
+          serverSettingsLayer: ServerSettings.layerTest({ agentFeedback: { mode: "auto" } }),
+          resumeTurn: (input) => Ref.set(resumed, input.agentFeedback),
         }),
       ),
     );

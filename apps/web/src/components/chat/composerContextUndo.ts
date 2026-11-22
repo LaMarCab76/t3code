@@ -112,8 +112,9 @@ export function reconcileAttachmentContextReferences(input: {
     if (isQueuedFileAttachment(entry.attachment)) return [entry.attachment.id];
     // Like draft images, a queued image outlives its deleted chip, unless undo or redo
     // takes away a chip whose return had brought the image back.
-    const wasRestored = restoredImageIds.delete(entry.attachment.id);
-    return wasRestored && input.fromHistory ? [entry.attachment.id] : [];
+    return input.fromHistory && restoredImageIds.delete(entry.attachment.id)
+      ? [entry.attachment.id]
+      : [];
   });
   const queuedAttachmentsToRestore = (input.removedQueuedAttachments ?? []).flatMap((entry) => {
     if (!isReferenced(entry)) return [];

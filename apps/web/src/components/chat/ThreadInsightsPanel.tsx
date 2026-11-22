@@ -1,4 +1,4 @@
-import { T, Var, useGT } from "gt-react";
+import { T, Var, useGT, useMessages } from "gt-react";
 import type { ScopedThreadRef, UsageLimitSourceSnapshots } from "@t3tools/contracts";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { useAtomValue, RegistryContext } from "@effect/atom-react";
@@ -21,6 +21,7 @@ export function ThreadInsightsPanel({
   section: "tasks" | "usage";
 }) {
   const gt = useGT();
+  const messages = useMessages();
   const usageStatus = {
     complete: gt("Complete"),
     partial: gt("Partial"),
@@ -60,7 +61,7 @@ export function ThreadInsightsPanel({
       </div>
       {merged.errors.map((error) => (
         <p key={error} role="alert" className="mb-2 text-destructive">
-          {error}
+          {messages(error)}
         </p>
       ))}
       {merged.pending.map((ref) => (

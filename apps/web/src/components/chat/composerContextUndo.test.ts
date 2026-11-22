@@ -152,5 +152,20 @@ describe("reconcileAttachmentContextReferences", () => {
       queuedAttachments: [queuedImage],
     });
     expect(backspaced.queuedAttachmentIdsToRemove).toEqual([]);
+
+    reconcileAttachmentContextReferences({
+      ...base,
+      referencedContextIds: new Set(["image_local"]),
+      queuedAttachments: [queuedImage],
+      fromHistory: true,
+    });
+    expect(
+      reconcileAttachmentContextReferences({
+        ...base,
+        referencedContextIds: new Set(),
+        queuedAttachments: [queuedImage],
+        fromHistory: true,
+      }).queuedAttachmentIdsToRemove,
+    ).toEqual([queuedImage.attachment.id]);
   });
 });

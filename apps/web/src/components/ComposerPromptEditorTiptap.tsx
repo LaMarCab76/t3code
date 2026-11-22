@@ -798,12 +798,15 @@ function chipSelectionDecorations({ doc, selection }: EditorState): DecorationSe
 type TiptapEditor = NonNullable<ReturnType<typeof useEditor>>;
 
 const SILENT_SELECTION_META = "composerSilentSelection";
+const NORMALIZED_HISTORY_META = "composerNormalizedHistory";
 
 function replaceSkillChips(
   editor: TiptapEditor,
   replacements: ReturnType<typeof skillChipReplacements>,
+  fromHistory = false,
 ): void {
   const transaction = editor.state.tr.setMeta("addToHistory", false);
+  if (fromHistory) transaction.setMeta(NORMALIZED_HISTORY_META, true);
   for (const { from, to, node } of replacements) transaction.replaceWith(from, to, node);
   editor.view.dispatch(transaction);
 }
@@ -1129,7 +1132,7 @@ function ComposerPromptEditorTiptapInner(
       suppressTrigger,
       contextIds,
       previousSnapshot.value !== nextValue,
-      isHistoryTransaction(transaction),
+      isHistoryTransaction(transaction) || transaction.getMeta(NORMALIZED_HISTORY_META) === true,
     );
   };
 
@@ -1559,7 +1562,7 @@ function ComposerPromptEditorTiptapInner(
             isKnownModel,
           ).filter(({ node }) => node.isText);
           if (stale.length > 0) {
-            replaceSkillChips(updated, stale);
+            replaceSkillChips(updated, stale, true);
             return;
           }
         }

@@ -6,6 +6,7 @@ import {
   type OrchestrationV2CommandProgressFrame,
   type OrchestrationV2SubscribeCommandOutputInput,
   type OrchestrationV2TurnItem,
+  type RunId,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -142,14 +143,16 @@ export const make = Effect.gen(function* () {
   const threadProgress = (
     threadId: ThreadId,
     snapshots: ReadonlyMap<string, OrchestrationV2CommandProgress>,
+    rolledBackItems: ReadonlySet<string>,
   ): Array<OrchestrationV2CommandProgress> => {
     const prefix = threadKeyPrefix(threadId);
     const items = new Map(snapshots);
     for (const [key, tail] of tails) {
       if (!key.startsWith(prefix)) continue;
+      const itemId = TurnItemId.make(key.slice(prefix.length));
+      if (rolledBackItems.has(itemId)) continue;
       const progress = commandOutputProgress(tail.text);
       if (progress) {
-        const itemId = TurnItemId.make(key.slice(prefix.length));
         items.set(itemId, { itemId, ...progress });
       }
     }
@@ -227,8 +230,22 @@ export const make = Effect.gen(function* () {
           }),
         );
         const snapshots = new Map<string, OrchestrationV2CommandProgress>();
+        const rolledBackRuns = new Set<RunId>();
+        const rolledBackItems = new Set<string>();
+        const itemRuns = new Map<string, RunId>();
         const observe = (item: OrchestrationV2TurnItem) => {
           if (item.type !== "command_execution") return;
+          if (item.runId !== null && rolledBackRuns.has(item.runId)) {
+            rolledBackItems.add(item.id);
+            snapshots.delete(item.id);
+            itemRuns.delete(item.id);
+            return;
+          }
+          if (item.runId !== null && isOrchestrationV2WorkActive(item.status)) {
+            itemRuns.set(item.id, item.runId);
+          } else {
+            itemRuns.delete(item.id);
+          }
           const output = commandItemOutput(item);
           const progress =
             isOrchestrationV2WorkActive(item.status) && output !== undefined
@@ -239,24 +256,46 @@ export const make = Effect.gen(function* () {
           else snapshots.delete(item.id);
         };
         const fromSequence = yield* eventSink.latestSequence({ threadId }).pipe(Effect.orDie);
-        const { turnItems } = yield* projections
-          .getThreadRecords(threadId, ["turnItems"], {
+        const { turnItems, runs } = yield* projections
+          .getThreadRecords(threadId, ["turnItems", "runs"], {
+            runStatuses: ["rolled_back"],
             turnItemTypes: ["command_execution"],
             turnItemStatuses: ["pending", "running", "waiting"],
           })
           .pipe(Effect.orDie);
+        for (const run of runs) if (run.status === "rolled_back") rolledBackRuns.add(run.id);
         for (const item of turnItems) observe(item);
-        yield* eventSink
-          .stream({ threadId, afterSequence: fromSequence, eventType: "turn-item.updated" })
-          .pipe(
-            Stream.runForEach((stored) =>
-              Effect.sync(() => {
-                if (stored.event.type === "turn-item.updated") observe(stored.event.payload);
-              }).pipe(Effect.andThen(Queue.offer(wake, undefined))),
-            ),
-            Effect.orDie,
-            Effect.forkScoped,
-          );
+        yield* Stream.merge(
+          eventSink.stream({
+            threadId,
+            afterSequence: fromSequence,
+            eventType: "turn-item.updated",
+          }),
+          eventSink.stream({ threadId, afterSequence: fromSequence, eventType: "run.updated" }),
+        ).pipe(
+          Stream.runForEach(({ event }) => {
+            if (event.type === "turn-item.updated") {
+              if (event.payload.type !== "command_execution") return Effect.void;
+              return Effect.sync(() => observe(event.payload)).pipe(
+                Effect.andThen(Queue.offer(wake, undefined)),
+              );
+            }
+            if (event.type !== "run.updated" || event.payload.status !== "rolled_back") {
+              return Effect.void;
+            }
+            return Effect.sync(() => {
+              rolledBackRuns.add(event.payload.id);
+              for (const [itemId, runId] of itemRuns) {
+                if (runId !== event.payload.id) continue;
+                rolledBackItems.add(itemId);
+                snapshots.delete(itemId);
+                itemRuns.delete(itemId);
+              }
+            }).pipe(Effect.andThen(Queue.offer(wake, undefined)));
+          }),
+          Effect.orDie,
+          Effect.forkScoped,
+        );
         yield* Queue.offer(wake, undefined);
         let sent: string | undefined;
         let lastReadAt: number | undefined;
@@ -268,7 +307,7 @@ export const make = Effect.gen(function* () {
               yield* Effect.sleep(COMMAND_PROGRESS_FRAME_INTERVAL_MS - (now - lastReadAt));
             }
             lastReadAt = yield* Clock.currentTimeMillis;
-            const items = threadProgress(threadId, snapshots);
+            const items = threadProgress(threadId, snapshots, rolledBackItems);
             const signature = items
               .map((item) => `${item.itemId}:${item.completed}/${item.total}`)
               .join("\n");

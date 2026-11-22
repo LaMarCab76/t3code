@@ -178,6 +178,7 @@ const harness = Effect.gen(function* () {
   const shown = yield* Ref.make(new Map<string, CardRecord>());
   // Faults and gates for card records, and a signal when an answer reads its card.
   const failRecords = yield* Ref.make(false);
+  const rejectedRecords = new Set<CardRecord["commandId"]>();
   // Each gate holds the first record of its status until released.
   const recordGates = yield* Ref.make<
     ReadonlyArray<{
@@ -228,7 +229,11 @@ const harness = Effect.gen(function* () {
         dispatch: (command) =>
           Effect.gen(function* () {
             const card = command as CardRecord;
-            if (card.feedbackStatus !== "pending" && (yield* Ref.get(failRecords))) {
+            if (
+              card.feedbackStatus !== "pending" &&
+              (rejectedRecords.has(card.commandId) || (yield* Ref.get(failRecords)))
+            ) {
+              rejectedRecords.add(card.commandId);
               return yield* new FeedbackStorageError({ cause: "The card record failed." });
             }
             const gate = (yield* Ref.get(recordGates)).find(

@@ -406,6 +406,11 @@ it.live("signs in with a pairing code and issues a token only /mcp accepts", () 
       );
       const bearer = (token: string) =>
         HttpServerRequest.fromWeb(at("/api", { headers: { authorization: `Bearer ${token}` } }));
+      const missing = yield* handler(at("/oauth/mcp/revoke", form({})));
+      expect(missing.status).toBe(400);
+      expect(yield* Effect.promise(() => missing.json())).toMatchObject({
+        error: "invalid_request",
+      });
       for (const other of ["not-a-token", owner.access_token]) {
         expect((yield* handler(at("/oauth/mcp/revoke", form({ token: other })))).status).toBe(200);
       }

@@ -4,6 +4,7 @@ import {
   AuthMcpClientAccess,
   AuthMcpClientRegistration,
   AuthMcpRegistrationError,
+  AuthMcpTokenError,
   EnvironmentHttpApi,
   mcpClientScopes,
 } from "@t3tools/contracts";
@@ -213,10 +214,14 @@ export const layer = HttpApiBuilder.group(
         Effect.gen(function* () {
           yield* noStore;
           // RFC 7009 §2.2: an unknown or already revoked token gets the same 200 as a revoked one.
-          if (payload.token === undefined) return;
-          yield* environmentAuth
-            .revokeMcpClientToken(Redacted.value(payload.token))
-            .pipe(Effect.orDie);
+          const token = payload.token === undefined ? "" : Redacted.value(payload.token);
+          if (token.length === 0) {
+            return yield* new AuthMcpTokenError({
+              error: "invalid_request",
+              error_description: "The token parameter is required.",
+            });
+          }
+          yield* environmentAuth.revokeMcpClientToken(token).pipe(Effect.orDie);
         }),
       );
   }),

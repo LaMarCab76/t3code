@@ -14,6 +14,7 @@ import {
   TurnItemId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -103,6 +104,7 @@ const make = Effect.gen(function* () {
   const settings = yield* Settings.ServerSettingsService;
   const analytics = yield* Analytics.AnalyticsService;
   const providers = yield* Providers.ProviderRegistry;
+  const random = yield* SecureRandom.SecureRandom;
   // Serializes the limit checks with their writes. Held only after any settings wait, so an answer
   // stalled on the settings lock never holds up a card or an unprompted report.
   const lock = yield* Semaphore.make(1);
@@ -115,19 +117,24 @@ const make = Effect.gen(function* () {
     feedbackStatus: AgentFeedbackRequestStatus,
     conversationTrace?: AgentFeedbackTrace,
   ) =>
-    threads
-      .dispatch({
-        type: "feedback_request.record",
-        commandId: CommandId.make(`feedback-request:${card.reportId}:${feedbackStatus}`),
-        threadId: card.threadId,
-        runId: card.runId,
-        nodeId: card.nodeId,
-        turnItemId: TurnItemId.make(`${CARD_PREFIX}${card.reportId}`),
-        preview: card.preview,
-        ...(conversationTrace === undefined ? {} : { conversationTrace }),
-        feedbackStatus,
-      })
-      .pipe(Effect.mapError(storageError));
+    random.uuidV7().pipe(
+      Effect.flatMap((attemptId) =>
+        threads.dispatch({
+          type: "feedback_request.record",
+          commandId: CommandId.make(
+            `feedback-request:${card.reportId}:${feedbackStatus}:${attemptId}`,
+          ),
+          threadId: card.threadId,
+          runId: card.runId,
+          nodeId: card.nodeId,
+          turnItemId: TurnItemId.make(`${CARD_PREFIX}${card.reportId}`),
+          preview: card.preview,
+          ...(conversationTrace === undefined ? {} : { conversationTrace }),
+          feedbackStatus,
+        }),
+      ),
+      Effect.mapError(storageError),
+    );
 
   /** The unprompted report the next one would pass the limit of, or undefined. */
   const overLimit = Effect.fn("FeedbackStore.overLimit")(function* (runId: RunId | null) {

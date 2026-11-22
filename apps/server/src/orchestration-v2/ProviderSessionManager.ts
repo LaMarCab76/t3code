@@ -2507,6 +2507,7 @@ export const layerWithOptions = (
       ): ProviderAdapter.ProviderAdapterV2SessionRuntime => {
         const providerSessionId = runtime.providerSessionId;
         const subscribeEvents = makeEventSubscription(eventSubscribers);
+        const resumeTurn = runtime.resumeTurn?.bind(runtime);
         const turnMetrics = (operation: string, model?: string) =>
           withMetrics({
             counter: providerTurnsTotal,
@@ -2519,6 +2520,14 @@ export const layerWithOptions = (
           });
         return {
           ...runtime,
+          ...(resumeTurn === undefined
+            ? {}
+            : {
+                resumeTurn: (input: ProviderAdapter.ProviderAdapterV2ResumeTurnInput) =>
+                  agentFeedbackMode.pipe(
+                    Effect.flatMap((agentFeedback) => resumeTurn({ ...input, agentFeedback })),
+                  ),
+              }),
           // Pi replaces its session snapshot as metadata changes.
           get providerSession() {
             return runtime.providerSession;
