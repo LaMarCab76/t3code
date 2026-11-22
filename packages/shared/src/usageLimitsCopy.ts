@@ -93,14 +93,14 @@ export function collectLimitNotices(
     const environmentLabel = presentation.entry.target.label;
     for (const provider of providersWithLimits(presentation.serverConfig?.providers ?? [])) {
       const limits = provider.usageLimits;
-      if (!limits) continue;
+      // A bare unsupported means the account has no limits; an external usage link shows its message.
       if (
-        limits.unavailable?.reason === "unsupported" &&
-        (provider.driver !== "antigravity" || !limits.unavailable.message)
+        limits?.unavailable?.reason === "unsupported" &&
+        (!limits.unavailable.message || limits.externalUsage)
       ) {
         continue;
       }
-      const notice = limitsNotice(limits, resolve);
+      const notice = limits ? limitsNotice(limits, resolve) : null;
       const name = provider.displayName?.trim() || String(provider.driver);
       if (notice) notices.add(`${label(environmentLabel, name)}: ${notice}`);
     }
