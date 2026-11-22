@@ -342,6 +342,58 @@ it("keeps visits saved while IndexedDB could not open", async () => {
   }
 });
 
+it("keeps a fallback deletion after IndexedDB recovers and an older tab writes", async () => {
+  await resetHistoryFixture();
+  try {
+    using fixture = new DisposableStack();
+    const db = await openHistoryFixture(fixture);
+    const store = useBrowserHistoryStore.getState();
+    store.recordVisit("a", oldEntry.url, oldEntry.lastVisitedAt);
+    store.recordVisit("b", otherEntry.url, otherEntry.lastVisitedAt);
+    await vi.waitFor(() =>
+      expect(useBrowserHistoryStore.getState().byProjectKey).toEqual({
+        a: [oldEntry],
+        b: [otherEntry],
+      }),
+    );
+
+    {
+      using _transaction = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(() => {
+        throw new DOMException("Storage unavailable", "SecurityError");
+      });
+      store.removeUrl("a", oldEntry.url);
+      await vi.waitFor(() => expect(fallbackKeys()).toHaveLength(1));
+      expect(useBrowserHistoryStore.getState().byProjectKey).toEqual({ b: [otherEntry] });
+    }
+
+    const recovered = await openHistoryDocument(fixture);
+    await vi.waitFor(() => expect(fallbackKeys()).toEqual([]));
+    expect(recovered.getState().byProjectKey).toEqual({ b: [otherEntry] });
+    const saved = await readHistoryFixture(db);
+    expect(saved).toHaveProperty("byProjectKey", { b: [otherEntry] });
+    expect(JSON.stringify(saved)).not.toContain(oldEntry.url);
+
+    localStorage.setItem(
+      storageKey,
+      JSON.stringify({ state: { byProjectKey: { a: [oldEntry] } }, version: 1 }),
+    );
+    const reloaded = await openHistoryDocument(fixture);
+    await vi.waitFor(() => expect(localStorage.getItem(storageKey)).toBeNull());
+    expect(reloaded.getState().byProjectKey).toEqual({ b: [otherEntry] });
+
+    const revisit = { ...oldEntry, lastVisitedAt: page.lastVisitedAt };
+    reloaded.getState().recordVisit("a", revisit.url, revisit.lastVisitedAt);
+    await vi.waitFor(async () =>
+      expect(await readHistoryFixture(db)).toHaveProperty("byProjectKey", {
+        a: [revisit],
+        b: [otherEntry],
+      }),
+    );
+  } finally {
+    await resetHistoryFixture();
+  }
+});
+
 it.each(["localStorage", "IndexedDB"] as const)(
   "keeps unsaved changes when %s recovers",
   async (recoveredStorage) => {

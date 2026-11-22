@@ -1,3 +1,5 @@
+import { sha256 } from "@noble/hashes/sha2";
+import { bytesToHex } from "@noble/hashes/utils";
 import {
   scopedProjectKey,
   scopedThreadKey,
@@ -136,7 +138,10 @@ function evictExcessProjects(
   return Object.fromEntries(kept.map((key) => [key, byProjectKey[key] ?? []]));
 }
 
-export function migratePersistedBrowserHistoryState(persistedState: unknown): {
+export function migratePersistedBrowserHistoryState(
+  persistedState: unknown,
+  fallbackRemovals?: Readonly<Record<string, number>>,
+): {
   byProjectKey: Record<string, BrowserHistoryEntry[]>;
 } {
   if (!persistedState || typeof persistedState !== "object") return { byProjectKey: {} };
@@ -154,6 +159,12 @@ export function migratePersistedBrowserHistoryState(persistedState: unknown): {
         const normalizedUrl = normalizeHistoryUrl(url);
         if (!normalizedUrl) return [];
         if (!isValidHistoryTimestamp(lastVisitedAt)) return [];
+        if (
+          fallbackRemovals &&
+          lastVisitedAt <=
+            (fallbackRemovals[historyRemovalKey(projectKey, normalizedUrl)] ?? -Infinity)
+        )
+          return [];
         return [
           {
             url: normalizedUrl,
@@ -225,9 +236,29 @@ function addPendingByThread<T>(
 type PersistedBrowserHistory = Pick<
   BrowserHistoryStoreState,
   "byProjectKey" | "projectKeyByThreadKey"
->;
+> & { readonly fallbackRemovals?: Readonly<Record<string, number>> };
 
-type UpdateHistory = (state: PersistedBrowserHistory) => PersistedBrowserHistory;
+type UpdateHistory = (
+  state: PersistedBrowserHistory,
+  fallback?: boolean,
+) => PersistedBrowserHistory;
+
+function historyRemovalKey(projectKey: string, url: string): string {
+  // Keep the removal without retaining the deleted URL.
+  return bytesToHex(
+    sha256(new TextEncoder().encode(JSON.stringify([projectKey, visitLookupKey(url)]))),
+  );
+}
+
+function readFallbackRemovals(state: unknown): Record<string, number> {
+  const raw = (state as { fallbackRemovals?: unknown } | null | undefined)?.fallbackRemovals;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  return Object.fromEntries(
+    Object.entries(raw).filter(
+      ([key, value]) => /^[a-f0-9]{64}$/.test(key) && isValidHistoryTimestamp(value),
+    ),
+  );
+}
 
 function boundThreadMappings(
   previous: PersistedBrowserHistory,
@@ -285,6 +316,7 @@ function readHistorySnapshots(): HistorySnapshot[] {
             history: {
               ...migratePersistedBrowserHistoryState(parsed?.state),
               projectKeyByThreadKey: migratePersistedThreadProjectKeys(parsed?.state),
+              fallbackRemovals: readFallbackRemovals(parsed?.state),
             },
           },
         ];
@@ -314,23 +346,27 @@ function mergeHistorySnapshots(
   saved: PersistedBrowserHistory | undefined,
   snapshots: readonly HistorySnapshot[],
 ): PersistedBrowserHistory | undefined {
-  for (const { history } of snapshots) {
-    saved = saved ? mergeLegacyHistory(saved, history) : history;
+  if (snapshots.length === 0) return saved;
+  const histories = snapshots.map(({ history }) => history);
+  if (saved) histories.unshift(saved);
+  const byProjectKey: Record<string, BrowserHistoryEntry[]> = Object.create(null);
+  const fallbackRemovals: Record<string, number> = {};
+  for (const history of histories) {
+    for (const [projectKey, entries] of Object.entries(history.byProjectKey))
+      (byProjectKey[projectKey] ??= []).push(...entries);
+    for (const [key, at] of Object.entries(history.fallbackRemovals ?? {}))
+      fallbackRemovals[key] = Math.max(at, fallbackRemovals[key] ?? -Infinity);
   }
-  return saved;
-}
-
-// localStorage can gain visits after migration: from the fallback below, or a tab on an older build.
-function mergeLegacyHistory(
-  saved: PersistedBrowserHistory,
-  legacy: PersistedBrowserHistory,
-): PersistedBrowserHistory {
-  const byProjectKey = { ...saved.byProjectKey };
-  for (const [projectKey, entries] of Object.entries(legacy.byProjectKey))
-    byProjectKey[projectKey] = [...(byProjectKey[projectKey] ?? []), ...entries];
+  const hasRemovals = Object.keys(fallbackRemovals).length > 0;
   return {
-    ...migratePersistedBrowserHistoryState({ byProjectKey }),
-    projectKeyByThreadKey: { ...legacy.projectKeyByThreadKey, ...saved.projectKeyByThreadKey },
+    ...migratePersistedBrowserHistoryState(
+      { byProjectKey },
+      hasRemovals ? fallbackRemovals : undefined,
+    ),
+    projectKeyByThreadKey: Object.fromEntries(
+      histories.toReversed().flatMap((history) => Object.entries(history.projectKeyByThreadKey)),
+    ),
+    ...(hasRemovals ? { fallbackRemovals } : {}),
   };
 }
 
@@ -338,7 +374,7 @@ function mergeLegacyHistory(
 function transactLegacyHistory(update: UpdateHistory, current: PersistedBrowserHistory) {
   const snapshots = readHistorySnapshots();
   const previous = mergeHistorySnapshots(undefined, snapshots) ?? current;
-  const history = update(previous);
+  const history = update(previous, true);
   if (history === previous) return { history, unsavedBase: undefined };
   try {
     window.localStorage.setItem(
@@ -425,9 +461,9 @@ export const useBrowserHistoryStore = create<BrowserHistoryStoreState>()((set, g
     }
     historySync = historySync.then(async () => {
       unsavedHistoryUpdates.push(update);
-      const replay = (base: PersistedBrowserHistory) =>
+      const replay: UpdateHistory = (base, fallback) =>
         unsavedHistoryUpdates.reduce((state, apply) => {
-          const next = apply(state);
+          const next = apply(state, fallback);
           return next === state ? state : boundThreadMappings(state, next);
         }, base);
       const saved = await transactIndexedHistory(replay).catch(() => null);
@@ -458,6 +494,11 @@ export const useBrowserHistoryStore = create<BrowserHistoryStoreState>()((set, g
       const normalized = normalizeHistoryUrl(url);
       if (!normalized) return;
       updateHistory((state) => {
+        if (
+          state.fallbackRemovals &&
+          at <= (state.fallbackRemovals[historyRemovalKey(projectKey, normalized)] ?? -Infinity)
+        )
+          return state;
         const entries = state.byProjectKey[projectKey] ?? [];
         return {
           ...state,
@@ -502,15 +543,26 @@ export const useBrowserHistoryStore = create<BrowserHistoryStoreState>()((set, g
     removeUrl: (projectKey, url) => {
       const normalized = normalizeHistoryUrl(url);
       if (!normalized) return;
-      updateHistory((state) => {
-        const entries = state.byProjectKey[projectKey];
-        if (!entries) return state;
-        const next = entries.filter((candidate) => candidate.url !== normalized);
-        if (next.length === entries.length) return state;
-        const byProjectKey = { ...state.byProjectKey };
-        if (next.length === 0) delete byProjectKey[projectKey];
-        else byProjectKey[projectKey] = next;
-        return { ...state, byProjectKey };
+      const observed = get().byProjectKey[projectKey]?.find((entry) => entry.url === normalized);
+      updateHistory((state, fallback) => {
+        const entries = state.byProjectKey[projectKey] ?? [];
+        const index = entries.findIndex((entry) => entry.url === normalized);
+        let next = state;
+        if (index !== -1) {
+          const byProjectKey = { ...state.byProjectKey };
+          if (entries.length === 1) delete byProjectKey[projectKey];
+          else byProjectKey[projectKey] = entries.toSpliced(index, 1);
+          next = { ...state, byProjectKey };
+        }
+        if (!fallback) return next;
+        const removedThrough = Math.max(
+          entries[index]?.lastVisitedAt ?? -Infinity,
+          observed?.lastVisitedAt ?? -Infinity,
+        );
+        if (removedThrough === -Infinity) return next;
+        const key = historyRemovalKey(projectKey, normalized);
+        if (removedThrough <= (state.fallbackRemovals?.[key] ?? -Infinity)) return next;
+        return { ...next, fallbackRemovals: { ...state.fallbackRemovals, [key]: removedThrough } };
       });
     },
     registerThreadProject: (ref, projectKey) => {
