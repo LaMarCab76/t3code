@@ -7164,7 +7164,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             bufferedTaskNotificationIds.has(taskId),
           );
           // Idle outcomes reach Claude only through a wake; a requested one still delivers its buffer.
-          const wakeRequested = (yield* Ref.get(requestedContinuations)).has(nativeThreadId);
+          const wakeRequested =
+            (yield* Ref.get(requestedContinuations)).get(nativeThreadId)?.retired === null;
           const lostBackgroundTasks =
             options?.exitedUnexpectedly === true
               ? [

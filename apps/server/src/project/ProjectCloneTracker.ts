@@ -97,7 +97,6 @@ export const make = Effect.gen(function* () {
   const repositories = yield* SourceControlRepositoryService.SourceControlRepositoryService;
   const clones = yield* Ref.make(new Map<ProjectId, TrackedClone>());
   const changes = yield* PubSub.unbounded<ReadonlyArray<ProjectCloneSnapshot>>();
-  const retentionFibers = new Map<ProjectId, Fiber.Fiber<unknown, never>>();
   let sequence = 0;
   const cloneScope = yield* Scope.make("parallel");
   yield* Effect.addFinalizer(() => Scope.close(cloneScope, Exit.void));
@@ -124,35 +123,26 @@ export const make = Effect.gen(function* () {
       return [nextSnapshot, next] as const;
     }).pipe(Effect.tap((snapshot) => (snapshot ? publish : Effect.void)));
 
-  const clearRetention = (projectId: ProjectId) => {
-    const fiber = retentionFibers.get(projectId);
-    retentionFibers.delete(projectId);
-    return fiber ? Fiber.interrupt(fiber).pipe(Effect.ignore) : Effect.void;
-  };
-
-  const remove = (projectId: ProjectId) =>
+  const remove = (projectId: ProjectId, expectedSequence?: number) =>
     Ref.update(clones, (current) => {
-      if (!current.has(projectId)) return current;
+      const tracked = current.get(projectId);
+      if (
+        tracked === undefined ||
+        (expectedSequence !== undefined && tracked.snapshot.sequence !== expectedSequence)
+      ) {
+        return current;
+      }
       const next = new Map(current);
       next.delete(projectId);
       return next;
     }).pipe(Effect.andThen(publish));
 
-  const scheduleRemoval = Effect.fn("ProjectCloneTracker.scheduleRemoval")(function* (
-    projectId: ProjectId,
-  ) {
-    yield* clearRetention(projectId);
-    const fiber = yield* remove(projectId).pipe(
+  const scheduleRemoval = (snapshot: ProjectCloneSnapshot) =>
+    remove(snapshot.projectId, snapshot.sequence).pipe(
       Effect.delay(DONE_RETENTION),
-      Effect.ensuring(
-        Effect.sync(() => {
-          if (retentionFibers.get(projectId) === fiber) retentionFibers.delete(projectId);
-        }),
-      ),
-      Effect.forkDetach,
+      Effect.forkIn(cloneScope),
+      Effect.asVoid,
     );
-    retentionFibers.set(projectId, fiber);
-  });
 
   const progress = (
     projectId: ProjectId,
@@ -198,7 +188,7 @@ export const make = Effect.gen(function* () {
     error: string | null,
   ) {
     const endedAt = yield* nowIso;
-    yield* modify(projectId, (tracked) => ({
+    const finished = yield* modify(projectId, (tracked) => ({
       ...tracked,
       fiber: null,
       snapshot: {
@@ -210,7 +200,7 @@ export const make = Effect.gen(function* () {
         error: error === null ? null : clampText(error, PROJECT_CLONE_ERROR_MAX_LENGTH),
       },
     }));
-    if (phase === "done") yield* scheduleRemoval(projectId);
+    if (phase === "done" && finished !== null) yield* scheduleRemoval(finished);
   });
 
   const cloneWatchingForStall = Effect.fn("ProjectCloneTracker.cloneWatchingForStall")(function* (
@@ -261,17 +251,23 @@ export const make = Effect.gen(function* () {
     const fiber = yield* runClone(projectId, tracked).pipe(Effect.forkIn(cloneScope));
     yield* Ref.update(clones, (map) => {
       const existing = map.get(projectId);
-      if (!existing) return map;
+      if (existing?.snapshot.phase !== "running") return map;
       const next = new Map(map);
       next.set(projectId, { ...existing, fiber });
       return next;
     });
   });
 
-  const moveClaim = (from: ProjectId, to: ProjectId) =>
+  const moveClaim = (from: ProjectId, to: ProjectId, superseded?: TrackedClone) =>
     Ref.modify(clones, (current) => {
       const claim = current.get(from);
-      if (!claim || current.has(to)) return [false, current] as const;
+      const prior = current.get(to);
+      if (
+        !claim ||
+        (prior !== undefined && prior.snapshot.sequence !== superseded?.snapshot.sequence)
+      ) {
+        return [false, current] as const;
+      }
       const next = new Map(current);
       next.delete(from);
       next.set(to, { ...claim, snapshot: { ...claim.snapshot, projectId: to } });
@@ -280,6 +276,31 @@ export const make = Effect.gen(function* () {
 
   const start: ProjectCloneTracker["Service"]["start"] = Effect.fn("ProjectCloneTracker.start")(
     function* (input, hooks) {
+      const destinationPath = yield* repositories.normalizeCloneDestination(input.destinationPath);
+      const current = yield* Ref.get(clones);
+      const superseded = new Map(
+        [...current].filter(
+          ([projectId, tracked]) =>
+            projectId === input.projectId || tracked.input.destinationPath === destinationPath,
+        ),
+      );
+      const alreadyInProgress = new SourceControlRepositoryError({
+        operation: "cloneRepository",
+        provider: input.provider ?? SourceControlProviderKind.make("unknown"),
+        detail: "A clone into this destination is already in progress.",
+      });
+      if ([...superseded.values()].some((tracked) => tracked.snapshot.phase === "running")) {
+        return yield* alreadyInProgress;
+      }
+      for (const tracked of superseded.values()) {
+        if (
+          tracked.input.destinationPath === destinationPath &&
+          (tracked.snapshot.phase === "failed" || tracked.snapshot.phase === "cancelled")
+        ) {
+          yield* repositories.discardClone(destinationPath);
+          break;
+        }
+      }
       const prepared = yield* repositories.prepareClone(input);
       const startedAt = yield* nowIso;
       const snapshot: ProjectCloneSnapshot = {
@@ -297,44 +318,23 @@ export const make = Effect.gen(function* () {
         endedAt: null,
         sequence: ++sequence,
       };
-      const claim = yield* Ref.modify(clones, (current) => {
-        const overlapping = Array.from(current.values()).filter(
-          (tracked) =>
-            tracked.snapshot.projectId === input.projectId ||
-            tracked.input.destinationPath === prepared.destinationPath,
-        );
-        // Only a running clone owns its destination; a failed or cancelled one
-        // left nothing behind, so a fresh start supersedes it.
-        if (overlapping.some((tracked) => tracked.snapshot.phase === "running")) {
-          return [null, current] as const;
-        }
-        const next = new Map(current);
-        for (const stale of overlapping) next.delete(stale.snapshot.projectId);
-        next.set(input.projectId, {
-          snapshot,
-          fiber: null,
-          hooks,
-          input: {
-            cloneUrl: prepared.cloneUrl,
-            destinationPath: prepared.destinationPath,
-            repository: prepared.repository,
-            protocol: input.protocol ?? "auto",
-          },
-        });
-        return [overlapping.map((stale) => stale.snapshot.projectId), next] as const;
-      });
-      const alreadyInProgress = new SourceControlRepositoryError({
-        operation: "cloneRepository",
-        provider: input.provider ?? SourceControlProviderKind.make("unknown"),
-        detail: "A clone into this destination is already in progress.",
-      });
-      if (claim === null) return yield* alreadyInProgress;
-      // A superseded done entry's pending removal would otherwise delete the new claim.
-      yield* Effect.forEach(claim, clearRetention, { discard: true });
+      const priorClaim = superseded.get(input.projectId);
       // Finish or release the claim despite disconnects; a claim without a fiber cannot be cancelled or retried.
       const projectId = yield* Effect.uninterruptible(
         Effect.gen(function* () {
-          yield* clearRetention(input.projectId);
+          yield* Ref.update(clones, (current) =>
+            new Map(current).set(input.projectId, {
+              snapshot,
+              fiber: null,
+              hooks,
+              input: {
+                cloneUrl: prepared.cloneUrl,
+                destinationPath: prepared.destinationPath,
+                repository: prepared.repository,
+                protocol: input.protocol ?? "auto",
+              },
+            }),
+          );
           // Register before creation so racing thread.create and project.delete see the clone.
           const projectId = yield* hooks
             .createProject({
@@ -349,17 +349,39 @@ export const make = Effect.gen(function* () {
               // forgets the clone; clone for that project instead.
               Effect.catchTags({
                 ProjectConflictError: (conflict) =>
-                  moveClaim(input.projectId, conflict.conflictingProjectId).pipe(
+                  moveClaim(
+                    input.projectId,
+                    conflict.conflictingProjectId,
+                    superseded.get(conflict.conflictingProjectId),
+                  ).pipe(
                     Effect.flatMap((moved) =>
                       moved ? Effect.succeed(conflict.conflictingProjectId) : alreadyInProgress,
                     ),
                   ),
               }),
             );
+          for (const [staleId, stale] of superseded) {
+            if (staleId !== projectId) yield* remove(staleId, stale.snapshot.sequence);
+          }
           yield* publish;
           yield* launch(projectId);
           return projectId;
-        }).pipe(Effect.tapError(() => remove(input.projectId))),
+        }).pipe(
+          Effect.tapError(() =>
+            priorClaim === undefined
+              ? remove(input.projectId, snapshot.sequence)
+              : Ref.update(clones, (current) =>
+                  new Map(current).set(input.projectId, priorClaim),
+                ).pipe(
+                  Effect.andThen(publish),
+                  Effect.andThen(
+                    priorClaim.snapshot.phase === "done"
+                      ? scheduleRemoval(priorClaim.snapshot)
+                      : Effect.void,
+                  ),
+                ),
+          ),
+        ),
       );
       return {
         projectId,
@@ -436,7 +458,6 @@ export const make = Effect.gen(function* () {
     if (after?.phase !== "done") {
       yield* repositories.discardClone(tracked.input.destinationPath).pipe(Effect.ignore);
     }
-    yield* clearRetention(projectId);
     yield* remove(projectId);
   });
 

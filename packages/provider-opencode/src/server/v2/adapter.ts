@@ -4744,13 +4744,8 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
           // A command that never prompts the model starts no execution, so no event ends its turn.
           const idle = () => state.active === turn && !busy.has(sessionId);
           if (!idle()) return;
-          const active = yield* client.session
-            .active()
-            .pipe(Effect.timeout(ACTIVE_CHECK_TIMEOUT), Effect.option);
-          if (active._tag === "None") {
-            return yield* Effect.logWarning("Could not check whether an OpenCode command started.");
-          }
-          if (sessionId in active.value) return;
+          const active = yield* client.session.active().pipe(Effect.timeout(ACTIVE_CHECK_TIMEOUT));
+          if (sessionId in active) return;
           // An execution that already ended left history behind; its events may still trail this reply.
           const ran = yield* OpenCode2Client.paginate(
             { sessionID, order: "desc" as const, limit: 1 },
@@ -4763,12 +4758,8 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
             ),
             Stream.runHead,
             Effect.timeout(ACTIVE_CHECK_TIMEOUT),
-            Effect.option,
           );
-          if (ran._tag === "None") {
-            return yield* Effect.logWarning("Could not check whether an OpenCode command ran.");
-          }
-          if (ran.value._tag === "Some") return;
+          if (ran._tag === "Some") return;
           return yield* lock.withPermit(
             Effect.suspend(() =>
               idle()

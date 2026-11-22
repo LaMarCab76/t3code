@@ -687,6 +687,7 @@ describe("pull request detail decoding", () => {
         ...superseded,
         name: "web browser tests (runner ${{ matrix.slice }} of 6)",
         conclusion: "CANCELLED",
+        isRequired: false,
       }),
       inWorkflow({ ...replacement, name: "check" }),
       inWorkflow({ ...replacement, name: "web browser tests (runner 1 of 6)" }),
@@ -767,6 +768,14 @@ describe("pull request detail decoding", () => {
       true,
       "cancelled",
     ],
+    [
+      "a pull request run, with unknown requiredness",
+      "pull_request",
+      "pull_request",
+      "CANCELLED",
+      undefined,
+      "cancelled",
+    ],
   ])(
     "keeps an older run's check when the newer run is %s",
     (_label, olderEvent, newerEvent, conclusion, isRequired, status) => {
@@ -777,7 +786,7 @@ describe("pull request detail decoding", () => {
           event: olderEvent,
           runNumber: 41,
           conclusion,
-          isRequired,
+          ...(isRequired === undefined ? {} : { isRequired }),
         }),
         inWorkflow({
           name: "test (apps/server)",

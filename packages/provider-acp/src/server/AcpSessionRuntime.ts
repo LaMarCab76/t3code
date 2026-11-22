@@ -1766,16 +1766,15 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
 
   const acp = yield* Effect.service(EffectAcpClient.AcpClient).pipe(Effect.provide(acpContext));
 
-  // Counts applied `config_option_update`s; see setConfigOption.
+  // Counts notifications that update the cached configuration; see setConfigOption.
   const configOptionUpdates = yield* Ref.make(0);
   const processSessionUpdate = (notification: EffectAcpSchema.SessionNotification) =>
-    (notification.update.sessionUpdate === "config_option_update"
+    (notification.update.sessionUpdate === "config_option_update" ||
+    notification.update.sessionUpdate === "current_mode_update"
       ? Ref.update(configOptionUpdates, (count) => count + 1).pipe(
           Effect.andThen(Ref.update(sessionChangeCountRef, (count) => count + 1)),
         )
-      : notification.update.sessionUpdate === "current_mode_update"
-        ? Ref.update(sessionChangeCountRef, (count) => count + 1)
-        : Effect.void
+      : Effect.void
     ).pipe(
       Effect.andThen(
         handleSessionUpdate({

@@ -47,6 +47,9 @@ export class SourceControlRepositoryService extends Context.Service<
     readonly lookupRepository: (
       input: SourceControlRepositoryLookupInput,
     ) => Effect.Effect<SourceControlRepositoryInfo, SourceControlRepositoryError>;
+    readonly normalizeCloneDestination: (
+      destinationPath: string,
+    ) => Effect.Effect<string, SourceControlRepositoryError>;
     readonly prepareClone: (
       input: SourceControlCloneRepositoryInput,
     ) => Effect.Effect<SourceControlPreparedClone, SourceControlRepositoryError>;
@@ -624,6 +627,7 @@ export const make = Effect.gen(function* () {
         mapRepositoryError("lookupRepository", input.provider),
       );
     }),
+    normalizeCloneDestination: normalizeDestinationPath,
     prepareClone: Effect.fnUntraced(function* (input) {
       return yield* prepareClone(input).pipe(
         mapRepositoryError(

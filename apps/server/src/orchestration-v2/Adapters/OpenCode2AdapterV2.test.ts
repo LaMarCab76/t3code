@@ -3703,38 +3703,60 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     }),
   );
 
-  it.effect("finishes a workspace command that never starts an execution", () =>
-    Effect.gen(function* () {
-      // A plugin command whose handler skips the model returns 204 and emits no execution events.
-      const { runtime, thread } = yield* resumed([
-        out("command.list", "<any>"),
-        reply("command.list", { location: { directory: WORK }, data: [{ name: "noop" }] }),
-        out("message.list", { sessionID: SESSION, order: "desc", limit: "1" }),
-        reply("message.list", {
-          data: [
-            { id: "msg_idle_before", time: { created: 1 }, type: "idle", outcome: "succeeded" },
-          ],
-          cursor: {},
-        }),
-        out("session.command", { sessionID: SESSION, name: "noop", text: "" }),
-        reply("session.command", null),
-        out("session.active"),
-        replyData("session.active", {}),
-        out("message.list", { sessionID: SESSION, order: "desc", limit: "1" }),
-        reply("message.list", {
-          data: [
-            { id: "msg_idle_before", time: { created: 1 }, type: "idle", outcome: "succeeded" },
-          ],
-          cursor: {},
-        }),
-      ]);
-      const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
-      yield* runtime.startTurn({
-        ...turnInput(thread),
-        message: { ...turnInput(thread).message, text: "/noop" },
-      });
-      assert.equal((yield* Fiber.join(terminal))?.status, "completed");
-    }).pipe(Effect.scoped),
+  it.effect.each(["idle", "active probe failed"] as const)(
+    "settles a workspace command that never starts an execution (%s)",
+    (probe) =>
+      Effect.gen(function* () {
+        // A plugin command whose handler skips the model returns 204 and emits no execution events.
+        const { runtime, thread } = yield* resumed([
+          out("command.list", "<any>"),
+          reply("command.list", { location: { directory: WORK }, data: [{ name: "noop" }] }),
+          out("message.list", { sessionID: SESSION, order: "desc", limit: "1" }),
+          reply("message.list", {
+            data: [
+              { id: "msg_idle_before", time: { created: 1 }, type: "idle", outcome: "succeeded" },
+            ],
+            cursor: {},
+          }),
+          out("session.command", { sessionID: SESSION, name: "noop", text: "" }),
+          reply("session.command", null),
+          out("session.active"),
+          ...(probe === "idle"
+            ? [
+                replyData("session.active", {}),
+                out("message.list", { sessionID: SESSION, order: "desc", limit: "1" }),
+                reply("message.list", {
+                  data: [
+                    {
+                      id: "msg_idle_before",
+                      time: { created: 1 },
+                      type: "idle",
+                      outcome: "succeeded",
+                    },
+                  ],
+                  cursor: {},
+                }),
+              ]
+            : [
+                reply("session.active", {
+                  status: 503,
+                  body: { message: "temporarily unavailable" },
+                }),
+              ]),
+        ]);
+        const terminal = yield* terminalOf(runtime).pipe(Effect.forkScoped);
+        const started = yield* Effect.exit(
+          runtime.startTurn({
+            ...turnInput(thread),
+            message: { ...turnInput(thread).message, text: "/noop" },
+          }),
+        );
+        assert.equal(Exit.isSuccess(started), probe === "idle");
+        assert.equal(
+          (yield* Fiber.join(terminal))?.status,
+          probe === "idle" ? "completed" : "failed",
+        );
+      }).pipe(Effect.scoped),
   );
 
   it.effect("ends a command from execution events that arrive after its reply", () =>

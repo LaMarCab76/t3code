@@ -659,7 +659,7 @@ function toCheckEntries(raw: ReadonlyArray<CheckFields> | null | undefined): Rea
     const run = check.workflowRun;
     if (status === "cancelled" && run != null) {
       // Branch protection names required checks, so only a newer same-name check replaces one.
-      const replacedBy = check.isRequired === true ? `${lineageOf(run)} ${name}` : lineageOf(run);
+      const replacedBy = check.isRequired !== false ? `${lineageOf(run)} ${name}` : lineageOf(run);
       if (run.runNumber < (newestRunNumber.get(replacedBy) ?? run.runNumber)) return [];
     }
     return [

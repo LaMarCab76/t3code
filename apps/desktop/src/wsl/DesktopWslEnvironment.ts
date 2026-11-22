@@ -1132,25 +1132,27 @@ const wslServiceRegistered = Effect.scoped(
     const registered = yield* Effect.forEach(
       WSL_SERVICE_KEYS,
       (key) =>
-        spawner
-          .spawn(
-            ChildProcess.make("reg.exe", ["query", key], {
-              stdin: "ignore",
-              stdout: "ignore",
-              stderr: "ignore",
-              killSignal: "SIGTERM",
-              forceKillAfter: PROCESS_TERMINATE_GRACE,
-            }),
-          )
-          .pipe(Effect.flatMap((handle) => handle.exitCode)),
+        Effect.scoped(
+          spawner
+            .spawn(
+              ChildProcess.make("reg.exe", ["query", key], {
+                stdin: "ignore",
+                stdout: "ignore",
+                stderr: "ignore",
+                killSignal: "SIGTERM",
+                forceKillAfter: PROCESS_TERMINATE_GRACE,
+              }),
+            )
+            .pipe(Effect.flatMap((handle) => handle.exitCode)),
+        ).pipe(
+          Effect.timeoutOption(SERVICE_QUERY_TIMEOUT),
+          Effect.map(Option.exists((exitCode) => (exitCode as unknown as number) === 0)),
+          Effect.orElseSucceed(() => false),
+        ),
       { concurrency: "unbounded" },
     );
-    return registered.some((exitCode) => (exitCode as unknown as number) === 0);
+    return registered.some(Boolean);
   }),
-).pipe(
-  Effect.timeoutOption(SERVICE_QUERY_TIMEOUT),
-  Effect.map(Option.getOrElse(() => false)),
-  Effect.orElseSucceed(() => false),
 );
 
 export const makeIsAvailable = Effect.fn("DesktopWslEnvironment.makeIsAvailable")(function* (

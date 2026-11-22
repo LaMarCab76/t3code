@@ -3,6 +3,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
+import * as TestClock from "effect/testing/TestClock";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -558,7 +560,7 @@ const WSL_EXE = "/windows/System32/wsl.exe";
 const STORE_SERVICE = "HKLM\\SYSTEM\\CurrentControlSet\\Services\\WSLService";
 const INBOX_SERVICE = "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LxssManager";
 
-const registrySpawner = (keys: ReadonlyArray<string>) =>
+const registrySpawner = (keys: ReadonlyArray<string>, pendingKey?: string) =>
   ChildProcessSpawner.make((command) =>
     Effect.succeed(
       ChildProcessSpawner.makeHandle({
@@ -566,15 +568,20 @@ const registrySpawner = (keys: ReadonlyArray<string>) =>
         stdout: Stream.empty,
         stderr: Stream.empty,
         all: Stream.empty,
-        exitCode: Effect.succeed(
-          ChildProcessSpawner.ExitCode(
-            command._tag === "StandardCommand" &&
-              command.command === "reg.exe" &&
-              keys.some((key) => command.args.includes(key))
-              ? 0
-              : 1,
-          ),
-        ),
+        exitCode:
+          pendingKey !== undefined &&
+          command._tag === "StandardCommand" &&
+          command.args.includes(pendingKey)
+            ? Effect.never
+            : Effect.succeed(
+                ChildProcessSpawner.ExitCode(
+                  command._tag === "StandardCommand" &&
+                    command.command === "reg.exe" &&
+                    keys.some((key) => command.args.includes(key))
+                    ? 0
+                    : 1,
+                ),
+              ),
         isRunning: Effect.succeed(false),
         kill: () => Effect.void,
         stdin: Sink.drain,
@@ -588,6 +595,7 @@ const registrySpawner = (keys: ReadonlyArray<string>) =>
 const isAvailable = (
   policy?: Parameters<typeof DesktopManagedPolicy.layerTest>[0],
   serviceKeys: ReadonlyArray<string> = [STORE_SERVICE],
+  pendingKey?: string,
 ) =>
   makeIsAvailable("win32", "/windows").pipe(
     Effect.provide(
@@ -597,7 +605,10 @@ const isAvailable = (
         DesktopManagedPolicy.layerTest(policy),
       ),
     ),
-    Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, registrySpawner(serviceKeys)),
+    Effect.provideService(
+      ChildProcessSpawner.ChildProcessSpawner,
+      registrySpawner(serviceKeys, pendingKey),
+    ),
   );
 
 describe("makeIsAvailable", () => {
@@ -605,6 +616,11 @@ describe("makeIsAvailable", () => {
     Effect.gen(function* () {
       assert.isFalse(yield* isAvailable(undefined, []));
       assert.isTrue(yield* isAvailable(undefined, [INBOX_SERVICE]));
+      const withSlowProbe = yield* isAvailable(undefined, [STORE_SERVICE], INBOX_SERVICE).pipe(
+        Effect.forkScoped,
+      );
+      yield* TestClock.adjust("5 seconds");
+      assert.isTrue(yield* Fiber.join(withSlowProbe));
     }),
   );
 

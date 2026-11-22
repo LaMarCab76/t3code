@@ -8670,8 +8670,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   // scans. SQLite lower() folds only ASCII: Windows paths differing only in the case
                   // of another letter are not found. readShellSnapshotRows keeps the exact comparison.
                   sql` AND CASE WHEN json_valid(t.payload_json)
-                    THEN lower(rtrim(replace(trim(json_extract(t.payload_json, '$.worktreePath')), '\\', '/'), '/'))
-                  END = lower(rtrim(replace(trim(${worktreePath}), '\\', '/'), '/'))`
+                    THEN lower(rtrim(replace(trim(json_extract(t.payload_json, '$.worktreePath'), ${sql.literal(`'${JAVASCRIPT_TRIM_WHITESPACE}'`)}), '\\', '/'), '/'))
+                  END = lower(rtrim(replace(trim(${worktreePath}, ${JAVASCRIPT_TRIM_WHITESPACE}), '\\', '/'), '/'))`
             }${threadIds === undefined ? sql`` : sql` AND t.thread_id IN (SELECT value FROM json_each(${encodeIdList(threadIds)}))`}
             ORDER BY t.updated_at ASC, t.thread_id ASC
           `;

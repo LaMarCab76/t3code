@@ -3204,7 +3204,7 @@ it.effect("SQL shells read a subagent family and a worktree's threads", () =>
       worktreePath: `${worktreePath}/`,
     });
     yield* createThread({ name: "cased", worktreePath: worktreePath.toUpperCase() });
-    yield* createThread({ name: "windows", worktreePath: "C:\\Répo\\WT" });
+    yield* createThread({ name: "windows", worktreePath: "\tC:\\Répo\\WT\u00a0" });
 
     const family = (threadId: ThreadId) =>
       store
@@ -3227,7 +3227,7 @@ it.effect("SQL shells read a subagent family and a worktree's threads", () =>
       [id("root"), id("child"), id("other-child"), id("aliased-child")],
     );
     const onWindowsWorktree = yield* store
-      .getShellSnapshot({ location: "active", worktreePath: "c:/Répo/wt/" })
+      .getShellSnapshot({ location: "active", worktreePath: "\tc:/Répo/wt/\n" })
       .pipe(Effect.withTracer(tracer));
     assert.deepEqual(
       onWindowsWorktree.threads.map((thread) => thread.id),

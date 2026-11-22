@@ -259,9 +259,12 @@ export const layer: Layer.Layer<
           if (currentRun.status !== "waiting" && !stoppedNow) {
             return;
           }
-          // Omit delegatedCompletion to preserve cohort writes made after capture loaded the run.
-          const { delegatedCompletion: _delegatedCompletion, ...runWithoutDelegatedCompletion } =
-            currentRun;
+          // Provider and cohort updates can arrive after the last read.
+          const {
+            delegatedCompletion: _delegatedCompletion,
+            restartCancelledBackgroundWork: _restartCancelledBackgroundWork,
+            ...runWithoutDelegatedCompletion
+          } = currentRun;
           yield* eventSink.commitCommand({
             commandId,
             threadId: input.threadId,

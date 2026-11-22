@@ -5,8 +5,9 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
+import * as Semaphore from "effect/Semaphore";
 import * as Path from "effect/Path";
 import * as RcMap from "effect/RcMap";
 import * as Schema from "effect/Schema";
@@ -166,21 +167,20 @@ export const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
   const workspaceSearchIndexes = yield* WorkspaceSearchIndex.WorkspaceSearchIndexMap;
-  let pendingSymlinkTargetStats = 0;
-  const statSymlinkTarget = (candidate: { readonly name: string; readonly fullPath: string }) => {
-    if (pendingSymlinkTargetStats >= MAX_PENDING_SYMLINK_TARGET_STATS) {
-      return Promise.resolve(null);
-    }
-    pendingSymlinkTargetStats++;
-    return NodeFSP.stat(candidate.fullPath)
-      .then(
-        (stats) => (stats.isDirectory() ? candidate : null),
-        () => null,
-      )
-      .finally(() => {
-        pendingSymlinkTargetStats--;
-      });
-  };
+  const symlinkStatSlots = yield* Semaphore.make(MAX_PENDING_SYMLINK_TARGET_STATS);
+  const statSymlinkTarget = (candidate: { readonly name: string; readonly fullPath: string }) =>
+    Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        yield* restore(symlinkStatSlots.take(1));
+        const stat = yield* Effect.promise(() =>
+          NodeFSP.stat(candidate.fullPath).then(
+            (stats) => (stats.isDirectory() ? candidate : null),
+            () => null,
+          ),
+        ).pipe(Effect.ensuring(symlinkStatSlots.release(1)), Effect.forkDetach);
+        return yield* restore(Fiber.join(stat));
+      }),
+    );
   const vcsProcess = yield* VcsProcess.VcsProcess;
 
   const normalizeWorkspaceRoot = Effect.fn("WorkspaceEntries.normalizeWorkspaceRoot")(function* (
@@ -290,18 +290,16 @@ export const make = Effect.gen(function* () {
         }
       }
       if (symlinkCandidates.length > 0) {
-        const resolvedSymlinks = yield* Effect.forEach(
+        yield* Effect.forEach(
           symlinkCandidates,
           (candidate) =>
-            Effect.promise(() => statSymlinkTarget(candidate)).pipe(
-              Effect.timeoutOption(SYMLINK_TARGET_STAT_TIMEOUT),
-              Effect.map(Option.getOrNull),
+            statSymlinkTarget(candidate).pipe(
+              Effect.map((directory) => {
+                if (directory !== null) entries.push(directory);
+              }),
             ),
-          { concurrency: MAX_PENDING_SYMLINK_TARGET_STATS },
-        );
-        for (const candidate of resolvedSymlinks) {
-          if (candidate !== null) entries.push(candidate);
-        }
+          { concurrency: MAX_PENDING_SYMLINK_TARGET_STATS, discard: true },
+        ).pipe(Effect.timeoutOption(SYMLINK_TARGET_STAT_TIMEOUT));
       }
 
       return {

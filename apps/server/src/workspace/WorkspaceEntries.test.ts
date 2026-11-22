@@ -5,6 +5,7 @@ import { FileFinder } from "@ff-labs/fff-node";
 import { it, afterEach, describe, expect } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
@@ -213,6 +214,65 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
         // ...but once followed, the sibling's link back is hidden.
         expect(yield* paths("a/to-b")).toEqual(["a/to-b/file.txt"]);
       }),
+    );
+
+    it.effect("waits for symlink stat slots held by another browse", () =>
+      Effect.gen(function* () {
+        if ((yield* HostProcess.Platform) === "win32") return;
+        const cwd = yield* makeTempDir();
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const slow = path.join(cwd, "slow");
+        const next = path.join(cwd, "next");
+        const target = path.join(cwd, "target");
+        yield* fs.makeDirectory(slow);
+        yield* fs.makeDirectory(next);
+        yield* fs.makeDirectory(target);
+        for (const name of ["one", "two"]) yield* fs.symlink(target, path.join(slow, name));
+        yield* fs.symlink(target, path.join(next, "three"));
+
+        const held = Promise.withResolvers<void>();
+        const started = Promise.withResolvers<void>();
+        const nextRead = Promise.withResolvers<void>();
+        let heldCount = 0;
+        const stat = NodeFSP.stat;
+        const readdir = vi.mocked(NodeFSP.readdir);
+        const readDirectory = readdir.getMockImplementation()!;
+        using _restore = {
+          [Symbol.dispose]: () => {
+            held.resolve();
+            readdir.mockImplementation(readDirectory);
+          },
+        };
+        using _stat = vi.spyOn(NodeFSP, "stat").mockImplementation((async (
+          ...args: Parameters<typeof stat>
+        ) => {
+          if (String(args[0]).startsWith(slow + path.sep)) {
+            if (++heldCount === 2) started.resolve();
+            await held.promise;
+          }
+          return stat(...args);
+        }) as typeof stat);
+        readdir.mockImplementation((async (...args: Parameters<typeof NodeFSP.readdir>) => {
+          const entries = await readDirectory(...args);
+          if (String(args[0]) === next) nextRead.resolve();
+          return entries;
+        }) as typeof NodeFSP.readdir);
+
+        const workspace = yield* WorkspaceEntries.WorkspaceEntries;
+        const first = yield* workspace
+          .browse({ cwd, partialPath: slow + path.sep })
+          .pipe(Effect.forkScoped);
+        yield* Effect.promise(() => started.promise);
+        const second = yield* workspace
+          .browse({ cwd, partialPath: next + path.sep })
+          .pipe(Effect.forkScoped);
+        yield* Effect.promise(() => nextRead.promise);
+        yield* TestClock.adjust("100 millis");
+        held.resolve();
+        yield* Fiber.join(first);
+        expect((yield* Fiber.join(second)).entries.map((entry) => entry.name)).toEqual(["three"]);
+      }).pipe(Effect.provide(TestClock.layer())),
     );
 
     it.effect("resolves a folder of many symlinks in bounded batches", () =>

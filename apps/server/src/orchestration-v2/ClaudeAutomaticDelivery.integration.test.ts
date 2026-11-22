@@ -1597,14 +1597,15 @@ const exitWhileIdle = (options: {
           [taskId],
           "the run must record the awaited task the exited process took with it",
         );
-        // Drained effects already dispatched any wake, so a missing one fails here instead of hanging.
+        if (awaited) yield* Fiber.join(woken);
+        // The loss's outbox executor awaits restart dispatch, including the decision to skip it.
+        const afterContinuation = yield* orchestrator.getThreadProjection(threadId);
         assert.equal(
-          afterExit.runs.some((run) => run.id !== firstRun.id),
+          afterContinuation.runs.some((run) => run.id !== firstRun.id),
           awaited,
           "only awaited work wakes the agent without a user message",
         );
         if (!awaited) return;
-        yield* Fiber.join(woken);
         yield* worker.drain();
         const afterWake = yield* orchestrator.getThreadProjection(threadId);
         assert.lengthOf(

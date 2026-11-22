@@ -1620,7 +1620,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const planForwardNavigation = (
     threadKey: string,
     coParkingKeys?: ReadonlySet<string>,
-  ): (() => void) | null => {
+  ): (() => Promise<void>) | null => {
     if (readRouteThreadKey(router) !== threadKey) return null;
     const shell = threadByKeyRef.current.get(threadKey);
     const orderedKeys = orderedThreadKeysRef.current;
@@ -1634,11 +1634,20 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             (key) => !settledKeys.has(key) && !snoozedKeys.has(key) && !coParkingKeys?.has(key),
           ) ?? null);
     const nextThread = nextCardKey ? threadByKeyRef.current.get(nextCardKey) : null;
-    return nextThread
-      ? () => navigateToThread(scopeThreadRef(nextThread.environmentId, nextThread.id))
-      : shell
-        ? () => void handleNewThread(scopeProjectRef(shell.environmentId, shell.projectId))
-        : () => void router.navigate({ to: "/" });
+    return async () => {
+      try {
+        if (nextThread) {
+          await navigateToThread(scopeThreadRef(nextThread.environmentId, nextThread.id));
+        } else if (shell) {
+          await handleNewThread(scopeProjectRef(shell.environmentId, shell.projectId));
+        } else {
+          await router.navigate({ to: "/" });
+        }
+      } catch {
+        stayOnRouteThread(threadKey);
+      }
+      if (readRouteThreadKey(router) === threadKey) stayOnRouteThread(threadKey);
+    };
   };
 
   const attemptSettle = (
@@ -1676,7 +1685,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           thread: readThreadShell(threadRef),
         })
       ) {
-        navigateAfterSettle?.();
+        await navigateAfterSettle?.();
       } else {
         stayOnRouteThread(threadKey);
       }
@@ -2226,7 +2235,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               thread: readThreadShell(threadRef),
             })
           )
-            navigateAfterSettle?.();
+            await navigateAfterSettle?.();
           else stayOnRouteThread(activeKey);
           return;
         }
@@ -2301,7 +2310,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         thread: readThreadShell(threadRef),
       })
     ) {
-      navigateAfterSnooze?.();
+      await navigateAfterSnooze?.();
     } else {
       stayOnRouteThread(threadKey);
     }

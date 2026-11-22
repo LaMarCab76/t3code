@@ -552,6 +552,7 @@ export const make = Effect.gen(function* () {
     readonly cwd: string;
     readonly reference: string;
     readonly args: ReadonlyArray<string>;
+    readonly callerNamedHost?: string;
   }) =>
     run(input, (error) =>
       GitLabMergeRequestNotFoundError.fromVcsError(
@@ -570,6 +571,7 @@ export const make = Effect.gen(function* () {
     cwd: string,
     records: ReadonlyArray<NormalizedGitLabMergeRequestRecord>,
     paths: Map<number, string | null>,
+    host: string | null = null,
   ) {
     const ids = new Set<number>();
     for (const record of records) {
@@ -579,7 +581,11 @@ export const make = Effect.gen(function* () {
     yield* Effect.forEach(
       ids,
       (id) =>
-        execute({ cwd, args: ["api", `projects/${id}`] }).pipe(
+        execute({
+          cwd,
+          ...(host === null ? {} : { callerNamedHost: host }),
+          args: ["api", ...(host === null ? [] : ["--hostname", host]), `projects/${id}`],
+        }).pipe(
           Effect.flatMap((result) => decodeGitLabProjectPath(result.stdout.trim())),
           Effect.map((project) => project.path_with_namespace),
           Effect.orElseSucceed(() => null),
@@ -654,9 +660,11 @@ export const make = Effect.gen(function* () {
       return items.slice(0, limit);
     }),
     getMergeRequest: Effect.fn("GitLabCli.getMergeRequest")(function (input) {
+      const { host } = parseRepositoryLookup(input.reference);
       return executeMergeRequest({
         cwd: input.cwd,
         reference: input.reference,
+        ...(host === null ? {} : { callerNamedHost: host }),
         args: ["mr", "view", "--output", "json", "--", input.reference],
       }).pipe(
         Effect.map((result) => result.stdout.trim()),
@@ -675,7 +683,7 @@ export const make = Effect.gen(function* () {
                 );
               }
 
-              return resolveSourceProjectPaths(input.cwd, [decoded.success], new Map()).pipe(
+              return resolveSourceProjectPaths(input.cwd, [decoded.success], new Map(), host).pipe(
                 Effect.map(([record]) => toSummaryWithOptionalUpdatedAt(record!)),
               );
             }),
