@@ -150,7 +150,6 @@ export function migratePersistedBrowserHistoryState(
   const byProjectKey: Record<string, BrowserHistoryEntry[]> = {};
   for (const [projectKey, value] of Object.entries(raw as Record<string, unknown>)) {
     if (!Array.isArray(value)) continue;
-    const seenUrls = new Set<string>();
     const entries = value
       .flatMap<BrowserHistoryEntry>((candidate) => {
         if (!candidate || typeof candidate !== "object") return [];
@@ -175,15 +174,20 @@ export function migratePersistedBrowserHistoryState(
           },
         ];
       })
-      .toSorted((a, b) => b.lastVisitedAt - a.lastVisitedAt)
-      .filter((entry) => {
-        const key = visitLookupKey(entry.url);
-        if (seenUrls.has(key)) return false;
-        seenUrls.add(key);
-        return true;
-      })
-      .slice(0, BROWSER_HISTORY_MAX_ENTRIES_PER_PROJECT);
-    if (entries.length > 0) byProjectKey[projectKey] = entries;
+      .toSorted((a, b) => b.lastVisitedAt - a.lastVisitedAt);
+    const latest = new Map<string, BrowserHistoryEntry>();
+    for (const entry of entries) {
+      const key = visitLookupKey(entry.url);
+      const current = latest.get(key);
+      if (!current) latest.set(key, entry);
+      else if (current.lastVisitedAt === entry.lastVisitedAt && !current.title && entry.title)
+        latest.set(key, { ...current, title: entry.title });
+    }
+    if (latest.size > 0)
+      byProjectKey[projectKey] = [...latest.values()].slice(
+        0,
+        BROWSER_HISTORY_MAX_ENTRIES_PER_PROJECT,
+      );
   }
   return { byProjectKey: evictExcessProjects(byProjectKey) };
 }
@@ -238,10 +242,13 @@ type PersistedBrowserHistory = Pick<
   "byProjectKey" | "projectKeyByThreadKey"
 > & { readonly fallbackRemovals?: Readonly<Record<string, number>> };
 
-type UpdateHistory = (
-  state: PersistedBrowserHistory,
-  fallback?: boolean,
-) => PersistedBrowserHistory;
+type UpdateHistory = (state: PersistedBrowserHistory) => PersistedBrowserHistory;
+type UpdateStoredHistory = (state: PersistedBrowserHistory | undefined) => PersistedBrowserHistory;
+
+interface UnsavedHistory {
+  readonly base: PersistedBrowserHistory;
+  readonly history: PersistedBrowserHistory;
+}
 
 function historyRemovalKey(projectKey: string, url: string): string {
   // Keep the removal without retaining the deleted URL.
@@ -287,8 +294,7 @@ const EMPTY_PERSISTED_HISTORY: PersistedBrowserHistory = {
 let historyDatabase: Promise<IDBDatabase> | undefined;
 let historyChannel: BroadcastChannel | undefined;
 let historySync = Promise.resolve();
-let unsavedHistoryUpdates: UpdateHistory[] = [];
-let unsavedHistoryBase: PersistedBrowserHistory | undefined;
+let unsavedHistory: UnsavedHistory | undefined;
 
 interface HistorySnapshot {
   readonly key: string;
@@ -348,7 +354,10 @@ function mergeHistorySnapshots(
 ): PersistedBrowserHistory | undefined {
   if (snapshots.length === 0) return saved;
   const histories = snapshots.map(({ history }) => history);
-  if (saved) histories.unshift(saved);
+  return mergeHistories(saved ? [saved, ...histories] : histories);
+}
+
+function mergeHistories(histories: readonly PersistedBrowserHistory[]): PersistedBrowserHistory {
   const byProjectKey: Record<string, BrowserHistoryEntry[]> = Object.create(null);
   const fallbackRemovals: Record<string, number> = {};
   for (const history of histories) {
@@ -370,21 +379,82 @@ function mergeHistorySnapshots(
   };
 }
 
+function rebaseUnsavedHistory(
+  saved: PersistedBrowserHistory | undefined,
+  pending: UnsavedHistory,
+): PersistedBrowserHistory {
+  if (
+    !saved ||
+    saved === pending.base ||
+    (Object.keys(saved.byProjectKey).length === 0 &&
+      Object.keys(saved.projectKeyByThreadKey).length === 0 &&
+      Object.keys(saved.fallbackRemovals ?? {}).length === 0)
+  )
+    return pending.history;
+
+  const byProjectKey = { ...saved.byProjectKey };
+  const byVisitKey = (visits: readonly BrowserHistoryEntry[] | undefined) =>
+    new Map(visits?.map((entry) => [visitLookupKey(entry.url), entry] as const));
+  for (const [projectKey, entries] of Object.entries(pending.history.byProjectKey)) {
+    const baseEntries = pending.base.byProjectKey[projectKey];
+    if (entries === baseEntries) continue;
+    const base = byVisitKey(baseEntries);
+    const current = byVisitKey(saved.byProjectKey[projectKey]);
+    for (const entry of entries) {
+      const key = visitLookupKey(entry.url);
+      const before = base.get(key);
+      if (
+        before?.lastVisitedAt === entry.lastVisitedAt &&
+        before.url === entry.url &&
+        before.title === entry.title
+      )
+        continue;
+      const durable = current.get(key);
+      if (!durable || entry.lastVisitedAt > durable.lastVisitedAt) {
+        current.set(key, entry);
+      } else if (
+        entry.lastVisitedAt === durable.lastVisitedAt &&
+        entry.title &&
+        entry.title !== before?.title &&
+        (durable.title === before?.title || durable.title === undefined)
+      ) {
+        current.set(key, { ...durable, title: entry.title });
+      }
+    }
+    byProjectKey[projectKey] = [...current.values()];
+  }
+  const updatedThreadMappings = Object.entries(pending.history.projectKeyByThreadKey).filter(
+    ([threadKey, projectKey]) => pending.base.projectKeyByThreadKey[threadKey] !== projectKey,
+  );
+  return mergeHistories([
+    {
+      ...saved,
+      byProjectKey,
+      projectKeyByThreadKey: Object.fromEntries(
+        [
+          ...new Map([...Object.entries(saved.projectKeyByThreadKey), ...updatedThreadMappings]),
+        ].slice(-MAX_PERSISTED_THREAD_MAPPINGS),
+      ),
+    },
+    { ...EMPTY_PERSISTED_HISTORY, fallbackRemovals: pending.history.fallbackRemovals ?? {} },
+  ]);
+}
+
 // Without IndexedDB, merge into the freshest localStorage snapshot so a reload keeps new visits.
-function transactLegacyHistory(update: UpdateHistory, current: PersistedBrowserHistory) {
+function transactLegacyHistory(update: UpdateStoredHistory, current: PersistedBrowserHistory) {
   const snapshots = readHistorySnapshots();
-  const previous = mergeHistorySnapshots(undefined, snapshots) ?? current;
-  const history = update(previous, true);
-  if (history === previous) return { history, unsavedBase: undefined };
+  const base = mergeHistorySnapshots(undefined, snapshots) ?? current;
+  const history = update(base);
+  if (history === base) return { history, pending: undefined };
   try {
     window.localStorage.setItem(
       `${BROWSER_HISTORY_FALLBACK_PREFIX}${randomUUID()}`,
       JSON.stringify({ state: history, version: 1 }),
     );
     retireHistorySnapshots(snapshots);
-    return { history, unsavedBase: undefined };
+    return { history, pending: undefined };
   } catch {
-    return { history, unsavedBase: previous };
+    return { history, pending: { base, history } };
   }
 }
 
@@ -413,7 +483,7 @@ function openHistoryDatabase() {
   return opening;
 }
 
-async function transactIndexedHistory(update?: UpdateHistory, retry = true) {
+async function transactIndexedHistory(update?: UpdateStoredHistory, retry = true) {
   const opening = openHistoryDatabase();
   const db = await opening;
   let transaction: IDBTransaction;
@@ -436,8 +506,8 @@ async function transactIndexedHistory(update?: UpdateHistory, retry = true) {
     request.onsuccess = () => {
       const saved = request.result as PersistedBrowserHistory | undefined;
       if (update) snapshots = readHistorySnapshots();
-      const previous = mergeHistorySnapshots(saved, snapshots) ?? EMPTY_PERSISTED_HISTORY;
-      history = update?.(previous) ?? previous;
+      const previous = mergeHistorySnapshots(saved, snapshots);
+      history = update?.(previous) ?? previous ?? EMPTY_PERSISTED_HISTORY;
       changed = history !== saved;
       if (update && changed) store.put(history, BROWSER_HISTORY_STORAGE_KEY);
     };
@@ -460,16 +530,16 @@ export const useBrowserHistoryStore = create<BrowserHistoryStoreState>()((set, g
       return;
     }
     historySync = historySync.then(async () => {
-      unsavedHistoryUpdates.push(update);
-      const replay: UpdateHistory = (base, fallback) =>
-        unsavedHistoryUpdates.reduce((state, apply) => {
-          const next = apply(state, fallback);
-          return next === state ? state : boundThreadMappings(state, next);
-        }, base);
-      const saved = await transactIndexedHistory(replay).catch(() => null);
+      const persist: UpdateStoredHistory = (saved) => {
+        const base = unsavedHistory
+          ? rebaseUnsavedHistory(saved, unsavedHistory)
+          : (saved ?? EMPTY_PERSISTED_HISTORY);
+        const next = update(base);
+        return next === base ? base : boundThreadMappings(base, next);
+      };
+      const saved = await transactIndexedHistory(persist).catch(() => null);
       if (saved) {
-        unsavedHistoryUpdates = [];
-        unsavedHistoryBase = undefined;
+        unsavedHistory = undefined;
         publish(saved.history);
         // oxlint-disable-next-line unicorn/require-post-message-target-origin -- BroadcastChannel is scoped to the origin
         if (saved.changed) historyChannel?.postMessage(null);
@@ -477,11 +547,10 @@ export const useBrowserHistoryStore = create<BrowserHistoryStoreState>()((set, g
       }
       const { byProjectKey, projectKeyByThreadKey } = get();
       const fallback = transactLegacyHistory(
-        replay,
-        unsavedHistoryBase ?? { byProjectKey, projectKeyByThreadKey },
+        persist,
+        unsavedHistory?.base ?? { byProjectKey, projectKeyByThreadKey },
       );
-      unsavedHistoryBase = fallback.unsavedBase;
-      if (!unsavedHistoryBase) unsavedHistoryUpdates = [];
+      unsavedHistory = fallback.pending;
       publish(fallback.history);
     });
   };
@@ -543,23 +612,23 @@ export const useBrowserHistoryStore = create<BrowserHistoryStoreState>()((set, g
     removeUrl: (projectKey, url) => {
       const normalized = normalizeHistoryUrl(url);
       if (!normalized) return;
-      const observed = get().byProjectKey[projectKey]?.find((entry) => entry.url === normalized);
-      updateHistory((state, fallback) => {
+      const visitKey = visitLookupKey(normalized);
+      const observed = get().byProjectKey[projectKey]?.find(
+        (entry) => visitLookupKey(entry.url) === visitKey,
+      );
+      updateHistory((state) => {
         const entries = state.byProjectKey[projectKey] ?? [];
-        const index = entries.findIndex((entry) => entry.url === normalized);
+        const index = entries.findIndex((entry) => visitLookupKey(entry.url) === visitKey);
+        const entry = entries[index];
+        const removedThrough = observed?.lastVisitedAt ?? entry?.lastVisitedAt;
+        if (removedThrough === undefined) return state;
         let next = state;
-        if (index !== -1) {
+        if (entry && entry.lastVisitedAt <= removedThrough) {
           const byProjectKey = { ...state.byProjectKey };
           if (entries.length === 1) delete byProjectKey[projectKey];
           else byProjectKey[projectKey] = entries.toSpliced(index, 1);
           next = { ...state, byProjectKey };
         }
-        if (!fallback) return next;
-        const removedThrough = Math.max(
-          entries[index]?.lastVisitedAt ?? -Infinity,
-          observed?.lastVisitedAt ?? -Infinity,
-        );
-        if (removedThrough === -Infinity) return next;
         const key = historyRemovalKey(projectKey, normalized);
         if (removedThrough <= (state.fallbackRemovals?.[key] ?? -Infinity)) return next;
         return { ...next, fallbackRemovals: { ...state.fallbackRemovals, [key]: removedThrough } };
@@ -606,7 +675,7 @@ if (typeof window !== "undefined") {
   if (historyChannel) {
     historyChannel.onmessage = () => {
       historySync = historySync.then(async () => {
-        if (unsavedHistoryUpdates.length > 0) return;
+        if (unsavedHistory) return;
         const saved = await transactIndexedHistory().catch(() => null);
         if (saved) useBrowserHistoryStore.setState({ byProjectKey: saved.history.byProjectKey });
       });
@@ -621,7 +690,7 @@ if (typeof window !== "undefined") {
       },
     }));
   };
-  historySync = transactIndexedHistory((history) => history).then(
+  historySync = transactIndexedHistory((history) => history ?? EMPTY_PERSISTED_HISTORY).then(
     ({ history }) => hydrate(history),
     () =>
       hydrate(mergeHistorySnapshots(undefined, readHistorySnapshots()) ?? EMPTY_PERSISTED_HISTORY),
@@ -861,7 +930,9 @@ export function useThreadRecentHistory(
   );
 }
 
-export function resetBrowserHistoryForTests(): void {
+export async function resetBrowserHistoryForTests(): Promise<void> {
+  await historySync;
+  unsavedHistory = undefined;
   useBrowserHistoryStore.setState({
     byProjectKey: {},
     projectKeyByThreadKey: {},

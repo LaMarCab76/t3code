@@ -200,10 +200,10 @@ function deleteHistoryDatabase() {
 }
 
 async function resetHistoryFixture() {
+  await resetBrowserHistoryForTests();
   localStorage.removeItem(storageKey);
   for (const key of fallbackKeys()) localStorage.removeItem(key);
   await deleteHistoryDatabase();
-  resetBrowserHistoryForTests();
 }
 
 it("moves the legacy snapshot into the shared database", async () => {
@@ -342,57 +342,69 @@ it("keeps visits saved while IndexedDB could not open", async () => {
   }
 });
 
-it("keeps a fallback deletion after IndexedDB recovers and an older tab writes", async () => {
-  await resetHistoryFixture();
-  try {
-    using fixture = new DisposableStack();
-    const db = await openHistoryFixture(fixture);
-    const store = useBrowserHistoryStore.getState();
-    store.recordVisit("a", oldEntry.url, oldEntry.lastVisitedAt);
-    store.recordVisit("b", otherEntry.url, otherEntry.lastVisitedAt);
-    await vi.waitFor(() =>
-      expect(useBrowserHistoryStore.getState().byProjectKey).toEqual({
-        a: [oldEntry],
-        b: [otherEntry],
-      }),
-    );
-
-    {
-      using _transaction = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(() => {
-        throw new DOMException("Storage unavailable", "SecurityError");
-      });
-      store.removeUrl("a", oldEntry.url);
-      await vi.waitFor(() => expect(fallbackKeys()).toHaveLength(1));
-      expect(useBrowserHistoryStore.getState().byProjectKey).toEqual({ b: [otherEntry] });
-    }
-
-    const recovered = await openHistoryDocument(fixture);
-    await vi.waitFor(() => expect(fallbackKeys()).toEqual([]));
-    expect(recovered.getState().byProjectKey).toEqual({ b: [otherEntry] });
-    const saved = await readHistoryFixture(db);
-    expect(saved).toHaveProperty("byProjectKey", { b: [otherEntry] });
-    expect(JSON.stringify(saved)).not.toContain(oldEntry.url);
-
-    localStorage.setItem(
-      storageKey,
-      JSON.stringify({ state: { byProjectKey: { a: [oldEntry] } }, version: 1 }),
-    );
-    const reloaded = await openHistoryDocument(fixture);
-    await vi.waitFor(() => expect(localStorage.getItem(storageKey)).toBeNull());
-    expect(reloaded.getState().byProjectKey).toEqual({ b: [otherEntry] });
-
-    const revisit = { ...oldEntry, lastVisitedAt: page.lastVisitedAt };
-    reloaded.getState().recordVisit("a", revisit.url, revisit.lastVisitedAt);
-    await vi.waitFor(async () =>
-      expect(await readHistoryFixture(db)).toHaveProperty("byProjectKey", {
-        a: [revisit],
-        b: [otherEntry],
-      }),
-    );
-  } finally {
+it.each(["IndexedDB", "localStorage"])(
+  "keeps a deletion saved to %s after an older tab writes",
+  async (backend) => {
     await resetHistoryFixture();
-  }
-});
+    try {
+      using fixture = new DisposableStack();
+      const db = await openHistoryFixture(fixture);
+      const store = useBrowserHistoryStore.getState();
+      store.recordVisit("a", oldEntry.url, oldEntry.lastVisitedAt);
+      store.recordVisit("b", otherEntry.url, otherEntry.lastVisitedAt);
+      await vi.waitFor(() =>
+        expect(useBrowserHistoryStore.getState().byProjectKey).toEqual({
+          a: [oldEntry],
+          b: [otherEntry],
+        }),
+      );
+
+      {
+        using transaction =
+          backend === "localStorage"
+            ? vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(() => {
+                throw new DOMException("Storage unavailable", "SecurityError");
+              })
+            : undefined;
+        store.removeUrl("a", oldEntry.url);
+        await vi.waitFor(() =>
+          expect(useBrowserHistoryStore.getState().byProjectKey).toEqual({ b: [otherEntry] }),
+        );
+        if (transaction) expect(fallbackKeys()).toHaveLength(1);
+      }
+
+      const recovered = await openHistoryDocument(fixture);
+      await vi.waitFor(() => {
+        expect(fallbackKeys()).toEqual([]);
+        expect(recovered.getState().byProjectKey).toEqual({ b: [otherEntry] });
+      });
+      const saved = await readHistoryFixture(db);
+      expect(saved).toHaveProperty("byProjectKey", { b: [otherEntry] });
+      expect(JSON.stringify(saved)).not.toContain(oldEntry.url);
+
+      localStorage.setItem(
+        storageKey,
+        JSON.stringify({ state: { byProjectKey: { a: [oldEntry] } }, version: 1 }),
+      );
+      const reloaded = await openHistoryDocument(fixture);
+      await vi.waitFor(() => {
+        expect(localStorage.getItem(storageKey)).toBeNull();
+        expect(reloaded.getState().byProjectKey).toEqual({ b: [otherEntry] });
+      });
+
+      const revisit = { ...oldEntry, lastVisitedAt: page.lastVisitedAt };
+      reloaded.getState().recordVisit("a", revisit.url, revisit.lastVisitedAt);
+      await vi.waitFor(async () =>
+        expect(await readHistoryFixture(db)).toHaveProperty("byProjectKey", {
+          a: [revisit],
+          b: [otherEntry],
+        }),
+      );
+    } finally {
+      await resetHistoryFixture();
+    }
+  },
+);
 
 it.each(["localStorage", "IndexedDB"] as const)(
   "keeps unsaved changes when %s recovers",
@@ -414,7 +426,8 @@ it.each(["localStorage", "IndexedDB"] as const)(
         using _write = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
           throw new DOMException("Storage unavailable", "QuotaExceededError");
         });
-        store.recordVisit("a", otherEntry.url, otherEntry.lastVisitedAt);
+        for (const at of [0, 1, otherEntry.lastVisitedAt])
+          store.recordVisit("a", otherEntry.url, at);
         await vi.waitFor(() =>
           expect(useBrowserHistoryStore.getState().byProjectKey.a).toEqual([otherEntry, oldEntry]),
         );
@@ -448,6 +461,99 @@ it.each(["localStorage", "IndexedDB"] as const)(
           state: { byProjectKey: expected },
         });
       }
+    } finally {
+      await resetHistoryFixture();
+    }
+  },
+);
+
+it.each([
+  {
+    name: "imports a fallback title for the same untitled IndexedDB visit",
+    indexedTitle: undefined,
+  },
+  {
+    name: "keeps a concurrent IndexedDB title ahead of a fallback title",
+    indexedTitle: "Concurrent title",
+  },
+])("$name", async ({ indexedTitle }) => {
+  await resetHistoryFixture();
+  try {
+    using fixture = new DisposableStack();
+    const db = await openHistoryFixture(fixture);
+    const store = useBrowserHistoryStore.getState();
+    store.recordVisit("a", oldEntry.url, oldEntry.lastVisitedAt);
+    await vi.waitFor(async () =>
+      expect(await readHistoryFixture(db)).toHaveProperty("byProjectKey.a", [oldEntry]),
+    );
+    {
+      using _transaction = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(() => {
+        throw new DOMException("Storage unavailable", "SecurityError");
+      });
+      store.setTitleForUrl("a", oldEntry.url, "Recovered title");
+      await vi.waitFor(() => expect(fallbackKeys()).toHaveLength(1));
+    }
+    if (indexedTitle)
+      await writeHistoryFixture(db, {
+        byProjectKey: { a: [{ ...oldEntry, title: indexedTitle }] },
+        projectKeyByThreadKey: {},
+      });
+    const expected = [{ ...oldEntry, title: indexedTitle ?? "Recovered title" }];
+    const recovered = await openHistoryDocument(fixture);
+    await vi.waitFor(() => expect(recovered.getState().byProjectKey.a).toEqual(expected));
+    expect(await readHistoryFixture(db)).toHaveProperty("byProjectKey.a", expected);
+  } finally {
+    await resetHistoryFixture();
+  }
+});
+
+it.each(["empty", "revisited"] as const)(
+  "recovers unsaved history when IndexedDB reopens %s",
+  async (status) => {
+    await resetHistoryFixture();
+    try {
+      using fixture = new DisposableStack();
+      const db = await openHistoryFixture(fixture);
+      const store = useBrowserHistoryStore.getState();
+      store.recordVisit("a", oldEntry.url, oldEntry.lastVisitedAt);
+      await vi.waitFor(async () =>
+        expect(await readHistoryFixture(db)).toHaveProperty("byProjectKey.a", [oldEntry]),
+      );
+      const revisit = { ...oldEntry, lastVisitedAt: 10 };
+      {
+        using _transaction = vi
+          .spyOn(IDBDatabase.prototype, "transaction")
+          .mockImplementation(() => {
+            throw new DOMException("Storage unavailable", "SecurityError");
+          });
+        using _write = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+          throw new DOMException("Storage unavailable", "QuotaExceededError");
+        });
+        if (status === "empty") {
+          store.setTitleForUrl("a", oldEntry.url, "Only in memory");
+          await vi.waitFor(() =>
+            expect(useBrowserHistoryStore.getState().byProjectKey.a).toEqual([
+              { ...oldEntry, title: "Only in memory" },
+            ]),
+          );
+        } else {
+          store.removeUrl("a", oldEntry.url);
+          await vi.waitFor(() =>
+            expect(useBrowserHistoryStore.getState().byProjectKey.a).toBeUndefined(),
+          );
+        }
+      }
+      await writeHistoryFixture(db, {
+        byProjectKey: status === "empty" ? {} : { a: [revisit] },
+        projectKeyByThreadKey: {},
+      });
+      store.recordVisit("b", otherEntry.url, otherEntry.lastVisitedAt);
+      await vi.waitFor(async () =>
+        expect(await readHistoryFixture(db)).toHaveProperty("byProjectKey", {
+          a: status === "empty" ? [{ ...oldEntry, title: "Only in memory" }] : [revisit],
+          b: [otherEntry],
+        }),
+      );
     } finally {
       await resetHistoryFixture();
     }
