@@ -224,6 +224,7 @@ import { MarkdownFileLink } from "./chat/MarkdownFileLink";
 import { canUseMarkdownFileShellActions } from "./chat/MarkdownFileLink.logic";
 import { handleMarkdownFragmentClick } from "./chat/markdownFragments";
 import { hastHasText, hastPlainTextDeep, plainHastText } from "./chat/markdownHast.logic";
+import { MarkdownInsight } from "./chat/MarkdownInsight";
 import {
   extractCodeBlock,
   extractFenceLanguage,
@@ -880,9 +881,10 @@ function useChatMarkdownState(
     }
     const query = workspaceLinkLookupQuery(workspaceRelativePath, cwd);
     if (query === null) return null;
+    const basenameLookup = needsWorkspaceBasenameLookup(workspaceRelativePath);
     // Search can be truncated or still scanning, so it cannot rule out the literal
     // path. A path with a folder opens as written whenever it exists.
-    if (!needsWorkspaceBasenameLookup(workspaceRelativePath)) {
+    if (!basenameLookup) {
       const metadata = await getFilesystemMetadata({
         environmentId,
         input: { paths: [resolveWorkspaceFilePath(workspaceRelativePath, cwd)] },
@@ -917,26 +919,24 @@ function useChatMarkdownState(
     const agentRoots = (agentDirectories?.() ?? []).filter((root) => root !== cwd);
     if (otherRoots.length === 0 && agentRoots.length === 0) return null;
     // Another project's file never replaces a thread-local file the search missed.
-    if (needsWorkspaceBasenameLookup(workspaceRelativePath)) {
+    if (basenameLookup) {
       const metadata = await getFilesystemMetadata({
         environmentId,
         input: { paths: [resolveWorkspaceFilePath(workspaceRelativePath, cwd)] },
       });
       if (metadata._tag !== "Success" || metadata.value.entries[0] !== null) return null;
     }
-    const projectMatch = pickProjectLinkMatch(
-      workspaceRelativePath,
-      await Promise.all(otherRoots.map(searchRoot)),
-    );
+    const projectSearches = await Promise.all(otherRoots.map(searchRoot));
+    const projectMatch = pickProjectLinkMatch(workspaceRelativePath, [own, ...projectSearches]);
     if (projectMatch !== null || agentRoots.length === 0) return projectMatch;
-    // No project has the file, so it opens where the agent last worked, as written.
+    // An unresolved project lookup falls back to the agent's working directories.
     const agentPaths = agentRoots.map((root) =>
       resolveWorkspaceFilePath(workspaceRelativePath, root),
     );
     const metadata = await getFilesystemMetadata({ environmentId, input: { paths: agentPaths } });
     if (metadata._tag !== "Success") return null;
     const literal = agentPaths.find((_, index) => metadata.value.entries[index]?.kind === "file");
-    if (literal !== undefined || !needsWorkspaceBasenameLookup(workspaceRelativePath)) {
+    if (literal !== undefined || !basenameLookup) {
       return literal ?? null;
     }
     return findAgentDirectoryMatch(workspaceRelativePath, agentRoots, searchRoot);
@@ -1171,9 +1171,20 @@ const CHAT_MARKDOWN_COMPONENTS = {
       </p>
     );
   },
-  blockquote: function MarkdownBlockquote({ node: _node, children, ...props }) {
+  blockquote: function MarkdownBlockquote({ node, children, ...props }) {
     const m = useMessages();
     const alertKind = String((props as Record<string, unknown>)["data-alert"] ?? "");
+    if (alertKind === "insight" && node?.properties.dataInsightComplete !== undefined) {
+      return (
+        <MarkdownInsight
+          node={node}
+          dir={props.dir}
+          label={m(GITHUB_ALERT_PRESENTATIONS.insight!.label)}
+        >
+          {children}
+        </MarkdownInsight>
+      );
+    }
     const alert = GITHUB_ALERT_PRESENTATIONS[alertKind];
     if (!alert) {
       return <blockquote {...props}>{children}</blockquote>;

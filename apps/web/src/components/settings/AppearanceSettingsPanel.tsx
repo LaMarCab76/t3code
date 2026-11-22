@@ -364,6 +364,16 @@ export function AppearanceSettingsPanel() {
             />
           }
         />
+        <SettingsRow
+          {...searchableSetting("collapse-insights")}
+          control={
+            <Switch
+              checked={settings.assistantInsightsCollapsed}
+              onCheckedChange={(checked) => updateSettings({ assistantInsightsCollapsed: checked })}
+              aria-label={gt("Collapse Claude insights")}
+            />
+          }
+        />
         <AdvancedSettings
           targetIds={[
             searchableSetting("panel-animations").id,

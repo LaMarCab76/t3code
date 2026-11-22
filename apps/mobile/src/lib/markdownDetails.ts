@@ -1,4 +1,5 @@
 import type { RootContent } from "mdast";
+import { splitAssistantInsights } from "@t3tools/shared/markdownPipeline";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
 import { msg } from "gt-react-native";
@@ -103,4 +104,17 @@ export function splitMarkdownDetails(
     segments.push({ kind: "markdown", markdown: markdown.slice(cursor), sourceOffset: cursor });
   }
   return segments;
+}
+
+export function splitAssistantMarkdownFolds(markdown: string, resolve: MessageResolver = m) {
+  return splitMarkdownDetails(markdown, resolve).flatMap<
+    ReturnType<typeof splitAssistantInsights>[number] | MarkdownDetailsSegment
+  >((block) =>
+    block.kind === "details"
+      ? [block]
+      : splitAssistantInsights(block.markdown).map((segment) => ({
+          ...segment,
+          sourceOffset: block.sourceOffset + segment.sourceOffset,
+        })),
+  );
 }

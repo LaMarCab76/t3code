@@ -73,6 +73,8 @@ interface AppearancePreferencesContextValue {
   readonly setCodeWordBreak: (value: boolean) => void;
   readonly mathRenderingEnabled: boolean;
   readonly setMathRenderingEnabled: (value: boolean) => void;
+  readonly assistantInsightsCollapsed: boolean;
+  readonly setAssistantInsightsCollapsed: (value: boolean) => void;
 }
 
 const AppearancePreferencesContext = createContext<AppearancePreferencesContextValue | null>(null);
@@ -295,6 +297,9 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
   const mathRenderingEnabled = storedPreferences?.mathRenderingEnabled === true;
   const setMathRenderingEnabled = (value: boolean) =>
     updatePreferences({ mathRenderingEnabled: value });
+  const assistantInsightsCollapsed = storedPreferences?.assistantInsightsCollapsed !== false;
+  const setAssistantInsightsCollapsed = (value: boolean) =>
+    updatePreferences({ assistantInsightsCollapsed: value });
 
   const value = useMemo(
     (): AppearancePreferencesContextValue => ({
@@ -320,6 +325,8 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
       setCodeWordBreak,
       mathRenderingEnabled,
       setMathRenderingEnabled,
+      assistantInsightsCollapsed,
+      setAssistantInsightsCollapsed,
     }),
     [
       appearance,
@@ -343,6 +350,8 @@ export function AppearancePreferencesProvider(props: { readonly children: ReactN
       setCodeWordBreak,
       mathRenderingEnabled,
       setMathRenderingEnabled,
+      assistantInsightsCollapsed,
+      setAssistantInsightsCollapsed,
     ],
   );
 

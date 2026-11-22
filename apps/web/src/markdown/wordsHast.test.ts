@@ -208,7 +208,10 @@ describe("wordsHast", () => {
     const markdown =
       "Intro\n\n`★ Insight ─────────────────────────────────────`\n- one\n- two\n`─────────────────────────────────────────────────`\n\nAfter\n\n```\n★ Insight ─────\n```";
     expect(wordsHtml(markdown, { insights: true })).toBe(
-      '<p dir="ltr">Intro</p>\n<blockquote data-alert="insight" dir="ltr">\n<ul>\n<li>one</li>\n<li>two</li>\n</ul>\n</blockquote>\n<p dir="ltr">After</p>\n<pre><code>★ Insight ─────\n</code></pre>',
+      '<p dir="ltr">Intro</p>\n<blockquote data-alert="insight" data-insight-complete="" dir="ltr">\n<ul>\n<li>one</li>\n<li>two</li>\n</ul>\n</blockquote>\n<p dir="ltr">After</p>\n<pre><code>★ Insight ─────\n</code></pre>',
+    );
+    expect(wordsHtml("★ Insight ─────\nStill streaming.", { insights: true })).toBe(
+      '<blockquote data-alert="insight" dir="ltr">\n<p>Still streaming.</p>\n</blockquote>',
     );
     // Code in a list, an HTML block and a quote's lazy line are not where an insight opens.
     expect(

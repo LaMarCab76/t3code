@@ -307,6 +307,7 @@ export const make = Effect.gen(function* () {
       threadInsights: true,
       shellThreadFamilies: true,
       shellOlderSettled: true,
+      agentFeedback: true,
     },
   };
 

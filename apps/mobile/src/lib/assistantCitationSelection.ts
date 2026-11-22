@@ -4,7 +4,7 @@ import {
   splitCodexArtifactTemplateMarkdown,
   renderCodexInlineDirectivesAsMarkdown,
 } from "@t3tools/shared/codexMarkdownDirectives";
-import { splitMarkdownDetails } from "./markdownDetails";
+import { splitAssistantMarkdownFolds } from "./markdownDetails";
 import {
   markdownReferenceDefinitions,
   parseMarkdownDocument,
@@ -66,8 +66,8 @@ function citationSegments(
   path = "",
   definitions = markdownReferenceDefinitions(markdown),
 ): Array<{ path: string; text: string }> {
-  return splitMarkdownDetails(markdown).flatMap((block, index) => {
-    if (block.kind === "details")
+  return splitAssistantMarkdownFolds(markdown).flatMap((block, index) => {
+    if (block.kind !== "markdown")
       return citationSegments(block.body, `${path}${index}/`, definitions);
     return splitCodexArtifactTemplateMarkdown(block.markdown).flatMap((segment, segmentIndex) =>
       segment.kind === "markdown"

@@ -310,6 +310,34 @@ layer("CommandOutputHub", (it) => {
     }),
   );
 
+  it.effect("command progress follows persisted snapshots through settlement", () =>
+    Effect.gen(function* () {
+      const hub = yield* CommandOutputHub.CommandOutputHub;
+      const threadId = yield* seedThread;
+      yield* writeCommandItem(threadId, { status: "running", output: "snapshot 12/20" });
+      const frames = yield* Queue.unbounded<OrchestrationV2CommandProgressFrame>();
+      yield* hub.subscribeProgress(threadId).pipe(
+        Stream.runForEach((frame) => Queue.offer(frames, frame)),
+        Effect.forkScoped,
+      );
+      assert.deepStrictEqual(yield* Queue.take(frames), {
+        items: [{ itemId: ITEM_ID, completed: 12, total: 20 }],
+      });
+      yield* TestClock.adjust("1 second");
+      yield* writeCommandItem(threadId, { status: "running", output: "snapshot 15/20" });
+      assert.deepStrictEqual(yield* Queue.take(frames), {
+        items: [{ itemId: ITEM_ID, completed: 15, total: 20 }],
+      });
+      yield* TestClock.adjust("1 second");
+      yield* writeCommandItem(threadId, {
+        status: "completed",
+        output: "snapshot 20/20",
+        exitCode: 0,
+      });
+      assert.deepStrictEqual(yield* Queue.take(frames), { items: [] });
+    }),
+  );
+
   it.effect("a finished command sends only its bounded final output", () =>
     Effect.gen(function* () {
       const threadId = yield* seedThread;

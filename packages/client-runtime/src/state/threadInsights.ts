@@ -1,8 +1,10 @@
+import { mFallback, msg } from "gt-i18n";
 import type {
   EnvironmentId,
   OrchestrationV2GetThreadInsightsResult,
   ScopedThreadRef,
 } from "@t3tools/contracts";
+import type { MFunctionType } from "gt-i18n/types";
 import { scopedThreadKey } from "../environment/scoped.ts";
 
 export interface ThreadInsightsAnswer {
@@ -14,13 +16,14 @@ export interface ThreadInsightsAnswer {
 export function mergeThreadInsights(
   root: ScopedThreadRef,
   answers: ReadonlyMap<string, ThreadInsightsAnswer>,
+  resolve: MFunctionType = mFallback,
 ) {
   const pending: (ScopedThreadRef & { title: string })[] = [];
   const rows = new Map<
     string,
     OrchestrationV2GetThreadInsightsResult["rows"][number] & { environmentId: EnvironmentId }
   >();
-  const queue = [{ ...root, title: "This thread" }];
+  const queue = [{ ...root, title: resolve(msg("This thread")) }];
   const visited = new Set<string>();
   let truncated = false;
   let unavailable = 0;
