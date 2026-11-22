@@ -338,7 +338,7 @@ export const MarkdownFileLink = memo(function MarkdownFileLink({
   );
   const sharedTooltip = useSharedTooltip({
     render: () => tooltipContent,
-    contentKey: `${iconPath}\u0000${targetPath}`,
+    contentKey: `${environmentId}\u0000${iconPath}\u0000${targetPath}`,
     variant: "code",
   });
   const chip = hasPrimaryAction ? (

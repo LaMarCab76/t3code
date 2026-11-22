@@ -663,12 +663,16 @@ function transform(node: Root | Element, walk: Walk, inLink: boolean, inCode: bo
       // remarkNormalizeLinksAndTagInlineCode: a Windows drive path links as a file URL.
       const path = windowsPath(props.href);
       props.href = path ? `file:///${path.replaceAll("\\", "/")}` : normalizeUri(props.href);
-    } else if (tagName === "img" && typeof props.src === "string") {
+    } else if (tagName === "img") {
       const changeRequest = walk.options.extensions.changeRequest;
-      const src = changeRequest
-        ? resolveChangeRequestMediaUrl(props.src, changeRequest.repositoryUrl)
-        : props.src;
-      props.src = windowsPath(src) ?? normalizeUri(src);
+      for (const key of changeRequest ? ["src", "dataDarkSrc", "dataLightSrc"] : ["src"]) {
+        const value = props[key];
+        if (typeof value !== "string") continue;
+        const src = changeRequest
+          ? resolveChangeRequestMediaUrl(value, changeRequest.repositoryUrl)
+          : value;
+        props[key] = windowsPath(src) ?? normalizeUri(src);
+      }
     } else if (tagName === "code" && isElement(node, "pre")) {
       if (props.dataMeta !== undefined) {
         props.dataCodeMeta = props.dataMeta;
@@ -961,7 +965,14 @@ function insightSource(text: string, options: RenderOptions): InsightSource | nu
       tree,
       marker,
       toOriginal: (offset) => {
-        const line = offsets.findLast((entry) => entry.source <= offset) ?? offsets[0]!;
+        let low = 0;
+        let high = offsets.length;
+        while (low < high) {
+          const middle = Math.floor((low + high) / 2);
+          if (offsets[middle]!.source <= offset) low = middle + 1;
+          else high = middle;
+        }
+        const line = offsets[Math.max(0, low - 1)]!;
         return (
           line.original + Math.min(Math.max(offset - line.source - line.delta, 0), line.length)
         );
@@ -1002,16 +1013,25 @@ function flattenPreview(tree: Root, preview: NonNullable<MarkdownExtensions["pre
   const children: ElementContent[] = [];
   let remaining = preview.maxLength;
   let fragments: string[] = [];
+  let hasContent = false;
+  let endsInSpace = false;
   const flush = () => {
     if (fragments.length === 0) return;
-    children.push({ type: "text", value: fragments.join("").replace(/\s+/g, " ") });
+    children.push({ type: "text", value: fragments.join("") });
     fragments = [];
   };
   const take = (value: string) => {
-    const text = value.slice(0, remaining);
-    remaining = text.length < value.length ? 0 : remaining - text.length;
+    const normalized = value.replace(/\s+/g, " ");
+    const candidate = !hasContent || endsInSpace ? normalized.trimStart() : normalized;
+    const slice = candidate.slice(0, remaining);
+    remaining -= slice.length;
     // A cut must not leave half a surrogate pair.
-    return text.replace(/[\uD800-\uDBFF]$/, "");
+    const text = slice.replace(/[\uD800-\uDBFF]$/, "");
+    if (text.length > 0) {
+      hasContent = true;
+      endsInSpace = text.endsWith(" ");
+    }
+    return text;
   };
   const visit = (node: Root | ElementContent) => {
     if (remaining === 0) return;
@@ -1021,6 +1041,8 @@ function flattenPreview(tree: Root, preview: NonNullable<MarkdownExtensions["pre
     }
     if (node.type === "element" && node.properties.dataMarkdownMath !== undefined) {
       flush();
+      hasContent = true;
+      endsInSpace = false;
       // One line has no room for display math, which a preview shows inline.
       const svg = node.children[0];
       children.push(
@@ -1130,8 +1152,8 @@ export function wordsHast(text: string, options: WordsHastOptions): Root {
     mathKey: `t3-math-${Math.random().toString(36).slice(2)}`,
     insightMarker: insights?.marker ?? null,
   };
-  transform(tree, walk, false, false);
   preserveImageSourceMeta(tree as never);
+  transform(tree, walk, false, false);
   normalizeLocalEditorLinks(tree as never);
   const hast = sanitizeChatHast(tree);
   if (walk.math.size > 0) restoreMath(hast, walk.math);
@@ -1261,7 +1283,7 @@ export function markdownHtmlComments(markdown: string): Array<{ start: number; e
 
 /**
  * The first definition of each label in `markdown`, as one line of Markdown. Words decides which
- * `[label]:` text defines one: each label is looked up again after the text.
+ * `[label]:` text defines one: each label is looked up before the text can open a code block.
  */
 export function markdownReferenceDefinitions(markdown: string): string[] {
   const labels = new Map<string, string>();
@@ -1271,7 +1293,7 @@ export function markdownReferenceDefinitions(markdown: string): string[] {
     if (key !== "" && !key.startsWith("^") && !labels.has(key)) labels.set(key, match[1]!);
   }
   if (labels.size === 0) return [];
-  let probe = `${markdown}\n\n`;
+  let probe = "";
   const lookups = new Map<number, string>();
   for (const label of labels.values()) {
     lookups.set(probe.length, label);
@@ -1291,6 +1313,6 @@ export function markdownReferenceDefinitions(markdown: string): string[] {
       } else visit(child);
     }
   };
-  visit(parse(probe, { windowsPaths: true }));
+  visit(parse(probe + markdown, { windowsPaths: true }));
   return definitions;
 }

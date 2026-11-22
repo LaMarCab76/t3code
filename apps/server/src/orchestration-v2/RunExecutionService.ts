@@ -777,18 +777,31 @@ export const layer: Layer.Layer<
               )
             : Effect.succeed([]);
         const guard = input.writeIfRunCurrent;
-        const restoreHandoffsWhileCurrent = (events: ReadonlyArray<OrchestrationV2DomainEvent>) =>
-          events.length > 0 && guard !== undefined
-            ? eventSink
-                .writeIfRunCurrent({
-                  threadId: input.run.threadId,
-                  runId: input.run.id,
-                  activeAttemptId: guard.activeAttemptId,
-                  expectedStatus: guard.expectedStatus,
-                  events,
-                })
-                .pipe(Effect.map((result) => result.committed))
-            : Effect.succeed(false);
+        const restoreHandoffsWhileCurrent = Effect.fnUntraced(function* (
+          events: ReadonlyArray<OrchestrationV2DomainEvent>,
+        ) {
+          if (events.length === 0 || guard === undefined) return false;
+          const restore = (expectedStatus: OrchestrationV2Run["status"]) =>
+            eventSink.writeIfRunCurrent({
+              threadId: input.run.threadId,
+              runId: input.run.id,
+              activeAttemptId: guard.activeAttemptId,
+              expectedStatus,
+              ...(expectedStatus === "interrupted"
+                ? {
+                    withoutNewerProviderRun: {
+                      providerThreadId: input.providerThread.id,
+                      runOrdinal: input.run.ordinal,
+                    },
+                  }
+                : {}),
+              events,
+            });
+          const current = yield* restore(guard.expectedStatus);
+          if (current.committed || guard.expectedStatus !== "running") return current.committed;
+          // Stop can settle this attempt before its provider reports the dropped prompt.
+          return (yield* restore("interrupted")).committed;
+        });
         const shouldFinalizeRun =
           input.shouldFinalizeRun === undefined ? true : yield* input.shouldFinalizeRun();
         if (!shouldFinalizeRun) {
@@ -1071,10 +1084,7 @@ export const layer: Layer.Layer<
             effects: finalization.effects,
           });
           if (!result.committed) {
-            if (
-              guard.unlessInterruptRequested === true &&
-              (yield* restoreHandoffsWhileCurrent(restoredHandoffEvents))
-            ) {
+            if (yield* restoreHandoffsWhileCurrent(restoredHandoffEvents)) {
               yield* input.refreshAfterTurn;
             }
             return false;

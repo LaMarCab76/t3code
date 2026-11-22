@@ -2342,6 +2342,9 @@ export default function ChatView(props: ChatViewProps) {
     canOverrideServerThreadEnvMode && pendingServerThreadBranchEntryForThread !== null
       ? pendingServerThreadBranchEntryForThread.branch
       : (activeThread?.branch ?? null);
+  const readCurrentSendBranch = useStableCallback((key: string) =>
+    key === routeThreadKey ? { branch: activeThreadBranch } : null,
+  );
   const setPendingServerThreadBranch = (branch: string | null) => {
     if (activeThread === undefined || activeThread === null || branch === activeThreadBranch)
       return;
@@ -3093,6 +3096,7 @@ export default function ChatView(props: ChatViewProps) {
     activeThread,
     activeThreadKey,
     activeThreadBranch,
+    readCurrentSendBranch,
     activeProject,
     activeProjectIsScratch,
     activeProjectDefaultModelSelection,

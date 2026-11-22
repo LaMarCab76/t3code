@@ -3754,7 +3754,7 @@ it.effect.each([
     }),
 );
 
-it.effect.each(["current", "superseded"] as const)(
+it.effect.each(["current", "superseded", "stopped"] as const)(
   "restores dropped inline handoffs after ingestion failure only for the owner (%s)",
   (ownership) =>
     Effect.gen(function* () {
@@ -3765,7 +3765,11 @@ it.effect.each(["current", "superseded"] as const)(
         key,
         shouldFinalizeRun: () => Effect.succeed(true),
         loadDroppedInlineHandoffs: () => Effect.succeed([handoff]),
-        beforeTerminalWrite: () => Effect.succeed(ownership === "current"),
+        beforeTerminalWrite: (write) =>
+          Effect.succeed(
+            ownership === "current" ||
+              (ownership === "stopped" && write.expectedStatus === "interrupted"),
+          ),
         events: () =>
           Stream.make({
             type: "provider_turn.updated" as const,
@@ -3808,7 +3812,7 @@ it.effect.each(["current", "superseded"] as const)(
         finalEvents.flatMap((event) =>
           event.type === "context-handoff.updated" ? [event.payload.id] : [],
         ),
-        ownership === "current" ? [handoff.id] : [],
+        ownership === "superseded" ? [] : [handoff.id],
       );
     }),
 );

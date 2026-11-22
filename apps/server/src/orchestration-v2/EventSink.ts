@@ -147,6 +147,10 @@ export interface EventSinkV2Shape {
       readonly requestId: OrchestrationV2TurnItem["id"];
       readonly resultId: OrchestrationV2TurnItem["id"];
     };
+    readonly withoutNewerProviderRun?: {
+      readonly providerThreadId: ProviderThreadId;
+      readonly runOrdinal: number;
+    };
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
     readonly effects?: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>;
   }) => Effect.Effect<
@@ -597,6 +601,21 @@ const layerBase: Layer.Layer<
                 ) AS pending
               `;
               if (pending[0]?.pending === 1) {
+                return {
+                  committed: false as const,
+                  storedEvents: [] as ReadonlyArray<OrchestrationV2StoredEvent>,
+                };
+              }
+            }
+
+            if (input.withoutNewerProviderRun !== undefined) {
+              const { providerThreadId, runOrdinal } = input.withoutNewerProviderRun;
+              const newer = yield* sql<{ readonly last_run_ordinal: number }>`
+                SELECT last_run_ordinal FROM orchestration_v2_projection_provider_threads
+                WHERE provider_thread_id = ${providerThreadId} AND thread_id = ${input.threadId}
+                  AND last_run_ordinal > ${runOrdinal}
+              `;
+              if (newer.length > 0) {
                 return {
                   committed: false as const,
                   storedEvents: [] as ReadonlyArray<OrchestrationV2StoredEvent>,

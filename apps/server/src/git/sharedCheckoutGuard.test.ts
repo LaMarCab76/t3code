@@ -5,6 +5,7 @@ import * as Layer from "effect/Layer";
 
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
+import * as WorkspaceFolders from "../workspace/WorkspaceFolders.ts";
 import * as GitWorkflowService from "./GitWorkflowService.ts";
 import { assertCheckoutIdle, busyThreadsInCheckout } from "./sharedCheckoutGuard.ts";
 
@@ -68,6 +69,7 @@ describe("assertCheckoutIdle", () => {
     readonly threads: ReadonlyArray<ReturnType<typeof thread>>;
     readonly failWorktreeLookup?: boolean;
     readonly nestedWorkspaceRoot?: string;
+    readonly parentTracksCheckout?: boolean;
   }) =>
     Layer.mergeAll(
       Layer.mock(GitWorkflowService.GitWorkflowService)({
@@ -83,9 +85,25 @@ describe("assertCheckoutIdle", () => {
               workspaceRoot: input.nestedWorkspaceRoot ?? "/repo/packages/app",
             },
             { id: childRepositoryProjectId, workspaceRoot: "/repo/child" },
-            { id: otherProjectId, workspaceRoot: "/other" },
+            {
+              id: otherProjectId,
+              workspaceRoot: input.parentTracksCheckout ? "/parent" : "/other",
+              trackedFolders: input.parentTracksCheckout
+                ? [{ path: input.repositoryRoot, name: "Checkout" }]
+                : [],
+            },
           ],
         } as never),
+      }),
+      Layer.mock(WorkspaceFolders.WorkspaceFolders)({
+        forThread: ({ projectId }) =>
+          Effect.succeed({
+            folders:
+              projectId === otherProjectId && input.parentTracksCheckout
+                ? [{ path: input.repositoryRoot, name: "Checkout", isGitRepository: true }]
+                : [],
+            extraRoots: [],
+          }),
       }),
       Layer.mock(ThreadManagementService.ThreadManagementService)({
         getShellSnapshot: (options) =>
@@ -171,6 +189,22 @@ describe("assertCheckoutIdle", () => {
         ),
       );
       expect(error.detail).toContain("'nested running'");
+    }),
+  );
+
+  it.effect("refuses a switch in a checkout tracked by a parent project", () =>
+    Effect.gen(function* () {
+      const error = yield* assertCheckoutIdle("test", "/parent/repo").pipe(
+        Effect.flip,
+        Effect.provide(
+          guardLayer({
+            repositoryRoot: "/parent/repo",
+            parentTracksCheckout: true,
+            threads: [thread("parent running", { projectId: otherProjectId })],
+          }),
+        ),
+      );
+      expect(error.detail).toContain("'parent running'");
     }),
   );
 

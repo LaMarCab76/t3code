@@ -369,12 +369,37 @@ describe("wordsHast", () => {
     ).toEqual(["pick {a} or [b]"]);
   });
 
+  it("resolves both color-scheme sources on the pull request forge", () => {
+    const html = wordsHtml(
+      '<picture><source media="(prefers-color-scheme: dark)" srcset="/api/attachments/2"><source media="(prefers-color-scheme: light)" srcset="/api/attachments/3"><img src="/api/attachments/1" alt="Screenshot"></picture>',
+      {
+        extensions: {
+          changeRequest: { repositoryUrl: "https://github.com/octo/project", autolinks: null },
+        },
+      },
+    );
+    expect(html).toContain('data-dark-src="https://github.com/api/attachments/2"');
+    expect(html).toContain('data-light-src="https://github.com/api/attachments/3"');
+  });
+
+  it("counts the rendered whitespace in a preview budget", () => {
+    expect(
+      toHtml(
+        wordsHast("A    **B**", {
+          ...ASSISTANT,
+          extensions: { preview: { maxLength: 3, fallback: "empty" } },
+        }),
+      ),
+    ).toBe("A B");
+  });
+
   it.each([
     ["# Title\n[a]: https://x.dev", ["[a]: <https://x.dev>"]],
     ['> [a]:\n> https://x.dev "The\n> guide"', ['[a]: <https://x.dev> "The guide"']],
     ["- [a]: https://x.dev\n\n[A]: https://second.dev", ["[a]: <https://x.dev>"]],
     ["<div>\n[a]: https://x.dev\n</div>", []],
     ["- ```\n  [a]: https://x.dev\n  ```", []],
+    ["[a]\n\n[a]: https://x.dev\n\n```\ncode", ["[a]: <https://x.dev>"]],
     ["text\n[a]: https://x.dev", []],
   ])("finds the reference definitions in %j as Words reads them", (markdown, definitions) => {
     expect(markdownReferenceDefinitions(markdown)).toEqual(definitions);

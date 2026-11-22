@@ -39,6 +39,7 @@ interface SharedTooltipApi {
   hide(anchor: HTMLElement): void;
   /** A press closes it at once, as Base UI's closeOnClick does. */
   dismiss(anchor: HTMLElement): void;
+  dispose(anchor: HTMLElement): void;
   holdOpen(): void;
 }
 
@@ -124,6 +125,10 @@ export function SharedTooltipProvider({ children }: { children: ReactNode }) {
       if (current.current.open) lastClosedAt.current = 0;
       commit({ ...current.current, open: false });
     },
+    dispose(anchor) {
+      if (pending.current?.anchor === anchor) clearTimer();
+      if (current.current?.anchor === anchor) commit(null);
+    },
     holdOpen() {
       clearTimer();
     },
@@ -181,6 +186,13 @@ export function useSharedTooltip(content: SharedTooltipContent): SharedTooltipTr
   useEffect(() => {
     if (api && anchorRef.current) api.refresh(anchorRef.current, content);
   }, [api, content]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- releases the shared anchor when the trigger unmounts
+  useEffect(
+    () => () => {
+      if (anchorRef.current) api?.dispose(anchorRef.current);
+    },
+    [api],
+  );
   if (!api) return null;
   return {
     // Touch never opens it, as Base UI's mouseOnly trigger; taps also send compatibility mouse events.

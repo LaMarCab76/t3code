@@ -2585,7 +2585,11 @@ it.layer(
         const env: NodeJS.ProcessEnv = { PATH: host.path, SHELL: "/bin/sh" };
         return Effect.gen(function* () {
           const driver = ProviderDriverKind.make("codex");
-          const makeInstance = (id: string, installed: boolean): ProviderInstance => {
+          const makeInstance = (
+            id: string,
+            installed: boolean,
+            installedAfterProbe = installed,
+          ): ProviderInstance => {
             const instanceId = ProviderInstanceId.make(id);
             const provider = {
               instanceId,
@@ -2600,6 +2604,7 @@ it.layer(
               slashCommands: [],
               skills: [],
             } as const satisfies ServerProvider;
+            let current: ServerProvider = provider;
             return {
               instanceId,
               driverKind: driver,
@@ -2614,8 +2619,15 @@ it.layer(
                       packageName: null,
                     }),
                   ),
-                getSnapshot: Effect.succeed(provider),
-                refresh: Effect.succeed(provider),
+                getSnapshot: Effect.sync(() => current),
+                refresh: Effect.sync(() => {
+                  current = {
+                    ...provider,
+                    installed: installedAfterProbe,
+                    status: installedAfterProbe ? "ready" : "error",
+                  };
+                  return current;
+                }),
                 streamChanges: Stream.empty,
                 applyUsageLimits: () => Effect.void,
               },
@@ -2623,7 +2635,11 @@ it.layer(
               textGeneration: {} as ProviderInstance["textGeneration"],
             };
           };
-          const instances = [makeInstance("present", true), makeInstance("missing", false)];
+          const instances = [
+            makeInstance("present", true),
+            makeInstance("missing", false),
+            makeInstance("missing-after-probe", true, false),
+          ];
           const rebuilt: Array<ReadonlyArray<ProviderInstanceId>> = [];
           const changes = yield* PubSub.unbounded<void>();
           const registry = yield* ProviderRegistry.ProviderRegistry.pipe(
@@ -2665,6 +2681,11 @@ it.layer(
 
           assert.strictEqual(env.PATH, host.expectedPath);
           assert.deepStrictEqual(rebuilt, [[ProviderInstanceId.make("missing")]]);
+          yield* registry.refresh();
+          assert.deepStrictEqual(rebuilt, [
+            [ProviderInstanceId.make("missing")],
+            [ProviderInstanceId.make("missing-after-probe")],
+          ]);
         }).pipe(
           Effect.provideService(HostProcess.Platform, host.platform),
           Effect.provideService(HostProcess.Environment, env),
