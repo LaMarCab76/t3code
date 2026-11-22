@@ -6016,6 +6016,28 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    it.effect("refreshes coalesced branch ordering when a tip moves", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        yield* git(cwd, ["branch", "a-topic"]);
+        yield* git(cwd, ["branch", "z-topic"]);
+        yield* git(cwd, ["commit", "--allow-empty", "-m", "Later"], {
+          GIT_COMMITTER_DATE: "2099-01-01T00:00:00Z",
+        });
+        const later = yield* git(cwd, ["rev-parse", "HEAD"]);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const list = driver.listRefs({ cwd, refresh: true });
+        const topics = (refs: ReadonlyArray<{ readonly name: string }>) =>
+          refs.filter((ref) => ref.name !== initialBranch).map((ref) => ref.name);
+        assert.deepStrictEqual(topics((yield* list).refs), ["a-topic", "z-topic"]);
+        const before = yield* driver.readRefSnapshot(cwd);
+        yield* git(cwd, ["update-ref", "refs/heads/z-topic", later]);
+        assert.notEqual(yield* driver.readRefSnapshot(cwd), before);
+        assert.deepStrictEqual(topics((yield* list).refs), ["z-topic", "a-topic"]);
+      }),
+    );
+
     it.effect("a ref snapshot detects branch identity, ref and ancestry changes", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
@@ -6579,6 +6601,15 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
           .pipe(Effect.exit);
         assert.equal(failed._tag, "Failure");
         assert.equal(yield* git(cwd, ["branch", "--show-current"]), initialBranch);
+        const missing = yield* driver
+          .renameBranch({
+            cwd,
+            oldBranch: "no-such-source",
+            newBranch: "Julius/ABC-123",
+            exactName: true,
+          })
+          .pipe(Effect.exit);
+        assert.equal(missing._tag, "Failure");
         const renamed = yield* driver.renameBranch({
           cwd,
           oldBranch: initialBranch,
@@ -8981,6 +9012,93 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
         }),
     );
 
+    it.effect("commits a staged gitlink even when diffs ignore submodules", () =>
+      Effect.gen(function* () {
+        const submodule = yield* makeTmpDir();
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(submodule);
+        yield* initRepoWithCommit(cwd);
+        yield* git(cwd, [
+          "-c",
+          "protocol.file.allow=always",
+          "submodule",
+          "add",
+          NodeURL.pathToFileURL(submodule).href,
+          "shared",
+        ]);
+        yield* git(cwd, ["commit", "-m", "Add shared"]);
+        yield* git(cwd, ["config", "diff.ignoreSubmodules", "all"]);
+        const checkedOut = (yield* Path.Path).join(cwd, "shared");
+        yield* git(checkedOut, [
+          "-c",
+          "user.email=test@test.com",
+          "-c",
+          "user.name=Test",
+          "commit",
+          "--allow-empty",
+          "-m",
+          "Advance shared",
+        ]);
+        yield* git(cwd, ["add", "shared"]);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const context = yield* driver.prepareCommitContext(cwd);
+        assert.equal(context?.stagedSummary, "M\tshared");
+        assert.include(context?.stagedPatch ?? "", "Subproject commit");
+        yield* driver.commit(cwd, "Update shared", "");
+        assert.equal(
+          yield* git(cwd, ["rev-parse", "HEAD:shared"]),
+          yield* git(checkedOut, ["rev-parse", "HEAD"]),
+        );
+      }),
+    );
+
+    it.effect("leaves concurrent staging alone when an unverified selection is empty", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        yield* writeTextFile(cwd, "unrelated.txt", "stage me\n");
+        const staged = yield* Ref.make(false);
+        const delegate = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const spawner = ChildProcessSpawner.make((command) =>
+          Effect.gen(function* () {
+            const handle = yield* delegate.spawn(command);
+            if (
+              !ChildProcess.isStandardCommand(command) ||
+              !command.args.includes("--cached") ||
+              !(command.args.includes("--quiet") || command.args.includes("--name-status"))
+            ) {
+              return handle;
+            }
+            return ChildProcessSpawner.makeHandle({
+              ...handle,
+              exitCode: handle.exitCode.pipe(
+                Effect.tap(() =>
+                  Effect.gen(function* () {
+                    if (yield* Ref.getAndSet(staged, true)) return;
+                    const child = yield* delegate.spawn(
+                      ChildProcess.make("git", ["add", "unrelated.txt"], { cwd }),
+                    );
+                    assert.equal(yield* child.exitCode, 0);
+                  }).pipe(Effect.scoped),
+                ),
+              ),
+            });
+          }),
+        );
+        const driver = yield* makeGitVcsDriverCore().pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Effect.provide(layerServerConfig),
+        );
+        const error = yield* driver
+          .commit(cwd, "Nothing selected", "", {
+            stage: { filePaths: ["README.md"], unverified: true },
+          })
+          .pipe(Effect.flip);
+        assert.equal(error._tag, "GitNothingToCommitError");
+        assert.equal(yield* git(cwd, ["status", "--porcelain"]), "A  unrelated.txt");
+      }),
+    );
+
     it.effect("stops a selected-file commit when another process holds the index lock", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
@@ -9854,6 +9972,7 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
             );
           }
 
+          yield* git(cwd, ["update-ref", "refs/tags/HEAD", `refs/heads/${initialBranch}`]);
           const pushed = yield* (yield* GitVcsDriver.GitVcsDriver).pushCurrentBranch(cwd, null);
           assert.deepInclude(pushed, {
             status: "pushed",
@@ -9876,6 +9995,10 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
             );
           }
 
+          assert.equal(
+            yield* git(remote, ["--git-dir=.", "rev-parse", "refs/heads/feature/push"]),
+            yield* git(cwd, ["rev-parse", "refs/heads/feature/push"]),
+          );
           const skipped = yield* (yield* GitVcsDriver.GitVcsDriver).pushCurrentBranch(cwd, null);
           assert.deepInclude(skipped, {
             status: "skipped_up_to_date",

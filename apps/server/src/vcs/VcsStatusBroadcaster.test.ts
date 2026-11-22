@@ -78,7 +78,6 @@ function layerTestFor(state: {
   localInvalidationCalls: number;
   remoteInvalidationCalls: number;
   remoteStatusRefreshUpstreamValues?: Array<boolean | undefined>;
-  remoteStatusReusedDetails?: Array<boolean>;
   localStatusBranchChanges?: Array<boolean>;
   refSnapshot?: string | null;
   worktreeStamp?: string | null;
@@ -163,18 +162,6 @@ function layerTestFor(state: {
               refName,
               aheadCount,
               behindCount,
-              details: {
-                isRepo: true,
-                hasPrimaryRemote: true,
-                defaultBranch: "main",
-                isDefaultBranch: false,
-                branch: refName,
-                upstreamRef: `origin/${refName}`,
-                hasUpstream: true,
-                aheadCount,
-                behindCount,
-                aheadOfDefaultCount: aheadCount,
-              },
             };
           }),
         remoteStatus: (_input, options) =>
@@ -184,7 +171,6 @@ function layerTestFor(state: {
                 Effect.sync(() => {
                   state.remoteStatusCalls += 1;
                   state.remoteStatusRefreshUpstreamValues?.push(options?.refreshUpstream);
-                  state.remoteStatusReusedDetails?.push(options?.statusDetails !== undefined);
                   return state.currentRemoteStatus;
                 }),
               ),
@@ -819,7 +805,7 @@ describe("VcsStatusBroadcaster", () => {
     },
   );
 
-  it.effect("the turn-end PR lookup reuses the upstream read it follows, once", () => {
+  it.effect("the turn-end PR lookup sees commits made since the divergence read", () => {
     const state: Parameters<typeof layerTestFor>[0] = {
       currentLocalStatus: baseLocalStatus,
       currentRemoteStatus: remoteStatusWithPr,
@@ -827,16 +813,15 @@ describe("VcsStatusBroadcaster", () => {
       remoteStatusCalls: 0,
       localInvalidationCalls: 0,
       remoteInvalidationCalls: 0,
-      remoteStatusReusedDetails: [],
     };
 
     return Effect.gen(function* () {
       const broadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
       yield* broadcaster.getStatus({ cwd: "/repo" });
       yield* broadcaster.refreshLocalStatus("/repo");
-      yield* broadcaster.refreshPullRequestStatus("/repo");
-      yield* broadcaster.refreshPullRequestStatus("/repo");
-      assert.deepStrictEqual(state.remoteStatusReusedDetails, [false, true, false]);
+      state.currentRemoteStatus = { ...remoteStatusWithPr, aheadCount: 2 };
+      const refreshed = yield* broadcaster.refreshPullRequestStatus("/repo");
+      assert.equal(refreshed?.aheadCount, 2);
     }).pipe(Effect.provide(layerTestFor(state)));
   });
 

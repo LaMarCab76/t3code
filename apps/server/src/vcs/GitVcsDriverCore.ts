@@ -85,7 +85,7 @@ const WORKTREE_INDEX_REFRESH_TIMEOUT_MS = Duration.toMillis(Duration.minutes(5))
 const WORKTREE_REMOVE_TIMEOUT_MS = Duration.toMillis(Duration.minutes(5));
 const DEFAULT_MAX_OUTPUT_BYTES = 1_000_000;
 const REF_SNAPSHOT_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
-const BRANCH_METADATA_FORMAT = "%(refname)%09%(symref)%09%(upstream)";
+const BRANCH_METADATA_FORMAT = "%(refname)%09%(symref)%09%(upstream)%09%(objectname)";
 const OUTPUT_TRUNCATED_MARKER = "\n\n[truncated]";
 const PREPARED_COMMIT_PATCH_MAX_OUTPUT_BYTES = 49_000;
 const RANGE_COMMIT_SUMMARY_MAX_OUTPUT_BYTES = 19_000;
@@ -520,6 +520,10 @@ const GIT_FAILURE_REASON_PATTERNS: ReadonlyArray<readonly [RegExp, GitCommandFai
   [/'refs\/[^'\n]+' exists; cannot create 'refs\//i, "ref_name_conflict"],
   // The same prefix also reports permission errors, which retrying cannot fix.
   [/could not lock config file .+: File exists/i, "config_locked"],
+  [
+    /could not lock config file [^\r\n]+\r?\nfatal: branch is renamed, but update of config-file failed/i,
+    "config_locked",
+  ],
   [
     /(?:authentication failed|could not read Username|could not read Password|permission denied \([a-z-]+(?:,[a-z-]+)*\)|permission denied, please try again)/i,
     "authentication_failed",
@@ -2620,10 +2624,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     refreshUpstream: boolean,
     includeAheadOfDefault = true,
   ) {
+    const branchArgs = ["symbolic-ref", "--quiet", "HEAD"];
     const branchResult = yield* executeGitWithStableDiagnostics(
       "GitVcsDriver.statusDetailsRemote.branch",
       cwd,
-      ["rev-parse", "--symbolic-full-name", "HEAD"],
+      branchArgs,
       { allowNonZeroExit: true },
     ).pipe(
       Effect.catchTags({
@@ -2632,45 +2637,28 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       }),
     );
 
-    if (branchResult === null) {
+    if (branchResult === null || isNonRepositoryGitStderr(branchResult.stderr)) {
       return NON_REPOSITORY_REMOTE_STATUS_DETAILS;
     }
-    let branch: string | null;
-    let headRef: string;
-    if (branchResult.exitCode !== 0) {
-      if (isNonRepositoryGitStderr(branchResult.stderr)) {
-        return NON_REPOSITORY_REMOTE_STATUS_DETAILS;
-      }
-      if (!isUnbornHeadStderr(branchResult.stderr)) {
-        return yield* new GitCommandError({
-          ...gitCommandContext({
-            operation: "GitVcsDriver.statusDetailsRemote.branch",
-            cwd,
-            args: ["rev-parse", "--symbolic-full-name", "HEAD"],
-          }),
-          detail: "Git branch lookup failed.",
-          exitCode: branchResult.exitCode,
-          stdoutLength: branchResult.stdout.length,
-          stderrLength: branchResult.stderr.length,
-        });
-      }
-
-      const branchValue = yield* runGitStdout(
-        "GitVcsDriver.statusDetailsRemote.unbornBranch",
-        cwd,
-        ["symbolic-ref", "--quiet", "HEAD"],
-      );
-      branch = branchNameFromHeadRef(branchValue);
-      // An unborn branch has no ref, so for-each-ref below cannot report its upstream.
-      headRef = "";
-    } else {
-      branch = branchNameFromHeadRef(branchResult.stdout);
-      headRef = branchResult.stdout.trim();
+    // Exit 1 means detached HEAD. An unborn branch still has a symbolic HEAD.
+    if (branchResult.exitCode !== 0 && branchResult.exitCode !== 1) {
+      return yield* new GitCommandError({
+        ...gitCommandContext({
+          operation: "GitVcsDriver.statusDetailsRemote.branch",
+          cwd,
+          args: branchArgs,
+        }),
+        detail: "Git branch lookup failed.",
+        exitCode: branchResult.exitCode,
+        stdoutLength: branchResult.stdout.length,
+        stderrLength: branchResult.stderr.length,
+      });
     }
+    const headRef = branchResult.stdout.trim();
+    const branch = branchNameFromHeadRef(headRef);
     let upstreamRemoteName: string | undefined;
     if (refreshUpstream) {
-      // A detached HEAD prints `HEAD`, which has no upstream to refresh.
-      yield* refreshStatusUpstreamIfStale(cwd, headRef.startsWith("refs/") ? headRef : "").pipe(
+      yield* refreshStatusUpstreamIfStale(cwd, branch ? headRef : "").pipe(
         Effect.map((remoteName) => {
           upstreamRemoteName = remoteName;
         }),
@@ -2696,7 +2684,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       const divergence = yield* executeGit(
         "GitVcsDriver.statusDetailsRemote.divergence",
         cwd,
-        ["rev-list", "--left-right", "--count", "HEAD...@{upstream}"],
+        ["rev-list", "--left-right", "--count", `${headRef}...@{upstream}`],
         { allowNonZeroExit: true },
       );
       if (divergence.exitCode === 0) {
@@ -3420,7 +3408,14 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             "GitVcsDriver.prepareCommitContext.stagedSummary",
             cwd,
             // cwd can be a subdirectory; diff.relative would hide changes outside it.
-            ["-c", "diff.relative=false", "diff", "--cached", "--name-status"],
+            [
+              "-c",
+              "diff.relative=false",
+              "diff",
+              "--cached",
+              "--ignore-submodules=none",
+              "--name-status",
+            ],
             { env, maxOutputBytes: REVIEW_METADATA_MAX_OUTPUT_BYTES },
           ).pipe(Effect.map((stdout) => stdout.trim()));
           if (stagedSummary.length === 0) {
@@ -3449,6 +3444,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
               "--no-ext-diff",
               "--no-textconv",
               "--cached",
+              "--ignore-submodules=none",
               "--patch",
               "--minimal",
             ],
@@ -3489,26 +3485,19 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       "diff.relative=false",
       "diff",
       "--cached",
+      "--ignore-submodules=none",
       "--no-ext-diff",
       "--no-textconv",
     ];
-    if (options?.stage?.unverified) {
-      const indexMatchesHead =
-        (yield* executeGit("GitVcsDriver.commit.indexChanges", cwd, [...diffCached, "--quiet"], {
-          allowNonZeroExit: true,
-        })).exitCode === 0;
-      // Staging an empty result would overwrite what is already staged, so check a scratch index.
-      if (
-        !indexMatchesHead &&
-        (yield* prepareCommitContext(cwd, options.stage.filePaths, { includePatch: false })) ===
-          null
-      ) {
-        return yield* new GitVcsDriver.GitNothingToCommitError({
-          operation: "GitVcsDriver.commit",
-          cwd,
-          detail: "Staging found no changes.",
-        });
-      }
+    if (
+      options?.stage?.unverified &&
+      (yield* prepareCommitContext(cwd, options.stage.filePaths, { includePatch: false })) === null
+    ) {
+      return yield* new GitVcsDriver.GitNothingToCommitError({
+        operation: "GitVcsDriver.commit",
+        cwd,
+        detail: "Staging found no changes.",
+      });
     }
     const partialCommitPaths =
       options?.stage !== undefined
@@ -3758,13 +3747,14 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       });
     }
 
+    const sourceRef = details.branch === null ? "HEAD" : `refs/heads/${details.branch}`;
     const requestedRemoteName = options?.remoteName?.trim() || null;
     if (requestedRemoteName) {
       const publishBranch = yield* resolvePublishBranchName(cwd, branch);
       yield* executeGitWithStableDiagnostics(
         "GitVcsDriver.pushCurrentBranch.pushWithRequestedRemote",
         cwd,
-        ["push", "--", requestedRemoteName, `HEAD:refs/heads/${publishBranch}`],
+        ["push", "--", requestedRemoteName, `${sourceRef}:refs/heads/${publishBranch}`],
         { timeoutMs: null },
       );
       return {
@@ -3881,7 +3871,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           ? "GitVcsDriver.pushCurrentBranch.pushOwnBranch"
           : "GitVcsDriver.pushCurrentBranch.pushWithUpstream",
         cwd,
-        ["push", "--", remoteName, `HEAD:refs/heads/${publishBranch}`],
+        ["push", "--", remoteName, `${sourceRef}:refs/heads/${publishBranch}`],
         { timeoutMs: null },
       );
       return {
@@ -3896,7 +3886,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       yield* executeGitWithStableDiagnostics(
         "GitVcsDriver.pushCurrentBranch.pushUpstream",
         cwd,
-        ["push", "--", destination.remoteName, `HEAD:refs/heads/${destination.branchName}`],
+        ["push", "--", destination.remoteName, `${sourceRef}:refs/heads/${destination.branchName}`],
         { timeoutMs: null },
       );
       return {
@@ -5418,7 +5408,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const lines = refsResult.stdout.split("\n");
     for (const line of lines) {
       if (line.length === 0) continue;
-      const [fullRefName, symbolicTarget, upstreamRef, lastCommitRaw] = line.split("\t");
+      const [fullRefName, symbolicTarget, upstreamRef, , lastCommitRaw] = line.split("\t");
       if (!fullRefName || symbolicTarget) continue;
       const parsedLastCommit = Number.parseInt(lastCommitRaw ?? "0", 10);
       const lastCommit = Number.isFinite(parsedLastCommit) ? parsedLastCommit : 0;
@@ -6795,7 +6785,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           ? input.newBranch
           : yield* resolveAvailableBranchName(input.cwd, input.newBranch);
 
-        yield* executeGit(
+        yield* executeGitWithStableDiagnostics(
           "GitVcsDriver.renameBranch",
           input.cwd,
           ["branch", "-m", "--", input.oldBranch, targetBranch],
@@ -6805,20 +6795,22 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           },
         ).pipe(
           // Git exits non-zero after moving the ref when it cannot rewrite the locked config.
-          Effect.catch((error) =>
-            Effect.all(
-              [branchExists(input.cwd, input.oldBranch), branchExists(input.cwd, targetBranch)],
-              { concurrency: "unbounded" },
-            ).pipe(
-              Effect.orElseSucceed(() => [true, false] as const),
-              Effect.flatMap(([oldExists, newExists]) =>
-                !oldExists && newExists
-                  ? Effect.logWarning(
-                      "GitVcsDriver.renameBranch: renamed the branch but could not move its config entries",
-                    )
-                  : Effect.fail(error),
+          Effect.catchIf(
+            (error) => error.reason === "config_locked",
+            (error) =>
+              Effect.all(
+                [branchExists(input.cwd, input.oldBranch), branchExists(input.cwd, targetBranch)],
+                { concurrency: "unbounded" },
+              ).pipe(
+                Effect.orElseSucceed(() => [true, false] as const),
+                Effect.flatMap(([oldExists, newExists]) =>
+                  !oldExists && newExists
+                    ? Effect.logWarning(
+                        "GitVcsDriver.renameBranch: renamed the branch but could not move its config entries",
+                      )
+                    : Effect.fail(error),
+                ),
               ),
-            ),
           ),
         );
 
