@@ -255,6 +255,9 @@ const EMPTY_PERSISTED_HISTORY: PersistedBrowserHistory = {
 };
 let historyDatabase: Promise<IDBDatabase> | undefined;
 let historyChannel: BroadcastChannel | undefined;
+let historySync = Promise.resolve();
+let unsavedHistoryUpdates: UpdateHistory[] = [];
+let unsavedHistoryBase: PersistedBrowserHistory | undefined;
 
 interface HistorySnapshot {
   readonly key: string;
@@ -335,19 +338,18 @@ function mergeLegacyHistory(
 function transactLegacyHistory(update: UpdateHistory, current: PersistedBrowserHistory) {
   const snapshots = readHistorySnapshots();
   const previous = mergeHistorySnapshots(undefined, snapshots) ?? current;
-  const next = update(previous);
-  if (next === previous) return previous;
-  const history = boundThreadMappings(previous, next);
+  const history = update(previous);
+  if (history === previous) return { history, unsavedBase: undefined };
   try {
     window.localStorage.setItem(
       `${BROWSER_HISTORY_FALLBACK_PREFIX}${randomUUID()}`,
       JSON.stringify({ state: history, version: 1 }),
     );
     retireHistorySnapshots(snapshots);
+    return { history, unsavedBase: undefined };
   } catch {
-    // History stays in memory when the browser denies both storage APIs.
+    return { history, unsavedBase: previous };
   }
-  return history;
 }
 
 function invalidateHistoryDatabase(opening: Promise<IDBDatabase>): void {
@@ -399,8 +401,7 @@ async function transactIndexedHistory(update?: UpdateHistory, retry = true) {
       const saved = request.result as PersistedBrowserHistory | undefined;
       if (update) snapshots = readHistorySnapshots();
       const previous = mergeHistorySnapshots(saved, snapshots) ?? EMPTY_PERSISTED_HISTORY;
-      const next = update?.(previous) ?? previous;
-      history = next === previous ? previous : boundThreadMappings(previous, next);
+      history = update?.(previous) ?? previous;
       changed = history !== saved;
       if (update && changed) store.put(history, BROWSER_HISTORY_STORAGE_KEY);
     };
@@ -422,17 +423,31 @@ export const useBrowserHistoryStore = create<BrowserHistoryStoreState>()((set, g
       publish(update(get()));
       return;
     }
-    void transactIndexedHistory(update).then(
-      ({ history, changed }) => {
-        publish(history);
+    historySync = historySync.then(async () => {
+      unsavedHistoryUpdates.push(update);
+      const replay = (base: PersistedBrowserHistory) =>
+        unsavedHistoryUpdates.reduce((state, apply) => {
+          const next = apply(state);
+          return next === state ? state : boundThreadMappings(state, next);
+        }, base);
+      const saved = await transactIndexedHistory(replay).catch(() => null);
+      if (saved) {
+        unsavedHistoryUpdates = [];
+        unsavedHistoryBase = undefined;
+        publish(saved.history);
         // oxlint-disable-next-line unicorn/require-post-message-target-origin -- BroadcastChannel is scoped to the origin
-        if (changed) historyChannel?.postMessage(null);
-      },
-      () => {
-        const { byProjectKey, projectKeyByThreadKey } = get();
-        publish(transactLegacyHistory(update, { byProjectKey, projectKeyByThreadKey }));
-      },
-    );
+        if (saved.changed) historyChannel?.postMessage(null);
+        return;
+      }
+      const { byProjectKey, projectKeyByThreadKey } = get();
+      const fallback = transactLegacyHistory(
+        replay,
+        unsavedHistoryBase ?? { byProjectKey, projectKeyByThreadKey },
+      );
+      unsavedHistoryBase = fallback.unsavedBase;
+      if (!unsavedHistoryBase) unsavedHistoryUpdates = [];
+      publish(fallback.history);
+    });
   };
 
   return mergeBrowserHistoryState(undefined, {
@@ -538,10 +553,11 @@ if (typeof window !== "undefined") {
   }
   if (historyChannel) {
     historyChannel.onmessage = () => {
-      void transactIndexedHistory().then(
-        ({ history }) => useBrowserHistoryStore.setState({ byProjectKey: history.byProjectKey }),
-        () => undefined,
-      );
+      historySync = historySync.then(async () => {
+        if (unsavedHistoryUpdates.length > 0) return;
+        const saved = await transactIndexedHistory().catch(() => null);
+        if (saved) useBrowserHistoryStore.setState({ byProjectKey: saved.history.byProjectKey });
+      });
     };
   }
   const hydrate = (history: PersistedBrowserHistory) => {
@@ -553,7 +569,7 @@ if (typeof window !== "undefined") {
       },
     }));
   };
-  void transactIndexedHistory((history) => history).then(
+  historySync = transactIndexedHistory((history) => history).then(
     ({ history }) => hydrate(history),
     () =>
       hydrate(mergeHistorySnapshots(undefined, readHistorySnapshots()) ?? EMPTY_PERSISTED_HISTORY),

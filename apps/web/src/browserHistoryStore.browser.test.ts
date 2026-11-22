@@ -341,3 +341,63 @@ it("keeps visits saved while IndexedDB could not open", async () => {
     await resetHistoryFixture();
   }
 });
+
+it.each(["localStorage", "IndexedDB"] as const)(
+  "keeps unsaved changes when %s recovers",
+  async (recoveredStorage) => {
+    await resetHistoryFixture();
+    try {
+      using fixture = new DisposableStack();
+      const db = await openHistoryFixture(fixture);
+      const store = useBrowserHistoryStore.getState();
+      store.recordVisit("a", oldEntry.url, oldEntry.lastVisitedAt);
+      await vi.waitFor(() =>
+        expect(useBrowserHistoryStore.getState().byProjectKey.a).toEqual([oldEntry]),
+      );
+
+      using transaction = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(() => {
+        throw new DOMException("Storage unavailable", "SecurityError");
+      });
+      {
+        using _write = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+          throw new DOMException("Storage unavailable", "QuotaExceededError");
+        });
+        store.recordVisit("a", otherEntry.url, otherEntry.lastVisitedAt);
+        await vi.waitFor(() =>
+          expect(useBrowserHistoryStore.getState().byProjectKey.a).toEqual([otherEntry, oldEntry]),
+        );
+        store.removeUrl("a", oldEntry.url);
+        await vi.waitFor(() =>
+          expect(useBrowserHistoryStore.getState().byProjectKey.a).toEqual([otherEntry]),
+        );
+      }
+
+      const expected = {
+        a: [{ url: page.url, lastVisitedAt: page.lastVisitedAt }, otherEntry],
+      };
+      if (recoveredStorage === "IndexedDB") {
+        transaction.mockRestore();
+      } else {
+        localStorage.setItem(
+          storageKey,
+          JSON.stringify({ state: { byProjectKey: { a: [oldEntry] } }, version: 1 }),
+        );
+      }
+      store.recordVisit("a", page.url, page.lastVisitedAt);
+      await vi.waitFor(() =>
+        expect(useBrowserHistoryStore.getState().byProjectKey).toEqual(expected),
+      );
+      if (recoveredStorage === "IndexedDB") {
+        expect(await readHistoryFixture(db)).toMatchObject({ byProjectKey: expected });
+      } else {
+        const keys = fallbackKeys();
+        expect(keys).toHaveLength(1);
+        expect(JSON.parse(localStorage.getItem(keys[0]!)!)).toMatchObject({
+          state: { byProjectKey: expected },
+        });
+      }
+    } finally {
+      await resetHistoryFixture();
+    }
+  },
+);
