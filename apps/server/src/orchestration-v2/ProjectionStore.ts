@@ -493,6 +493,7 @@ export interface ShellSnapshotOptions {
   readonly location?: "active" | "archive";
   readonly projectId?: ProjectId;
   readonly unsettledOnly?: boolean;
+  readonly activityOnly?: boolean;
   /**
    * Only the threads sharing this thread's `lineage.rootThreadId`: the root, its forks, and their
    * subagent trees. The thread may be deleted: forks keep a deleted source's root.
@@ -8440,12 +8441,21 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       )`;
     };
 
+    const activityRuns = sql`
+      FROM orchestration_v2_projection_runs r
+        INDEXED BY orchestration_v2_projection_runs_thread_status_idx
+      WHERE r.thread_id = t.thread_id
+        AND r.status IN ('preparing', 'starting', 'running', 'waiting')
+        AND NOT ${isSilentShellRun("r")}
+    `;
+
     const selectShellThreadRows = (
       threadId?: ThreadId,
       {
         location,
         projectId,
         unsettledOnly = false,
+        activityOnly = false,
         familyOf,
         worktreePath,
         threadIds,
@@ -8484,11 +8494,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 SELECT r.status
                 -- Read active runs by status. Walking the ordinal index to skip this sort
                 -- reads every run of a thread with none active.
-                FROM orchestration_v2_projection_runs r
-                  INDEXED BY orchestration_v2_projection_runs_thread_status_idx
-                WHERE r.thread_id = t.thread_id
-                  AND r.status IN ('preparing', 'starting', 'running', 'waiting')
-                  AND NOT ${isSilentShellRun("r")}
+                ${activityRuns}
                 ORDER BY r.ordinal DESC, r.run_id DESC
                 LIMIT 1
               ) AS activity_run_status,
@@ -8499,11 +8505,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   json_extract(r.payload_json, '$.startedAt'),
                   r.requested_at
                 )
-                FROM orchestration_v2_projection_runs r
-                  INDEXED BY orchestration_v2_projection_runs_thread_status_idx
-                WHERE r.thread_id = t.thread_id
-                  AND r.status IN ('preparing', 'starting', 'running', 'waiting')
-                  AND NOT ${isSilentShellRun("r")}
+                ${activityRuns}
                 ORDER BY r.ordinal DESC, r.run_id DESC
                 LIMIT 1
               ) AS activity_run_started_at,
@@ -8651,7 +8653,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               unsettledOnly
                 ? sql` AND json_extract(t.payload_json, '$.settledAt') IS NULL AND json_extract(t.payload_json, '$.settledOverride') IS NOT 'settled'`
                 : sql``
-            }${
+            }${activityOnly ? sql` AND EXISTS (SELECT 1 ${activityRuns})` : sql``}${
               familyOf === undefined
                 ? sql``
                 : sql` AND CASE WHEN json_valid(t.payload_json)

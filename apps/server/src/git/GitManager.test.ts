@@ -5173,6 +5173,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         expect(yield* heads("origin")).toEqual(["refs/heads/main", "refs/heads/release"]);
         expect(created(unsupported.providerCalls)).toEqual([]);
 
+        yield* runGit(repoDir, ["remote", "add", "-t", "other", "pingdotgg", companionDir]);
         const privateRemote = { url: companionDir, repository: "pingdotgg/codething-mvp.private" };
         const failed = yield* makeManager({
           providerScenario: {

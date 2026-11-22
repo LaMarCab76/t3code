@@ -63,7 +63,7 @@ const CODEX_DIRECTIVES = ["codex-file-citation", "codex-followup", "artifact-tem
 const VOID = new Set("area base br col embed hr img input link meta source track wbr".split(" "));
 
 const TAG =
-  /<(\/?)([a-zA-Z][\w:-]*)((?:\s+[^\s"'>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*)\s*(\/?)>|<!--(?:-?>|[\s\S]*?-->)|<![^>]*>|<\?[\s\S]*?\?>/g;
+  /<(\/?)([a-zA-Z][\w:-]*)((?:\s+[^\s"'>/=]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+))?)*)\s*(\/?)>|<!--(?:-?>|[\s\S]*?(?:-->|$))|<![^>]*>|<\?[\s\S]*?\?>/g;
 const ATTRIBUTE = /([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
 
 // Start tags an HTML parser closes an open `<p>` for, and the elements that scope that search.
@@ -107,6 +107,7 @@ function properties(source: string | undefined, inSvg: boolean): Element["proper
   for (const match of source.matchAll(ATTRIBUTE)) {
     const name = match[1]!;
     const info = find(inSvg ? svgSchema : htmlSchema, inSvg ? name : name.toLowerCase());
+    if (Object.hasOwn(result, info.property)) continue;
     const raw = match[2] ?? match[3] ?? match[4];
     if (raw === undefined) {
       result[info.property] = info.boolean || info.overloadedBoolean ? true : "";
@@ -913,16 +914,16 @@ function insightSource(text: string, options: RenderOptions): InsightSource | nu
   };
   findCode(parse(text, options));
   const nonce = Math.random().toString(36).slice(2);
-  const marker = new RegExp(String.raw`^\[!T3-INSIGHT-${nonce}-(\d+)\](?:\r?\n)?`);
+  const marker = new RegExp(String.raw`^\[!T3-INSIGHT-${nonce}-(\d+)\](?:\r\n?|\n)?`);
   const anywhere = new RegExp(String.raw`\[!T3-INSIGHT-${nonce}-(\d+)\]`, "g");
-  const lines = text.split(/(?<=\n)/u);
+  const lines = text.split(/(?<=\n)|(?<=\r)(?!\n)/u);
   const skipped = new Set<number>();
   for (;;) {
     // Each line's offset in the message and in the source, and how much longer it got.
     const offsets: Array<{ original: number; source: number; length: number; delta: number }> = [];
     let original = 0;
     let rewritten = 0;
-    let opened = 0;
+    const unmatchedOpenings = new Set<number>();
     let indent: string | undefined;
     const source = lines
       .map((line, lineIndex) => {
@@ -934,7 +935,7 @@ function insightSource(text: string, options: RenderOptions): InsightSource | nu
           const opening = inCode ? null : ASSISTANT_INSIGHT_OPENING.exec(value);
           if (opening && !skipped.has(lineIndex)) {
             indent = opening[1] ?? "";
-            opened++;
+            unmatchedOpenings.add(lineIndex);
             output = `> [!T3-INSIGHT-${nonce}-${lineIndex}]${ending}`;
           }
         } else {
@@ -955,14 +956,17 @@ function insightSource(text: string, options: RenderOptions): InsightSource | nu
         return output;
       })
       .join("");
-    if (opened === 0) return null;
+    if (unmatchedOpenings.size === 0) return null;
     const tree = parse(source, options);
     let stranded = false;
     const visit = (node: Root | Element, quoteStart: Text | undefined) => {
       for (const child of node.children) {
         if (child.type === "text") {
           for (const found of child.value.matchAll(anywhere)) {
-            if (child === quoteStart && found.index === 0) continue;
+            if (child === quoteStart && found.index === 0) {
+              unmatchedOpenings.delete(Number(found[1]));
+              continue;
+            }
             skipped.add(Number(found[1]));
             stranded = true;
           }
@@ -975,7 +979,8 @@ function insightSource(text: string, options: RenderOptions): InsightSource | nu
       }
     };
     visit(tree, undefined);
-    if (stranded) continue;
+    for (const line of unmatchedOpenings) skipped.add(line);
+    if (stranded || unmatchedOpenings.size > 0) continue;
     return {
       source,
       tree,
@@ -1267,7 +1272,7 @@ export function markdownTree(
 
 /** The formulas Words reads in `text`, as source offsets, for editors that keep math as source. */
 export function markdownMathRanges(text: string): Array<{ start: number; end: number }> {
-  if (!/[$\\]|(?:`{3,}|~{3,})[ \t]*math\b/.test(text)) return [];
+  if (!/\$[\s\S]*\$|\\[([]|(?:`{3,}|~{3,})[ \t]*math\b/.test(text)) return [];
   const ranges: Array<{ start: number; end: number }> = [];
   const visit = (node: Root | Element) => {
     for (const child of node.children) {
@@ -1328,10 +1333,12 @@ export function markdownReferenceDefinitions(markdown: string): string[] {
       if (child.type !== "element") continue;
       const label = lookups.get(child.position?.start.offset ?? -1);
       if (child.tagName === "a" && label !== undefined) {
-        const href = String(child.properties.href ?? "").replace(/[<>\\\n]/g, encodeURIComponent);
+        const href = String(child.properties.href ?? "")
+          .replaceAll("&", "&amp;")
+          .replace(/[<>\\\n]/g, encodeURIComponent);
         const title = child.properties.title;
         definitions.push(
-          `[${label}]: <${href}>${typeof title === "string" ? ` "${title.replace(/\s+/g, " ").replace(/["\\]/g, "\\$&")}"` : ""}`,
+          `[${label}]: <${href}>${typeof title === "string" ? ` "${title.replaceAll("&", "&amp;").replace(/\s+/g, " ").replace(/["\\]/g, "\\$&")}"` : ""}`,
         );
       } else visit(child);
     }

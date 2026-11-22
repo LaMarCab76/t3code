@@ -2,6 +2,7 @@ import { ProjectId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as FileSystem from "effect/FileSystem";
 
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -67,11 +68,17 @@ describe("assertCheckoutIdle", () => {
   const guardLayer = (input: {
     readonly repositoryRoot: string;
     readonly threads: ReadonlyArray<ReturnType<typeof thread>>;
-    readonly failWorktreeLookup?: boolean;
+    readonly failActivityLookup?: boolean;
     readonly nestedWorkspaceRoot?: string;
     readonly parentTracksCheckout?: boolean;
+    readonly projectRoot?: string;
+    readonly realPaths?: Readonly<Record<string, string>>;
+    readonly taskCheckout?: string;
   }) =>
     Layer.mergeAll(
+      FileSystem.layerNoop({
+        realPath: (path) => Effect.succeed(input.realPaths?.[path] ?? path),
+      }),
       Layer.mock(GitWorkflowService.GitWorkflowService)({
         repositoryRoot: (cwd) =>
           Effect.succeed(cwd.startsWith("/repo/child") ? "/repo/child" : input.repositoryRoot),
@@ -79,7 +86,7 @@ describe("assertCheckoutIdle", () => {
       Layer.mock(ProjectService.ProjectService)({
         snapshot: Effect.succeed({
           projects: [
-            { id: projectId, workspaceRoot: "/repo" },
+            { id: projectId, workspaceRoot: input.projectRoot ?? "/repo" },
             {
               id: nestedProjectId,
               workspaceRoot: input.nestedWorkspaceRoot ?? "/repo/packages/app",
@@ -96,23 +103,26 @@ describe("assertCheckoutIdle", () => {
         } as never),
       }),
       Layer.mock(WorkspaceFolders.WorkspaceFolders)({
-        forThread: ({ projectId }) =>
+        forThread: ({ projectId, worktreePath }) =>
           Effect.succeed({
             folders:
-              projectId === otherProjectId && input.parentTracksCheckout
-                ? [{ path: input.repositoryRoot, name: "Checkout", isGitRepository: true }]
-                : [],
+              worktreePath === "/task" && input.taskCheckout
+                ? [{ path: input.taskCheckout, name: "Task checkout", isGitRepository: true }]
+                : projectId === otherProjectId && input.parentTracksCheckout
+                  ? [{ path: input.repositoryRoot, name: "Checkout", isGitRepository: true }]
+                  : [],
             extraRoots: [],
           }),
       }),
       Layer.mock(ThreadManagementService.ThreadManagementService)({
         getShellSnapshot: (options) =>
-          options?.worktreePath !== undefined && input.failWorktreeLookup
-            ? Effect.fail("worktree lookup failed" as never)
+          options?.activityOnly === true && input.failActivityLookup
+            ? Effect.fail("activity lookup failed" as never)
             : Effect.succeed(
                 (() => {
                   const matching = input.threads.filter(
                     (candidate) =>
+                      (!options?.activityOnly || candidate.activityRunStatus !== null) &&
                       (options?.projectId === undefined ||
                         candidate.projectId === options.projectId) &&
                       (options?.worktreePath === undefined ||
@@ -137,28 +147,12 @@ describe("assertCheckoutIdle", () => {
     }),
   );
 
-  it.effect("keeps a busy thread when another lookup fails", () =>
-    Effect.gen(function* () {
-      const error = yield* assertCheckoutIdle("test", "/repo").pipe(
-        Effect.flip,
-        Effect.provide(
-          guardLayer({
-            repositoryRoot: "/repo",
-            threads: [thread("local running")],
-            failWorktreeLookup: true,
-          }),
-        ),
-      );
-      expect(error.detail).toContain("'local running'");
-    }),
-  );
-
   it.effect("refuses a switch when an activity lookup could not establish checkout state", () =>
     Effect.gen(function* () {
       const error = yield* assertCheckoutIdle("test", "/repo").pipe(
         Effect.flip,
         Effect.provide(
-          guardLayer({ repositoryRoot: "/repo", threads: [], failWorktreeLookup: true }),
+          guardLayer({ repositoryRoot: "/repo", threads: [], failActivityLookup: true }),
         ),
       );
       expect(error.detail).toContain("Could not verify");
@@ -217,6 +211,46 @@ describe("assertCheckoutIdle", () => {
         ),
       );
       expect(error.detail).toContain("'parent running'");
+    }),
+  );
+
+  it.effect("matches a project and linked worktree recorded under symlink aliases", () =>
+    Effect.gen(function* () {
+      const error = yield* assertCheckoutIdle("test", "/repo").pipe(
+        Effect.flip,
+        Effect.provide(
+          guardLayer({
+            repositoryRoot: "/repo",
+            projectRoot: "/alias",
+            realPaths: { "/alias": "/repo", "/worktree-alias": "/repo" },
+            threads: [
+              thread("aliased project"),
+              thread("aliased worktree", {
+                projectId: otherProjectId,
+                worktreePath: "/worktree-alias",
+              }),
+            ],
+          }),
+        ),
+      );
+      expect(error.detail).toContain("'aliased project'");
+      expect(error.detail).toContain("'aliased worktree'");
+    }),
+  );
+
+  it.effect("refuses a switch in a checkout belonging to a running task folder", () =>
+    Effect.gen(function* () {
+      const error = yield* assertCheckoutIdle("test", "/task/repo").pipe(
+        Effect.flip,
+        Effect.provide(
+          guardLayer({
+            repositoryRoot: "/task/repo",
+            taskCheckout: "/task/repo",
+            threads: [thread("task running", { worktreePath: "/task" })],
+          }),
+        ),
+      );
+      expect(error.detail).toContain("'task running'");
     }),
   );
 

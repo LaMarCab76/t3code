@@ -23,6 +23,7 @@ const PULL = {
   body: null,
   base: "main",
   headRepo: "bob/web",
+  visibility: undefined as "public" | "private" | undefined,
   headSha: "c".repeat(40),
   baseSha: "b".repeat(40),
   mergeCommitSha: null,
@@ -166,7 +167,11 @@ describe("TanStackSourceSourceControlProvider.checkoutChangeRequest", () => {
 
   // Source publishes no `refs/pull/<n>/head` for a private pull request, on either repository.
   it.effect("takes a private pull request's branch from the companion repository", () => {
-    const pull = { head: "acme:fix-thing", headRepo: "acme/web.private" };
+    const pull = {
+      head: "acme:fix-thing",
+      headRepo: "acme/web.private-2",
+      visibility: "private" as const,
+    };
     const { run, git, config } = checkout({ recordedOwner: null, isAncestor: true, pull });
     const forced = checkout({ recordedOwner: null, isAncestor: true, pull, force: true });
     return Effect.gen(function* () {
@@ -176,13 +181,27 @@ describe("TanStackSourceSourceControlProvider.checkoutChangeRequest", () => {
       assert.strictEqual(config.get("branch.fix-thing.pushRemote"), "acme");
       assert.deepStrictEqual(git, [
         `remote source ${REMOTE}`,
-        "remote acme https://source.tanstack.com/@acme/web.private.git",
+        "remote acme https://source.tanstack.com/@acme/web.private-2.git",
         "create fix-thing",
         "switch fix-thing",
         "upstream fix-thing acme/fix-thing",
       ]);
     });
   });
+
+  it.effect("uses the normal pull ref when a numbered companion-like head is public", () =>
+    Effect.gen(function* () {
+      const { run, git, config } = checkout({
+        recordedOwner: null,
+        isAncestor: true,
+        pull: { head: "acme:fix-thing", headRepo: "acme/web.private-2", visibility: "public" },
+        branches: ["main"],
+      });
+      yield* run;
+      assert.include(git, "fetch --no-tags origin +refs/pull/42/head:refs/remotes/origin/pull/42");
+      assert.isFalse(config.has("branch.fix-thing.pushRemote"));
+    }),
+  );
 
   it.effect("only fast-forwards an existing private branch", () =>
     Effect.gen(function* () {

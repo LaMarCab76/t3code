@@ -234,6 +234,11 @@ describe("wordsHast", () => {
     ).toBe(
       '<ul dir="ltr">\n<li>x\n<pre><code>★ Insight ─────\n</code></pre>\n</li>\n</ul>\n<div dir="ltr">\n★ Insight ─────\n</div>\n<blockquote dir="ltr">\n<p>q\n★ Insight ─────</p>\n</blockquote>',
     );
+    const cr = "★ Insight ───\rFirst\rSecond\r───\r\rAfter";
+    expect(wordsHtml(cr, { insights: true })).toContain('data-alert="insight"');
+    expect(wordsHtml("<!--\n★ Insight ───\n-->\n\nAfter", { insights: true }).trim()).toBe(
+      '<p dir="ltr">After</p>',
+    );
     // What follows an opening keeps its offsets in the message, which components slice.
     const insight = "★ Insight ─────\nSee [a](./a.ts)\n```sh\nls\n```\n─────";
     const tree = wordsHast(insight, { ...ASSISTANT, insights: true });
@@ -372,6 +377,8 @@ describe("wordsHast", () => {
   });
 
   it("reads raw HTML attributes as an HTML parser does", () => {
+    expect(wordsHtml('<a href="/guide" HREF="/appendix">Guide</a>')).toContain('href="/guide"');
+    expect(wordsHtml("hello\n\n<!--\nhidden")).toBe('<p dir="ltr">hello</p>');
     expect(wordsHtml('<a href="https://x.dev/?q=1&copy=2&amp;b">x</a>')).toContain(
       'href="https://x.dev/?q=1&#x26;copy=2&#x26;b"',
     );
@@ -426,6 +433,10 @@ describe("wordsHast", () => {
 
   it.each([
     ["# Title\n[a]: https://x.dev", ["[a]: <https://x.dev>"]],
+    [
+      '[a]: <https://x.dev/?q=&amp;copy;> "A &amp;copy;"',
+      ['[a]: <https://x.dev/?q=&amp;copy;> "A &amp;copy;"'],
+    ],
     ['> [a]:\n> https://x.dev "The\n> guide"', ['[a]: <https://x.dev> "The guide"']],
     ["- [a]: https://x.dev\n\n[A]: https://second.dev", ["[a]: <https://x.dev>"]],
     ["<div>\n[a]: https://x.dev\n</div>", []],

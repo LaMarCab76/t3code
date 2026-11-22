@@ -302,7 +302,10 @@ export const make = Effect.gen(function* () {
     return yield* error(operation, input.cwd, "No TanStack Source repository remote was found.");
   });
 
-  const toChangeRequest = (target: Target, pull: Json.SourcePullDetail): ChangeRequest => {
+  const toChangeRequest = (
+    target: Target,
+    pull: Json.SourcePullDetail,
+  ): ChangeRequest & { readonly visibility: string | undefined } => {
     const headRepository = pull.headRepo ?? target.repository;
     const headBranch = Json.headBranchName(pull.head);
     // A pull request synced from a GitHub fork names its head only by its pull ref.
@@ -323,6 +326,7 @@ export const make = Effect.gen(function* () {
       mergedAt: pull.mergedAt === null ? null : Json.iso(pull.mergedAt),
       updatedAt: Option.some(DateTime.makeUnsafe(updatedAt)),
       isCrossRepository: crossRepository,
+      visibility: pull.visibility,
       headRepositoryNameWithOwner: headRepository,
       headRepositoryOwnerLogin: headRepository.split("/")[0] ?? null,
     };
@@ -533,11 +537,17 @@ export const make = Effect.gen(function* () {
                 });
           const operation = "TanStackSourceSourceControlProvider.checkoutChangeRequest";
           const branches = yield* git.listLocalBranchNames(input.cwd);
+          const companionName = pull.headRepositoryNameWithOwner;
+          const companionPrefix =
+            pullRepository === null ? null : pullRepository.toLowerCase() + ".private";
+          const normalizedHead = companionName?.toLowerCase();
           const companion =
-            pullRepository !== null &&
-            pull.headRepositoryNameWithOwner?.toLowerCase() ===
-              `${pullRepository}.private`.toLowerCase()
-              ? pull.headRepositoryNameWithOwner
+            pull.visibility !== "public" &&
+            typeof companionName === "string" &&
+            companionPrefix !== null &&
+            normalizedHead?.startsWith(companionPrefix) &&
+            /^(?:-[2-9]|-[1-9]\d+)?$/.test(normalizedHead.slice(companionPrefix.length))
+              ? companionName
               : null;
           if (!pull.isCrossRepository || companion !== null) {
             const localBranch = pull.headRefName;

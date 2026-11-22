@@ -2594,7 +2594,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
           );
           // Cursor only keeps a run in conversation history once it saves its first checkpoint.
           const promptDropped =
-            (input.status === "failed" || input.status === "cancelled") &&
+            input.status !== "completed" &&
             !input.context.compacted &&
             input.context.prompt !== undefined &&
             (yield* (

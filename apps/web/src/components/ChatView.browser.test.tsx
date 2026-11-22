@@ -118,6 +118,18 @@ vi.mock("../../../../packages/client-runtime/src/connection/driver.ts", async (i
 
 // Null runs the real compression; a test sets it to hold an image in preparation.
 const compression = vi.hoisted(() => ({ gate: null as Promise<void> | null }));
+
+function holdImageCompression() {
+  const gate = Promise.withResolvers<void>();
+  compression.gate = gate.promise;
+  return {
+    release: () => gate.resolve(),
+    [Symbol.dispose]: () => {
+      compression.gate = null;
+      gate.resolve();
+    },
+  };
+}
 vi.mock(import("~/lib/imageCompression"), async (original) => {
   const actual = await original();
   return {
@@ -489,9 +501,7 @@ it.each(["new", "existing"] as const)(
       // AppRoot brings its own router.
       router: false,
     });
-    const compressed = Promise.withResolvers<void>();
-    compression.gate = compressed.promise;
-    using _compression = { [Symbol.dispose]: () => (compression.gate = null) };
+    using compressed = holdImageCompression();
     using _uploads = acceptAttachmentUploads();
     const editor = page.getByTestId("composer-editor");
     await expect.element(editor).toBeVisible();
@@ -530,7 +540,7 @@ it.each(["new", "existing"] as const)(
     await router.navigate({ to: `/${ENVIRONMENT_ID}/${other.id}` });
     await expect.element(page.getByText(`Answer 0 for upload-wait-other-${kind}.`)).toBeVisible();
 
-    compressed.resolve();
+    compressed.release();
     await vi.waitFor(() => {
       if (kind === "new") {
         expect(launch.calls).toHaveLength(1);

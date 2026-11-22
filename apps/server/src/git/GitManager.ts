@@ -2965,6 +2965,12 @@ export const make = Effect.gen(function* () {
         });
       }
     }
+    yield* gitCore.fetchRemoteTrackingBranch({ cwd, remoteName, remoteBranch: branch }).pipe(
+      Effect.mapError((cause) =>
+        fail("Could not fetch the published private branch: " + cause.detail, cause),
+      ),
+      Effect.tapError(() => invalidateStatus(cwd)),
+    );
     // The companion branch is the pull request's head, so status finds it through the upstream.
     yield* gitCore
       .setBranchUpstream({ cwd, branch, remoteName, remoteBranch: branch })
