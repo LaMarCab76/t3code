@@ -164,7 +164,7 @@ export function pendingStoppedDelegatedTasks(input: {
     Pick<ProviderTurnState, "runAttemptId" | "status" | "promptDropped">
   >;
   readonly attempts: ReadonlyArray<
-    Attempt & Pick<OrchestrationV2RunAttempt, "attemptOrdinal" | "reason">
+    Attempt & Pick<OrchestrationV2RunAttempt, "attemptOrdinal" | "reason" | "promptMessageId">
   >;
   readonly subagents: ReadonlyArray<OrchestrationV2Subagent>;
   readonly compactionMessageIds: ReadonlySet<string>;
@@ -198,14 +198,19 @@ export function pendingStoppedDelegatedTasks(input: {
       const attempts = attemptsByRun.get(run.id);
       if (attempts === undefined) return false;
       const resumed =
-        input.compactionMessageIds.size === 0
-          ? undefined
-          : unsentManualContinuationSource(run, input);
+        input.compactionMessageIds.size > 0 &&
+        attempts.some(
+          (attempt) =>
+            attempt.promptMessageId === undefined && attempt.reason !== "steering_restart",
+        )
+          ? unsentManualContinuationSource(run, input)
+          : undefined;
       return attempts.some((attempt) => {
         const messageId =
-          attempt.reason === "steering_restart"
+          attempt.promptMessageId ??
+          (attempt.reason === "steering_restart"
             ? run.userMessageId
-            : (resumed?.userMessageId ?? run.userMessageId);
+            : (resumed?.userMessageId ?? run.userMessageId));
         return !input.compactionMessageIds.has(messageId);
       });
     })

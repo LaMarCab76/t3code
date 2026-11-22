@@ -313,6 +313,7 @@ it("tells the next completed turn about delegated tasks its Stop interrupted, on
     providerThreadId = claudeThread,
     slashMessageIds: ReadonlySet<string> = new Set(),
     droppedRunId?: RunId,
+    promptMessageIds?: ReadonlyMap<RunId, MessageId>,
   ) =>
     pendingStoppedDelegatedTasks({
       providerThreadId,
@@ -325,6 +326,7 @@ it("tells the next completed turn about delegated tasks its Stop interrupted, on
         runId: source.id,
         attemptOrdinal: 1,
         reason: "initial",
+        promptMessageId: promptMessageIds?.get(source.id),
       })),
       subagents,
       compactionMessageIds: slashMessageIds,
@@ -353,6 +355,28 @@ it("tells the next completed turn about delegated tasks its Stop interrupted, on
       slash.id,
     ),
     [stopped],
+  );
+  assert.deepEqual(
+    pending(
+      [spawning, slash, resumedSlash],
+      claudeThread,
+      new Set([slash.userMessageId]),
+      undefined,
+      new Map([[resumedSlash.id, slash.userMessageId]]),
+    ),
+    [stopped],
+    "the persisted prompt decides whether the note was sent",
+  );
+  assert.deepEqual(
+    pending(
+      [spawning, slash, resumedSlash],
+      claudeThread,
+      new Set([slash.userMessageId]),
+      slash.id,
+      new Map([[resumedSlash.id, resumedSlash.userMessageId]]),
+    ),
+    [],
+    "a persisted ordinary prompt counts even when the original command was dropped",
   );
   // A fresh-context turn on another provider thread never carried the note.
   assert.deepEqual(pending([spawning, run(3, codexThread, { requestedAt: at(2) })]), [stopped]);
