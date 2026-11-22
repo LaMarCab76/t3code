@@ -1535,7 +1535,10 @@ function MarkdownDetailsFold(props: {
         accessibilityLabel={preview ? `${props.summary}. ${preview}` : props.summary}
         accessibilityState={{ expanded }}
         hitSlop={4}
-        className="min-h-10 flex-row items-center gap-2 py-2"
+        className={cn(
+          "flex-row items-center gap-2 py-2",
+          props.insightPreview === undefined ? "min-h-10" : "min-h-[44px] android:min-h-[48px]",
+        )}
         onPress={() => {
           void Haptics.selectionAsync();
           setOpenOverride(!expanded);
