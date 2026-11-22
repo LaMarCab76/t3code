@@ -489,6 +489,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly hangSessionScopeClose?: boolean;
     readonly startTurn?: Effect.Effect<void, ProviderAdapter.ProviderAdapterProtocolError>;
     readonly interruptTurn?: Effect.Effect<void>;
+    readonly beforeResume?: (nativeId: string | null | undefined) => Effect.Effect<void>;
     readonly beforeUnload?: Effect.Effect<void>;
     readonly unloads?: Queue.Queue<string>;
     readonly archive?: Effect.Effect<void, ProviderAdapter.ProviderAdapterProtocolError>;
@@ -606,10 +607,18 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
               }),
           ensureThread: () => unimplemented("ensureThread unused in test"),
           resumeThread: (threadInput) =>
-            Ref.update(state, (current) => ({
-              ...current,
-              resumeCount: current.resumeCount + 1,
-            })).pipe(Effect.as(threadInput.providerThread)),
+            (
+              options.beforeResume?.(threadInput.providerThread.nativeThreadRef?.nativeId) ??
+              Effect.void
+            ).pipe(
+              Effect.andThen(
+                Ref.update(state, (current) => ({
+                  ...current,
+                  resumeCount: current.resumeCount + 1,
+                })),
+              ),
+              Effect.as(threadInput.providerThread),
+            ),
           startTurn: () => options.startTurn ?? Effect.void,
           steerTurn: () => Effect.void,
           interruptTurn: () =>
@@ -677,6 +686,7 @@ function layerTest(input: {
   readonly hangSessionScopeClose?: boolean;
   readonly startTurn?: Effect.Effect<void, ProviderAdapter.ProviderAdapterProtocolError>;
   readonly interruptTurn?: Effect.Effect<void>;
+  readonly beforeResume?: (nativeId: string | null | undefined) => Effect.Effect<void>;
   readonly beforeUnload?: Effect.Effect<void>;
   readonly unloads?: Queue.Queue<string>;
   readonly archive?: Effect.Effect<void, ProviderAdapter.ProviderAdapterProtocolError>;
@@ -729,6 +739,7 @@ function layerTest(input: {
         : { hangSessionScopeClose: input.hangSessionScopeClose }),
       ...(input.startTurn === undefined ? {} : { startTurn: input.startTurn }),
       ...(input.interruptTurn === undefined ? {} : { interruptTurn: input.interruptTurn }),
+      ...(input.beforeResume === undefined ? {} : { beforeResume: input.beforeResume }),
       ...(input.beforeUnload === undefined ? {} : { beforeUnload: input.beforeUnload }),
       ...(input.unloads === undefined ? {} : { unloads: input.unloads }),
       ...(input.archive === undefined ? {} : { archive: input.archive }),
@@ -5661,6 +5672,119 @@ it.effect(
       );
     }),
 );
+it.effect("keeps the replacement native thread's linked settings after an idle unload", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const resumeStarted = yield* Deferred.make<void>();
+    const releaseResume = yield* Deferred.make<void>();
+    const unloadStarted = yield* Deferred.make<void>();
+    const releaseUnload = yield* Deferred.make<void>();
+    const settings = yield* ServerSettings.ServerSettingsService.pipe(
+      Effect.provide(ServerSettings.layerTest()),
+    );
+    yield* settings.updateSettings({ linkedEnvironmentsEnabled: false });
+    yield* Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:replacement-native-load");
+      const providerSessionId = idAllocator.derive.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+      });
+      const first = makeProviderThread({ idAllocator, threadId, providerSessionId, now });
+      const replacement = makeProviderThread({
+        idAllocator,
+        threadId,
+        providerSessionId,
+        now,
+        nativeThreadId: "native-replacement",
+      });
+      yield* eventSink.write({
+        events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+      });
+      const runtime = yield* manager.open({
+        threadId,
+        providerSessionId,
+        modelSelection,
+        runtimePolicy,
+      });
+      const resume = (providerThread: OrchestrationV2ProviderThread) =>
+        runtime.resumeThread({ providerThread, threadId, modelSelection, runtimePolicy });
+      yield* resume(first);
+      const runId = idAllocator.derive.run({ threadId, ordinal: 1 });
+      yield* runtime.startTurn({
+        appThread: (yield* projections.getThreadProjection(threadId)).thread,
+        threadId,
+        runId,
+        runOrdinal: 1,
+        providerTurnOrdinal: 1,
+        attemptId: idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 }),
+        rootNodeId: idAllocator.derive.rootNode({ runId }),
+        providerThread: first,
+        message: {
+          createdBy: "user",
+          creationSource: "server",
+          messageId: yield* idAllocator.allocate.message({ threadId, ordinal: 1 }),
+          text: "Reply with OK.",
+          attachments: [],
+        },
+        modelSelection,
+        runtimePolicy,
+      });
+      const subscription = yield* runtime.subscribeEvents!;
+      yield* Queue.offer((yield* Ref.get(state)).eventQueues.get(String(providerSessionId))!, {
+        type: "turn.terminal",
+        driver: CODEX_DRIVER,
+        providerThreadId: first.id,
+        providerTurnId: idAllocator.derive.providerTurn({
+          driver: CODEX_DRIVER,
+          nativeTurnId: "native-turn",
+        }),
+        runOrdinal: 1,
+        status: "completed",
+        failure: null,
+        threadDisposition: "reusable",
+      });
+      yield* subscription.events.pipe(Stream.runHead);
+
+      const loading = yield* resume(replacement).pipe(Effect.forkScoped);
+      yield* Deferred.await(resumeStarted);
+      yield* TestClock.adjust("1 second");
+      yield* Deferred.await(unloadStarted);
+      yield* Deferred.succeed(releaseResume, undefined);
+      yield* Fiber.join(loading);
+      yield* settings.updateSettings({ linkedEnvironmentsEnabled: true });
+      yield* Deferred.succeed(releaseUnload, undefined);
+      yield* resume(replacement);
+
+      const observed = yield* Ref.get(state);
+      assert.deepEqual(observed.unloadedNativeThreadIds, ["native-thread", "native-replacement"]);
+      assert.equal(observed.resumeCount, 3);
+    }).pipe(
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 1000,
+          hasPendingBackgroundWork: Effect.succeed(true),
+          serverSettingsLayer: Layer.succeed(ServerSettings.ServerSettingsService, settings),
+          beforeResume: (nativeId) =>
+            nativeId === "native-replacement"
+              ? Deferred.succeed(resumeStarted, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseResume)),
+                )
+              : Effect.void,
+          beforeUnload: Deferred.succeed(unloadStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseUnload)),
+          ),
+        }),
+      ),
+      Effect.scoped,
+    );
+  }),
+);
+
 it.effect(
   "ProviderSessionManagerV2 re-attaching a thread waits for its in-flight unload, then reloads it",
   () =>
