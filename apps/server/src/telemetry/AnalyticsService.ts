@@ -325,7 +325,7 @@ export const make = Effect.gen(function* () {
           event,
         });
       }
-      return true;
+      return enqueueResult.size > 0;
     },
   );
 

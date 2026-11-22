@@ -1142,6 +1142,7 @@ export function createDeviceStreamClient(
     const ws = new WebSocket(wsUrl(`/helper/ws?device=${device}`));
     ws.binaryType = "arraybuffer";
     socket = ws;
+    lastHomePress = -Infinity;
     iosInputAdmitted = false;
     iosInputUnavailable = false;
     ws.onmessage = (event) => {
@@ -1200,6 +1201,7 @@ export function createDeviceStreamClient(
     ws.onclose = (event) => {
       if (socket !== ws) return;
       socket = null;
+      lastHomePress = -Infinity;
       iosInputAdmitted = false;
       duoControl.clear();
       rotationCursor = null;
@@ -1235,6 +1237,7 @@ export function createDeviceStreamClient(
     );
     ws.binaryType = "arraybuffer";
     socket = ws;
+    lastHomePress = -Infinity;
     ws.onopen = () => {
       if (stopped || socket !== ws) return;
       if (!inputOnly) connecting();
@@ -1284,6 +1287,7 @@ export function createDeviceStreamClient(
     ws.onclose = (event) => {
       if (socket !== ws) return;
       socket = null;
+      lastHomePress = -Infinity;
       closeDecoder();
       if (stopped) return;
       events.onInputConnected(false, event.reason || `closed ${event.code}`);
@@ -1342,6 +1346,7 @@ export function createDeviceStreamClient(
   const stop = () => {
     if (stopped) return;
     stopped = true;
+    lastHomePress = -Infinity;
     generation++;
     videoGeneration++;
     duoControl.clear();
@@ -1369,13 +1374,15 @@ export function createDeviceStreamClient(
     closeDecoder();
   };
 
+  const inputSocket = () =>
+    !stopped &&
+    (!avcc || (iosInputAdmitted && !iosInputUnavailable)) &&
+    socket?.readyState === WebSocket.OPEN
+      ? socket
+      : null;
+
   const send = (payload: Uint8Array<ArrayBuffer> | string) => {
-    if (
-      !stopped &&
-      (!avcc || (iosInputAdmitted && !iosInputUnavailable)) &&
-      socket?.readyState === WebSocket.OPEN
-    )
-      socket.send(payload);
+    inputSocket()?.send(payload);
   };
 
   const rawPoint = (x: number, y: number) => {
@@ -1463,6 +1470,7 @@ export function createDeviceStreamClient(
       if (chunk.length > 0) send(JSON.stringify({ type: "text", text: chunk }));
     },
     pressButton: (pressed) => {
+      if (inputSocket() === null) return;
       const now = Date.now();
       const doubleHome = pressed === "home" && now - lastHomePress < HOME_DOUBLE_TAP_MS;
       lastHomePress = pressed === "home" && !doubleHome ? now : -Infinity;

@@ -12511,76 +12511,77 @@
   "faa3bb26abb39c93": "Не удалось создать гид по ревью",
   "b7df38b7d8792d78": "Открыть гид",
   "9e91e9a77b664e4e": "Не удалось запустить гид по ревью",
-  "0fdf303b060c2739": "This thread",
-  "a41601e9c64359b0": "An environment could not report tasks and usage.",
-  "cc02bc4f39965418": "Command progress",
-  "f0a82ff7f499d91f": "Tasks and usage",
-  "a83692b8cd5e99e5": "View tasks",
-  "0fdc2e47bbace99d": "View usage",
-  "454a79a42649f8ee": "Refresh tasks and usage",
-  "ad60d5af9d10fcfe": "Loading or unavailable",
-  "87dbd89feeec6588": "Environment unavailable or server update required",
-  "0a26ca58f93efe27": "Partial view: the family limit was reached.",
-  "ce7bea895f92ff52": "No task lists reported",
-  "e709555f8e0f4840": "{done}/{total} reported steps",
-  "093b08d4d0444572": "Reported task steps completed",
-  "447e6753ea2ccdbd": "Reported steps across this thread and its subagents. Lists may describe overlapping work.",
-  "05349f874cd663a3": "No task list reported",
-  "4a1a1779325aa069": "{done}/{total} steps",
-  "2ab7f4b6a405fd80": "No steps in this list",
-  "fd1ed6ea6f7ad2f4": "Partial recorded usage",
-  "b441ee8f90d97990": "Recorded usage",
-  "2ac182fde1a083fb": "Input (includes cache)",
-  "429fb3d15308b185": "Output (includes reasoning)",
-  "67749b025ccaab25": "API-equivalent estimate",
-  "12bf84bc0764da06": "{count} turns unpriced or missing a complete breakdown.",
-  "7b7e1d8341bf8069": "Provider extra usage is not added: it may overlap subagent usage.",
-  "a18645b363f90d43": "Subscription limits",
-  "a4b19a3d57be7d33": "Account-wide, across all threads and devices. Per-chat quota: not reported by providers.",
-  "01ab90e7e1767c4b": "· not included",
+  "0fdf303b060c2739": "Этот тред",
+  "a41601e9c64359b0": "Не удалось получить сведения о задачах и использовании из одной из сред.",
+  "cc02bc4f39965418": "Ход выполнения команды",
+  "f0a82ff7f499d91f": "Задачи и использование",
+  "a83692b8cd5e99e5": "Показать задачи",
+  "0fdc2e47bbace99d": "Показать использование",
+  "454a79a42649f8ee": "Обновить задачи и использование",
+  "ad60d5af9d10fcfe": "Загрузка или данные недоступны",
+  "87dbd89feeec6588": "Среда недоступна или требуется обновить сервер",
+  "0a26ca58f93efe27": "Показаны не все данные: достигнут лимит связанных тредов.",
+  "ce7bea895f92ff52": "Нет данных о списках задач",
+  "e709555f8e0f4840": "Шаги по отчётам: {done} из {total}",
+  "093b08d4d0444572": "Выполненные шаги задач по отчётам",
+  "447e6753ea2ccdbd": "Шаги, о которых сообщили этот тред и его субагенты. В списках могут быть описаны одни и те же действия.",
+  "05349f874cd663a3": "Нет данных о списке задач",
+  "4a1a1779325aa069": "Шаги: {done} из {total}",
+  "2ab7f4b6a405fd80": "В этом списке нет шагов",
+  "fd1ed6ea6f7ad2f4": "Данные об использовании неполные",
+  "b441ee8f90d97990": "Данные об использовании",
+  "2ac182fde1a083fb": "Входные токены (включая кеш)",
+  "429fb3d15308b185": "Выходные токены (включая рассуждения)",
+  "67749b025ccaab25": "Оценка по тарифам API",
+  "12bf84bc0764da06": "Ходы без тарифа или полной разбивки: {count}.",
+  "7b7e1d8341bf8069": "Дополнительное использование провайдера не суммируется, так как оно может включать использование субагентов.",
+  "a18645b363f90d43": "Лимиты подписки",
+  "a4b19a3d57be7d33": "Для всей учётной записи, включая все треды и устройства. Провайдеры не сообщают квоты отдельного чата.",
+  "01ab90e7e1767c4b": "· не учтено",
   "e39241a4632e3aca": [
+    "Недоступные записи тредов: ",
     {
       "i": 1,
       "k": "_gt_value_1",
       "v": "v"
     },
-    " thread records unavailable · not included"
+    " · не учтены"
   ],
-  "fb976abe5b22bbe6": "Tasks",
-  "08b86fb690f0e59a": "Standard-rate estimate, not your subscription bill. Unreported cache tokens are priced as uncached input.",
-  "1702b3279a7158e0": [
+  "fb976abe5b22bbe6": "Задачи",
+  "08b86fb690f0e59a": "Оценка по стандартному тарифу, отдельно от счёта за подписку. Токены кеша, о которых нет данных, считаются входными токенами без кеша.",
+  "689a9885e5ade971": [
     {
       "i": 1,
       "k": "_gt_value_1",
       "v": "v"
     },
-    " · ",
+    " · ходов с данными: ",
     {
       "i": 2,
       "k": "_gt_value_2",
       "v": "v"
     },
-    "/",
+    " из ",
     {
       "i": 3,
       "k": "_gt_value_3",
       "v": "v"
-    },
-    " turns reported"
+    }
   ],
   "00e73be23f8b62d8": [
+    "Вход: ",
     {
       "i": 1,
       "k": "_gt_value_1",
       "v": "v"
     },
-    " input ·",
-    " ",
+    " · выход: ",
     {
       "i": 2,
       "k": "_gt_value_2",
       "v": "v"
-    },
-    " output"
-  ]
+    }
+  ],
+  "1e84707a889198a0": "Полные",
+  "89fea43c0935af88": "Частичные"
 }

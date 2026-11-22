@@ -2223,8 +2223,8 @@ export const layerWithOptions = (
               if (child === "awaiting_delivery") return "deferred" as const;
               const archive = child === "ready";
               if (input.archiveOnly === true && !archive) return "skipped" as const;
-              // null when skipped, otherwise whether this native thread is the app thread's loaded one.
-              const unloadsLoadedThread = yield* Ref.modify(
+              // Clear the old native load and its linked configuration together, before a replacement can finish.
+              const shouldUnload = yield* Ref.modify(
                 sessions,
                 (current): readonly [boolean | null, Map<string, LiveSessionEntry>] => {
                   const latest = current.get(key);
@@ -2245,17 +2245,22 @@ export const layerWithOptions = (
                   const loadedProviderThreadKeyByThread = new Map(
                     latest.loadedProviderThreadKeyByThread,
                   );
-                  if (isCurrent) loadedProviderThreadKeyByThread.delete(input.threadId);
+                  const linkedEnvironmentsByThread = new Map(latest.linkedEnvironmentsByThread);
+                  if (isCurrent) {
+                    loadedProviderThreadKeyByThread.delete(input.threadId);
+                    linkedEnvironmentsByThread.delete(input.threadId);
+                  }
                   const updated = new Map(current);
                   updated.set(key, {
                     ...latest,
                     loadedProviderThreadKeyByThread,
+                    linkedEnvironmentsByThread,
                     idleThreadUnloads,
                   });
-                  return [isCurrent, updated];
+                  return [true, updated];
                 },
               );
-              if (unloadsLoadedThread === null) return "skipped" as const;
+              if (shouldUnload === null) return "skipped" as const;
               const unload = (archiveThread: boolean) =>
                 unloadThread({
                   providerThread: pending.providerThread,
@@ -2272,15 +2277,6 @@ export const layerWithOptions = (
                         cause,
                       }).pipe(Effect.andThen(unload(false)))
                     : Effect.fail(cause),
-                ),
-                Effect.tap(() =>
-                  Ref.update(sessions, (current) => {
-                    const latest = current.get(key);
-                    if (latest?.runtime !== entry.runtime || !unloadsLoadedThread) return current;
-                    const linkedEnvironmentsByThread = new Map(latest.linkedEnvironmentsByThread);
-                    linkedEnvironmentsByThread.delete(input.threadId);
-                    return new Map(current).set(key, { ...latest, linkedEnvironmentsByThread });
-                  }),
                 ),
                 Effect.catchCause((cause) =>
                   Effect.logWarning("orchestration-v2.driver-session.idle-unload-failed", {

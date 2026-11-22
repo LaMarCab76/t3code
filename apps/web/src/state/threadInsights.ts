@@ -49,7 +49,13 @@ export const threadInsightsViewAtom = Atom.family((key: string) => {
       }
       queue.push(...data.remotes);
     }
-    return { ...mergeThreadInsights(target, answers, m), queries, errors: [...errors], loading };
+    const omitted = new Set(queue.map(scopedThreadKey).filter((key) => !visited.has(key)));
+    return {
+      ...mergeThreadInsights(target, answers, m, omitted),
+      queries,
+      errors: [...errors],
+      loading,
+    };
   });
   const revisions = Atom.make((get) => {
     const data = get(view);

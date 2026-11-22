@@ -81,7 +81,7 @@ const expectOneLine = (args: ReadonlyArray<string>, baseDir: string, stderr: str
     );
   });
 
-it.effect("points to Labs only when the server hides the feedback tool", () =>
+it.effect("explains missing feedback support and reports local list failures", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -98,7 +98,11 @@ it.effect("points to Labs only when the server hides the feedback tool", () =>
       readonly call?: McpBridge.McpToolSession["call"];
       readonly stderr: string;
     }> = [
-      { args: submit, call: (tool) => Effect.fail(hidden(tool)), stderr: FEEDBACK_OFF_MESSAGE },
+      {
+        args: submit,
+        call: (tool) => Effect.fail(hidden(tool)),
+        stderr: "If Agent feedback is already enabled, update the T3 Code server.",
+      },
       // The list reads this machine's database, never the agent tools.
       { args: ["list"], stderr: FEEDBACK_OFF_MESSAGE },
       {
@@ -154,6 +158,12 @@ it.effect("points to Labs only when the server hides the feedback tool", () =>
       '{"agentFeedback":{"mode":"auto"},"providers":1}',
     );
     yield* expectOneLine(["list"], rejected, FEEDBACK_OFF_MESSAGE);
+
+    // An unreadable settings path must be diagnosed before consulting defaults or the database.
+    const unreadable = yield* fs.makeTempDirectoryScoped({ prefix: "t3-feedback-cli-" });
+    const settingsPath = path.join(unreadable, "userdata", "settings.json");
+    yield* fs.makeDirectory(settingsPath, { recursive: true });
+    yield* expectOneLine(["list"], unreadable, settingsPath);
 
     // On, a damaged database is one line too.
     const damaged = yield* fs.makeTempDirectoryScoped({ prefix: "t3-feedback-cli-" });

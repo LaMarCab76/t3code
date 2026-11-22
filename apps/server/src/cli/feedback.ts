@@ -15,7 +15,6 @@ import * as ServerSettings from "../serverSettings.ts";
 
 import {
   FEEDBACK_CLI_CLIENT_LABEL,
-  FEEDBACK_OFF_MESSAGE,
   FeedbackInput,
   FeedbackOffError,
   FeedbackSubmitResult,
@@ -34,12 +33,18 @@ import {
   withThreadTools,
 } from "./thread.ts";
 
-/** The server hides the feedback tools from every session while the setting is off. */
-const feedbackOff = ({ tool }: { readonly tool: string }) =>
-  Effect.fail(new ThreadToolFailedError({ tool, detail: FEEDBACK_OFF_MESSAGE }));
+const feedbackUnavailable = ({ tool }: { readonly tool: string }) =>
+  Effect.fail(
+    new ThreadToolFailedError({
+      tool,
+      detail:
+        "Agent feedback is unavailable. Enable it in T3 Code under Settings > Labs. If Agent feedback is already enabled, update the T3 Code server.",
+    }),
+  );
 
 class FeedbackListError extends Schema.TaggedError<FeedbackListError>()("FeedbackListError", {
   detail: Schema.String,
+  cause: Schema.Defect(),
 }) {
   override readonly [Runtime.errorReported] = false;
   override get message(): string {
@@ -111,7 +116,7 @@ const feedbackListCommand = Command.make("list", { ...authLocationFlags, json: j
             ? error.message
             : `Could not read this machine's feedback reports: ${firstLine(error)}`;
         return Console.error(detail).pipe(
-          Effect.andThen(Effect.fail(new FeedbackListError({ detail }))),
+          Effect.andThen(Effect.fail(new FeedbackListError({ detail, cause: error }))),
         );
       }),
     ),
@@ -147,7 +152,7 @@ export const feedbackCommand = Command.make("feedback", {
         );
         yield* printJson(report);
       }),
-    ).pipe(Effect.catchTags({ ThreadToolMissingError: feedbackOff }), reportThreadErrors),
+    ).pipe(Effect.catchTags({ ThreadToolMissingError: feedbackUnavailable }), reportThreadErrors),
   ),
   Command.withSubcommands([feedbackListCommand]),
 );

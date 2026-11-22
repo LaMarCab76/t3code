@@ -91,7 +91,7 @@ export const buildFeedbackTrace = (input: {
     resolveT3ToolName(item.toolName ?? "", input.t3Tools) === "t3_feedback";
   // Asked for more turns than the window holds, in a thread long enough to have them.
   let truncated = input.turns > window && started.length >= window;
-  const entries = input.items
+  let entries = input.items
     .filter(
       (item) =>
         item.parentItemId === null &&
@@ -133,9 +133,21 @@ export const buildFeedbackTrace = (input: {
     });
 
   // Tool calls go first, oldest first, so the messages of every turn stay.
-  while (entries.length > MAX_ENTRIES) {
-    const tool = entries.findIndex((entry) => entry.type === "tool");
-    entries.splice(tool === -1 ? 0 : tool, 1);
+  const excess = entries.length - MAX_ENTRIES;
+  if (excess > 0) {
+    const toolCount = entries.reduce((count, entry) => count + (entry.type === "tool" ? 1 : 0), 0);
+    let toolsToDiscard = Math.min(excess, toolCount);
+    let messagesToDiscard = excess - toolsToDiscard;
+    entries = entries.filter((entry) => {
+      if (entry.type === "tool") {
+        if (toolsToDiscard === 0) return true;
+        toolsToDiscard--;
+      } else {
+        if (messagesToDiscard === 0) return true;
+        messagesToDiscard--;
+      }
+      return false;
+    });
     truncated = true;
   }
   const trace = (): FeedbackTrace => ({

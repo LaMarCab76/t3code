@@ -12511,44 +12511,44 @@
   "faa3bb26abb39c93": "Échec du guide de revue",
   "b7df38b7d8792d78": "Ouvrir le guide",
   "9e91e9a77b664e4e": "Impossible de démarrer un guide de revue",
-  "0fdf303b060c2739": "This thread",
-  "a41601e9c64359b0": "An environment could not report tasks and usage.",
-  "cc02bc4f39965418": "Command progress",
-  "f0a82ff7f499d91f": "Tasks and usage",
-  "a83692b8cd5e99e5": "View tasks",
-  "0fdc2e47bbace99d": "View usage",
-  "454a79a42649f8ee": "Refresh tasks and usage",
-  "ad60d5af9d10fcfe": "Loading or unavailable",
-  "87dbd89feeec6588": "Environment unavailable or server update required",
-  "0a26ca58f93efe27": "Partial view: the family limit was reached.",
-  "ce7bea895f92ff52": "No task lists reported",
-  "e709555f8e0f4840": "{done}/{total} reported steps",
-  "093b08d4d0444572": "Reported task steps completed",
-  "447e6753ea2ccdbd": "Reported steps across this thread and its subagents. Lists may describe overlapping work.",
-  "05349f874cd663a3": "No task list reported",
-  "4a1a1779325aa069": "{done}/{total} steps",
-  "2ab7f4b6a405fd80": "No steps in this list",
-  "fd1ed6ea6f7ad2f4": "Partial recorded usage",
-  "b441ee8f90d97990": "Recorded usage",
-  "2ac182fde1a083fb": "Input (includes cache)",
-  "429fb3d15308b185": "Output (includes reasoning)",
-  "67749b025ccaab25": "API-equivalent estimate",
-  "12bf84bc0764da06": "{count} turns unpriced or missing a complete breakdown.",
-  "7b7e1d8341bf8069": "Provider extra usage is not added: it may overlap subagent usage.",
-  "a18645b363f90d43": "Subscription limits",
-  "a4b19a3d57be7d33": "Account-wide, across all threads and devices. Per-chat quota: not reported by providers.",
-  "01ab90e7e1767c4b": "· not included",
+  "0fdf303b060c2739": "Ce fil",
+  "a41601e9c64359b0": "Un environnement n’a pas pu fournir ses données de tâches et d’utilisation.",
+  "cc02bc4f39965418": "Progression de la commande",
+  "f0a82ff7f499d91f": "Tâches et utilisation",
+  "a83692b8cd5e99e5": "Voir les tâches",
+  "0fdc2e47bbace99d": "Voir l’utilisation",
+  "454a79a42649f8ee": "Actualiser les tâches et l’utilisation",
+  "ad60d5af9d10fcfe": "Chargement ou données indisponibles",
+  "87dbd89feeec6588": "Environnement indisponible ou mise à jour du serveur requise",
+  "0a26ca58f93efe27": "Vue partielle : la limite de fils liés a été atteinte.",
+  "ce7bea895f92ff52": "Aucune liste de tâches signalée",
+  "e709555f8e0f4840": "{done}/{total} étapes signalées",
+  "093b08d4d0444572": "Étapes de tâches signalées et terminées",
+  "447e6753ea2ccdbd": "Étapes signalées dans ce fil et par ses sous-agents. Les listes peuvent décrire des travaux qui se recoupent.",
+  "05349f874cd663a3": "Aucune liste de tâches signalée",
+  "4a1a1779325aa069": "{done}/{total} étapes",
+  "2ab7f4b6a405fd80": "Cette liste ne contient aucune étape",
+  "fd1ed6ea6f7ad2f4": "Utilisation partiellement enregistrée",
+  "b441ee8f90d97990": "Utilisation enregistrée",
+  "2ac182fde1a083fb": "Entrée (cache compris)",
+  "429fb3d15308b185": "Sortie (raisonnement compris)",
+  "67749b025ccaab25": "Estimation aux tarifs de l’API",
+  "12bf84bc0764da06": "{count} tours sans tarif ou sans ventilation complète.",
+  "7b7e1d8341bf8069": "L’utilisation supplémentaire du fournisseur est exclue, car elle peut déjà inclure celle des sous-agents.",
+  "a18645b363f90d43": "Limites de l’abonnement",
+  "a4b19a3d57be7d33": "Pour l’ensemble du compte, tous fils et appareils confondus. Les fournisseurs ne communiquent pas de quota par conversation.",
+  "01ab90e7e1767c4b": "· non inclus",
   "e39241a4632e3aca": [
     {
       "i": 1,
       "k": "_gt_value_1",
       "v": "v"
     },
-    " thread records unavailable · not included"
+    " enregistrements de fils indisponibles · non inclus"
   ],
-  "fb976abe5b22bbe6": "Tasks",
-  "08b86fb690f0e59a": "Standard-rate estimate, not your subscription bill. Unreported cache tokens are priced as uncached input.",
-  "1702b3279a7158e0": [
+  "fb976abe5b22bbe6": "Tâches",
+  "08b86fb690f0e59a": "Estimation au tarif standard, distincte de votre facture d’abonnement. Les jetons du cache non signalés sont estimés au tarif des entrées sans cache.",
+  "689a9885e5ade971": [
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -12566,7 +12566,7 @@
       "k": "_gt_value_3",
       "v": "v"
     },
-    " turns reported"
+    " tours signalés"
   ],
   "00e73be23f8b62d8": [
     {
@@ -12574,13 +12574,14 @@
       "k": "_gt_value_1",
       "v": "v"
     },
-    " input ·",
-    " ",
+    " en entrée · ",
     {
       "i": 2,
       "k": "_gt_value_2",
       "v": "v"
     },
-    " output"
-  ]
+    " en sortie"
+  ],
+  "1e84707a889198a0": "Complète",
+  "89fea43c0935af88": "Partielle"
 }

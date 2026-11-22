@@ -2300,6 +2300,57 @@ it.effect("records a secret and a link card without reading the thread's history
       ],
     );
 
+    const feedbackItem = TurnItemId.make("item:long-cards:feedback");
+    const preview = {
+      kind: "bug" as const,
+      subject: "general",
+      expected: "a",
+      actual: "b",
+      workaround: "",
+      trace: null,
+    };
+    const conversationTrace = {
+      turns: 1,
+      textTurns: 1,
+      truncated: false,
+      entries: [{ turn: 1, type: "user" as const, length: 1, text: "x" }],
+    };
+    const recordFeedback = (id: string, feedbackStatus: "pending" | "sent", withText = false) =>
+      orchestrator.dispatch({
+        threadId,
+        runId: run.id,
+        nodeId: run.rootNodeId!,
+        type: "feedback_request.record",
+        commandId: CommandId.make(id),
+        turnItemId: feedbackItem,
+        feedbackStatus,
+        preview,
+        ...(withText ? { conversationTrace } : {}),
+      });
+    yield* recordFeedback("record-feedback", "pending", true);
+    yield* recordFeedback("repeat-feedback", "pending");
+    const rehydrated = yield* projections.getThreadRecords(threadId, ["turnItems"], {
+      turnItemTypes: ["feedback_request"],
+    });
+    assert.deepInclude(rehydrated.turnItems[0], {
+      id: feedbackItem,
+      feedbackStatus: "pending",
+      conversationTrace,
+    });
+    yield* recordFeedback("send-feedback", "sent");
+    yield* recordFeedback("late-feedback", "pending", true);
+    const decided = yield* projections.getThreadRecords(threadId, ["turnItems"], {
+      turnItemTypes: ["feedback_request"],
+    });
+    const decidedFeedback = decided.turnItems[0];
+    assert.equal(
+      decidedFeedback?.type === "feedback_request" && decidedFeedback.feedbackStatus,
+      "sent",
+    );
+    assert.isUndefined(
+      decidedFeedback?.type === "feedback_request" && decidedFeedback.conversationTrace,
+    );
+
     // A card reads its own run, so the rows and VM steps of its reads, which are deterministic,
     // must stay flat on a copy where the thread has thousands of older runs.
     const copyPath = "file:/card-reads?vfs=memdb";

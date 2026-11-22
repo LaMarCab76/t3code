@@ -1776,10 +1776,11 @@ it.effect("offers agent feedback tools only while the setting is on, to every cl
         Layer.build,
       );
       const httpClient = yield* HttpClient.HttpClient;
-      const rpc = (token: string, method: string, params: object) =>
+      const rpc = (token: string, method: string, params: object, deferred = false) =>
         Effect.gen(function* () {
           const headers = {
             accept: "application/json, text/event-stream",
+            ...(deferred ? { "t3-tool-exposure": "deferred" } : {}),
             authorization: `Bearer ${token}`,
           };
           const initialize = yield* httpClient.post("/mcp", {
@@ -1817,17 +1818,20 @@ it.effect("offers agent feedback tools only while the setting is on, to every cl
             readonly error?: unknown;
           };
         });
-      const listed = (token: string) =>
-        rpc(token, "tools/list", {}).pipe(
+      const listed = (token: string, deferred = false) =>
+        rpc(token, "tools/list", {}, deferred).pipe(
           Effect.map((body) => body.result?.tools?.map((tool) => tool.name)),
         );
       // Only provider sessions can search.
-      const found = rpc("agentToken", "tools/call", {
-        name: "tool_search",
-        arguments: { query: "t3_feedback feedback report" },
-      }).pipe(
-        Effect.map((body) => body.result?.structuredContent?.tools?.map((tool) => tool.name)),
-      );
+      const found = rpc(
+        "agentToken",
+        "tools/call",
+        {
+          name: "tool_search",
+          arguments: { query: "t3_feedback feedback report" },
+        },
+        true,
+      ).pipe(Effect.map((body) => body.result?.structuredContent?.tools?.map((tool) => tool.name)));
       const report = (token: string) =>
         rpc(token, "tools/call", {
           name: "t3_feedback",
@@ -1848,6 +1852,11 @@ it.effect("offers agent feedback tools only while the setting is on, to every cl
       for (const token of ["agentToken", "cliToken"]) {
         expect(yield* listed(token)).toEqual(["t3_feedback"]);
       }
+      expect(yield* listed("agentToken", true)).toContain("t3_feedback");
+
+      yield* settings.updateSettings({ agentFeedback: { mode: "off" } });
+      expect(yield* listed("agentToken", true)).not.toContain("t3_feedback");
+      expect(yield* found).toEqual([]);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

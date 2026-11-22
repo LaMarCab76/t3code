@@ -17,6 +17,7 @@ export function mergeThreadInsights(
   root: ScopedThreadRef,
   answers: ReadonlyMap<string, ThreadInsightsAnswer>,
   resolve: MFunctionType = mFallback,
+  omitted: ReadonlySet<string> = new Set(),
 ) {
   const pending: (ScopedThreadRef & { title: string })[] = [];
   const rows = new Map<
@@ -36,6 +37,10 @@ export function mergeThreadInsights(
       break;
     }
     visited.add(key);
+    if (omitted.has(key)) {
+      truncated = true;
+      continue;
+    }
     const answer = answers.get(key)?.data;
     if (answer === undefined) {
       pending.push(target);

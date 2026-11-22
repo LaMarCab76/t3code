@@ -387,13 +387,19 @@ const decodePersistedServerSettingsExit = Schema.decodeUnknownExit(PersistedServ
 
 /**
  * The settings on disk with the managed policy laid over them, read without the service: no
- * database, no write, no legacy migration. A missing or unreadable file reads as the defaults.
+ * database, no write, no legacy migration. A missing file reads as the defaults.
  */
 export const readServerSettingsFromDisk = Effect.gen(function* () {
   const { settingsPath } = yield* ServerConfig.ServerConfig;
   const fs = yield* FileSystem.FileSystem;
   const { settings: managed } = yield* ManagedPolicy.ManagedPolicy;
-  const raw = yield* fs.readFileString(settingsPath).pipe(Effect.option);
+  const raw = yield* fs.readFileString(settingsPath).pipe(
+    Effect.asSome,
+    Effect.catchReason("PlatformError", "NotFound", () => Effect.succeedNone),
+    Effect.mapError(
+      (cause) => new ServerSettingsError({ settingsPath, operation: "read-file", cause }),
+    ),
+  );
   return managed.applyLocks(
     Option.isNone(raw) ? managed.defaults : decodeSettingsFile(raw.value, managed).settings,
   );

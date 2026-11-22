@@ -12537,50 +12537,50 @@
   "faa3bb26abb39c93": "审查导览生成失败",
   "b7df38b7d8792d78": "打开导览",
   "9e91e9a77b664e4e": "无法开始生成审查导览",
-  "0fdf303b060c2739": "This thread",
-  "a41601e9c64359b0": "An environment could not report tasks and usage.",
-  "cc02bc4f39965418": "Command progress",
-  "f0a82ff7f499d91f": "Tasks and usage",
-  "a83692b8cd5e99e5": "View tasks",
-  "0fdc2e47bbace99d": "View usage",
-  "454a79a42649f8ee": "Refresh tasks and usage",
-  "ad60d5af9d10fcfe": "Loading or unavailable",
-  "87dbd89feeec6588": "Environment unavailable or server update required",
-  "0a26ca58f93efe27": "Partial view: the family limit was reached.",
-  "ce7bea895f92ff52": "No task lists reported",
-  "e709555f8e0f4840": "{done}/{total} reported steps",
-  "093b08d4d0444572": "Reported task steps completed",
-  "447e6753ea2ccdbd": "Reported steps across this thread and its subagents. Lists may describe overlapping work.",
-  "05349f874cd663a3": "No task list reported",
-  "4a1a1779325aa069": "{done}/{total} steps",
-  "2ab7f4b6a405fd80": "No steps in this list",
-  "fd1ed6ea6f7ad2f4": "Partial recorded usage",
-  "b441ee8f90d97990": "Recorded usage",
-  "2ac182fde1a083fb": "Input (includes cache)",
-  "429fb3d15308b185": "Output (includes reasoning)",
-  "67749b025ccaab25": "API-equivalent estimate",
-  "12bf84bc0764da06": "{count} turns unpriced or missing a complete breakdown.",
-  "7b7e1d8341bf8069": "Provider extra usage is not added: it may overlap subagent usage.",
-  "a18645b363f90d43": "Subscription limits",
-  "a4b19a3d57be7d33": "Account-wide, across all threads and devices. Per-chat quota: not reported by providers.",
-  "01ab90e7e1767c4b": "· not included",
+  "0fdf303b060c2739": "此对话",
+  "a41601e9c64359b0": "有一个环境无法报告任务和用量。",
+  "cc02bc4f39965418": "命令进度",
+  "f0a82ff7f499d91f": "任务和用量",
+  "a83692b8cd5e99e5": "查看任务",
+  "0fdc2e47bbace99d": "查看用量",
+  "454a79a42649f8ee": "刷新任务和用量",
+  "ad60d5af9d10fcfe": "正在加载或不可用",
+  "87dbd89feeec6588": "环境不可用，或需要更新服务器",
+  "0a26ca58f93efe27": "仅显示部分内容：已达到关联对话数量上限。",
+  "ce7bea895f92ff52": "没有报告任务列表",
+  "e709555f8e0f4840": "已报告步骤：{done}/{total}",
+  "093b08d4d0444572": "已报告且完成的任务步骤",
+  "447e6753ea2ccdbd": "此对话及其子代理报告的步骤。不同列表可能包含相同的工作。",
+  "05349f874cd663a3": "没有报告任务列表",
+  "4a1a1779325aa069": "{done}/{total} 个步骤",
+  "2ab7f4b6a405fd80": "此列表中没有步骤",
+  "fd1ed6ea6f7ad2f4": "仅记录了部分用量",
+  "b441ee8f90d97990": "已记录用量",
+  "2ac182fde1a083fb": "输入（含缓存）",
+  "429fb3d15308b185": "输出（含推理）",
+  "67749b025ccaab25": "按 API 价格估算",
+  "12bf84bc0764da06": "有 {count} 轮未定价或缺少完整明细。",
+  "7b7e1d8341bf8069": "供应商的额外用量可能与子代理用量重叠，因此不计入总计。",
+  "a18645b363f90d43": "订阅额度",
+  "a4b19a3d57be7d33": "适用于整个账户的所有对话和设备。供应商不报告单个对话的配额。",
+  "01ab90e7e1767c4b": "· 未计入",
   "e39241a4632e3aca": [
     {
       "i": 1,
       "k": "_gt_value_1",
       "v": "v"
     },
-    " thread records unavailable · not included"
+    " 条对话记录不可用 · 未计入"
   ],
-  "fb976abe5b22bbe6": "Tasks",
-  "08b86fb690f0e59a": "Standard-rate estimate, not your subscription bill. Unreported cache tokens are priced as uncached input.",
-  "1702b3279a7158e0": [
+  "fb976abe5b22bbe6": "任务",
+  "08b86fb690f0e59a": "按标准价格估算，与订阅账单无关。未报告的缓存令牌按未缓存输入计价。",
+  "689a9885e5ade971": [
     {
       "i": 1,
       "k": "_gt_value_1",
       "v": "v"
     },
-    " · ",
+    " · 已报告 ",
     {
       "i": 2,
       "k": "_gt_value_2",
@@ -12592,21 +12592,22 @@
       "k": "_gt_value_3",
       "v": "v"
     },
-    " turns reported"
+    " 轮"
   ],
   "00e73be23f8b62d8": [
+    "输入 ",
     {
       "i": 1,
       "k": "_gt_value_1",
       "v": "v"
     },
-    " input ·",
-    " ",
+    " · 输出 ",
     {
       "i": 2,
       "k": "_gt_value_2",
       "v": "v"
-    },
-    " output"
-  ]
+    }
+  ],
+  "1e84707a889198a0": "完整",
+  "89fea43c0935af88": "部分"
 }

@@ -303,6 +303,7 @@ export function useComposerContextImport(input: {
   ): ReadonlyMap<string, string> => {
     const rewritten = new Map<string, string>();
     const dependentAttachmentLocalIds = new Map<string, string>();
+    const remintedScreenshots = new Set<string>();
     const skippedDependentAttachmentIds = new Set<string>();
     // Resolve annotations before their dependent screenshot records even if a foreign
     // clipboard producer emitted the records in a different order.
@@ -395,6 +396,7 @@ export function useComposerContextImport(input: {
           const annotation = conflicts ? { ...imported, id: randomUUID() } : imported;
           if (record.kind === "preview-annotation" && record.screenshotContextId) {
             dependentAttachmentLocalIds.set(record.screenshotContextId, annotation.id);
+            if (conflicts) remintedScreenshots.add(record.screenshotContextId);
           }
           addComposerDraftPreviewAnnotation(composerDraftTarget, annotation, {
             appendReference: false,
@@ -440,7 +442,12 @@ export function useComposerContextImport(input: {
         case "image":
         case "file": {
           if (skippedDependentAttachmentIds.has(record.contextId)) break;
-          if (questionAttachmentTarget === null && !conflicts) {
+          const dependentLocalId = dependentAttachmentLocalIds.get(record.contextId);
+          if (
+            questionAttachmentTarget === null &&
+            !conflicts &&
+            !remintedScreenshots.has(record.contextId)
+          ) {
             const restored = matchRestorableQueuedAttachment({
               environmentId,
               sourceEnvironmentId,
@@ -458,7 +465,7 @@ export function useComposerContextImport(input: {
             break;
           }
           if (sourceEnvironmentId === null) break;
-          const localId = dependentAttachmentLocalIds.get(record.contextId) ?? randomUUID();
+          const localId = dependentLocalId ?? randomUUID();
           rewritten.set(record.contextId, toKindScopedComposerContextId(record.kind, localId));
           void importAttachmentRecord(record, localId, sourceEnvironmentId);
           break;

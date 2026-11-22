@@ -193,7 +193,14 @@ function FeedbackPreview({ preview }: { readonly preview: AgentFeedbackPreview }
       </dl>
       {preview.trace !== null ? (
         <Collapsible>
-          <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+          <CollapsibleTrigger
+            render={
+              <button
+                type="button"
+                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+              />
+            }
+          >
             <ChevronDownIcon className="size-3.5" aria-hidden />
             {feedbackTraceSummary(preview.trace, m)}
           </CollapsibleTrigger>

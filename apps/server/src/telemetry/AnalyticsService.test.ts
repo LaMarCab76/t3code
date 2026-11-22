@@ -113,7 +113,11 @@ const recordTwentyEvents = Effect.gen(function* () {
   }
 });
 
-const analyticsLayerWith = (client: HttpClient.HttpClient, policy?: ManagedPolicyDocument) =>
+const analyticsLayerWith = (
+  client: HttpClient.HttpClient,
+  policy?: ManagedPolicyDocument,
+  capacity?: number,
+) =>
   AnalyticsService.layer.pipe(
     Layer.provideMerge(
       ServerConfig.ServerConfig.layerTest(process.cwd(), { prefix: "t3-telemetry-retry-" }),
@@ -122,6 +126,7 @@ const analyticsLayerWith = (client: HttpClient.HttpClient, policy?: ManagedPolic
       ConfigProvider.layer(
         ConfigProvider.fromUnknown({
           T3CODE_TELEMETRY_ENABLED: true,
+          ...(capacity === undefined ? {} : { T3CODE_TELEMETRY_MAX_BUFFERED_EVENTS: capacity }),
           T3CODE_POSTHOG_KEY: "phc_test_key",
           T3CODE_POSTHOG_HOST: "http://localhost",
         }),
@@ -200,6 +205,19 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("AnalyticsService
         batches.flat().map((event) => event.event),
         ["test.allowed"],
       );
+    }),
+  );
+
+  it.effect("reports acceptance only when the event is retained", () =>
+    Effect.gen(function* () {
+      const client = HttpClient.make(respondWithStatus(204));
+      for (const capacity of [0, 1]) {
+        yield* Effect.gen(function* () {
+          const analytics = yield* AnalyticsService.AnalyticsService;
+          assert.equal(yield* analytics.record("test.first"), capacity === 1);
+          assert.equal(yield* analytics.record("test.latest"), capacity === 1);
+        }).pipe(Effect.provide(analyticsLayerWith(client, undefined, capacity)));
+      }
     }),
   );
 

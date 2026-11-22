@@ -118,6 +118,9 @@ describe("native device stream transport", () => {
       const { client, opened, waitForSocket, events } = setup(platform);
       client.start();
       const discarded = await opened;
+      discarded.onopen?.();
+      if (platform === "ios") discarded.onmessage?.({ data: Uint8Array.of(0x83).buffer });
+      client.pressButton("home");
       client.stop();
       const reopened = waitForSocket();
       client.start();
@@ -134,6 +137,11 @@ describe("native device stream transport", () => {
       expect(replacement.close).not.toHaveBeenCalled();
       client.pressButton("home");
       expect(replacement.send).toHaveBeenCalledTimes(1);
+      const payload = replacement.send.mock.calls[0]![0];
+      const command = JSON.parse(
+        typeof payload === "string" ? payload : new TextDecoder().decode(payload.subarray(1)),
+      );
+      expect(command).toEqual(platform === "ios" ? { button: "home" } : { type: "home" });
       client.stop();
       expect(replacement.close).toHaveBeenCalledTimes(1);
       expect(vi.getTimerCount()).toBe(0);
@@ -147,6 +155,7 @@ describe("native device stream transport", () => {
     "opens the %s app switcher on a double-tapped home button",
     async (platform, home, switcher) => {
       const { client, opened } = setup(platform);
+      client.pressButton("home");
       client.start();
       const socket = await opened;
       socket.onopen?.();

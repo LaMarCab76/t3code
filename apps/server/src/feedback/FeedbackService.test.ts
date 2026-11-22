@@ -1,5 +1,3 @@
-import * as NodeOS from "node:os";
-
 import { expect, it } from "@effect/vitest";
 import {
   type AgentFeedbackMode,
@@ -25,6 +23,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
+import { vi } from "vite-plus/test";
 
 import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import * as Threads from "../orchestration-v2/ThreadManagementService.ts";
@@ -42,6 +41,13 @@ import { listFeedbackReports } from "./FeedbackList.ts";
 import * as Feedback from "./FeedbackService.ts";
 import { buildFeedbackTrace } from "./FeedbackTrace.ts";
 import * as Store from "./FeedbackStore.ts";
+
+const syntheticUsername = vi.hoisted(() => "fixture-feedback-user");
+
+vi.mock("node:os", async (importOriginal) => {
+  const os = await importOriginal<typeof import("node:os")>();
+  return { ...os, userInfo: () => ({ ...os.userInfo(), username: syntheticUsername }) };
+});
 
 const threadId = ThreadId.make("thread:feedback");
 const instanceId = ProviderInstanceId.make("work-codex");
@@ -132,7 +138,11 @@ const harness = Effect.gen(function* () {
   // an unlocked read signals after capturing and returns what it captured only on `release`.
   const settingsLock = yield* Semaphore.make(1);
   const reading = yield* Ref.make<
-    | { readonly begun: Deferred.Deferred<void>; readonly release: Deferred.Deferred<void> }
+    | {
+        readonly begun: Deferred.Deferred<void>;
+        readonly release: Deferred.Deferred<void>;
+        readonly skipUnlocked?: boolean;
+      }
     | undefined
   >(undefined);
   const readSettings = Ref.get(mode).pipe(
@@ -140,7 +150,11 @@ const harness = Effect.gen(function* () {
   );
   const unlockedRead = Effect.gen(function* () {
     const captured = yield* readSettings;
-    const armed = yield* Ref.getAndSet(reading, undefined);
+    const armed = yield* Ref.modify(reading, (current) =>
+      current?.skipUnlocked === true
+        ? [undefined, { ...current, skipUnlocked: false }]
+        : [current, undefined],
+    );
     if (armed !== undefined) {
       yield* Deferred.succeed(armed.begun, undefined);
       yield* Deferred.await(armed.release);
@@ -156,6 +170,8 @@ const harness = Effect.gen(function* () {
   const telemetry = yield* Ref.make(true);
   const runId = yield* Ref.make(RunId.make("run:1"));
   const events = yield* Ref.make<ReadonlyArray<readonly [string, unknown]>>([]);
+  const telemetryHandoffs = yield* Ref.make(0);
+  const providerRead = yield* Ref.make<Deferred.Deferred<void> | undefined>(undefined);
   // Every feedback card the service records, in order.
   const cards = yield* Queue.unbounded<CardRecord>();
   // The cards as the thread stores them, each its latest record.
@@ -185,6 +201,11 @@ const harness = Effect.gen(function* () {
           payload_json: "{}",
         })}`;
       }
+      const cardPayload = ({ type: _record, commandId: _id, turnItemId, ...card }: CardRecord) => ({
+        ...card,
+        type: "feedback_request",
+        id: turnItemId,
+      });
       const project = (card: CardRecord) => sql`
         INSERT INTO orchestration_v2_projection_turn_items ${sql.insert({
           turn_item_id: card.turnItemId,
@@ -199,9 +220,9 @@ const harness = Effect.gen(function* () {
                 ? "completed"
                 : "cancelled",
           updated_at: "2026-01-01T00:00:00.000Z",
-          payload_json: "{}",
+          payload_json: JSON.stringify(cardPayload(card)),
         })}
-        ON CONFLICT (turn_item_id) DO UPDATE SET status = excluded.status
+        ON CONFLICT (turn_item_id) DO UPDATE SET status = excluded.status, payload_json = excluded.payload_json
         WHERE orchestration_v2_projection_turn_items.status = 'waiting'`;
       return Layer.mock(Threads.ThreadManagementService)({
         dispatch: (command) =>
@@ -244,13 +265,12 @@ const harness = Effect.gen(function* () {
               ...(wanted.includes("turnItems")
                 ? {
                     turnItems: filter?.turnItemTypes?.includes("feedback_request")
-                      ? [...(yield* Ref.get(shown)).values()].map(
-                          ({ type: _record, commandId: _id, turnItemId, ...card }) => ({
-                            ...card,
-                            type: "feedback_request",
-                            id: turnItemId,
-                          }),
-                        )
+                      ? (yield* sql<{
+                          readonly payload_json: string;
+                        }>`SELECT payload_json FROM orchestration_v2_projection_turn_items
+                          WHERE thread_id = ${threadId} AND type = 'feedback_request'`.pipe(
+                          Effect.orDie,
+                        )).map((row) => JSON.parse(row.payload_json))
                       : stored.filter(
                           (item) =>
                             filter?.turnItemRunIds?.includes(item.runId) === true &&
@@ -286,7 +306,8 @@ const harness = Effect.gen(function* () {
         }),
         Layer.mock(Analytics.AnalyticsService)({
           record: (event, properties) =>
-            Ref.get(telemetry).pipe(
+            Ref.update(telemetryHandoffs, (count) => count + 1).pipe(
+              Effect.andThen(Ref.get(telemetry)),
               Effect.tap((on) =>
                 on
                   ? Ref.update(events, (rows) => [...rows, [event, properties] as const])
@@ -310,13 +331,18 @@ const harness = Effect.gen(function* () {
             } as unknown as Project),
         }),
         Layer.mock(Providers.ProviderRegistry)({
-          getProviders: Effect.succeed([
-            {
-              instanceId,
-              driver: "codex",
-              models: [{ slug: "gpt-5.5", isCustom: false }],
-            } as unknown as ServerProvider,
-          ]),
+          getProviders: Ref.getAndSet(providerRead, undefined).pipe(
+            Effect.tap((ready) =>
+              ready === undefined ? Effect.void : Deferred.succeed(ready, undefined),
+            ),
+            Effect.as([
+              {
+                instanceId,
+                driver: "codex",
+                models: [{ slug: "gpt-5.5", isCustom: false }],
+              } as unknown as ServerProvider,
+            ]),
+          ),
         }),
         SecureRandom.layerWebCrypto,
       ),
@@ -329,6 +355,8 @@ const harness = Effect.gen(function* () {
     reading,
     items,
     telemetry,
+    telemetryHandoffs,
+    providerRead,
     runId,
     events,
     cards,
@@ -424,7 +452,7 @@ it.effect("scrubs the caller's private values and sends only the event contract"
         {
           kind: "other",
           subject: "mcp__t3-code__t3_thread_read",
-          expected: `Reading /srv/checkouts/acme-app-7 on acme/secret-launch as ${NodeOS.userInfo().username}`,
+          expected: `Reading /srv/checkouts/acme-app-7 on acme/secret-launch as ${syntheticUsername}`,
           actual:
             "git@github.com:acme/payments.git in Acme Payments with sk-proj-abcdefghij1234567890",
           workaround: "x".repeat(400),
@@ -781,7 +809,7 @@ it.effect("returns as the card is shown, and stores and sends it only on Send, o
 
 it.effect("Send works after the turn stopped, while a later turn runs, and after a restart", () =>
   Effect.gen(function* () {
-    const { runId, events, cards, layer } = yield* harness;
+    const { runId, events, cards, shown, layer } = yield* harness;
     yield* Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       const card = yield* show(cards, requested);
@@ -799,7 +827,8 @@ it.effect("Send works after the turn stopped, while a later turn runs, and after
         payload_json: "{}",
       })}`;
       yield* Ref.set(runId, RunId.make("run:2"));
-      // A store started after the card was shown, as after a restart, answers from the card.
+      // A fresh store must recover the conversation from the persisted card.
+      yield* Ref.set(shown, new Map());
       yield* answer(card, "send", true).pipe(Effect.provide(Store.layer));
       expect((yield* Queue.take(cards)).feedbackStatus).toBe("sent");
       const [stored] = yield* listFeedbackReports;
@@ -881,29 +910,34 @@ it.effect("a report stored before its card was settled settles the card on the n
   }),
 );
 
-it.effect("a report handed to telemetry heals as sent even if the sent write fails", () =>
-  Effect.gen(function* () {
-    const { events, cards, failRecords, layer } = yield* harness;
-    yield* Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      const card = yield* show(cards, requested);
-      // Every write of `sent` fails, and so does the card record after the hand-off.
-      yield* sql`CREATE TRIGGER fail_sent_write BEFORE UPDATE OF sent ON agent_feedback
+it.effect(
+  "a failed sent update leaves the report pending settlement without a second handoff",
+  () =>
+    Effect.gen(function* () {
+      const { telemetry, telemetryHandoffs, events, cards, shown, layer } = yield* harness;
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const card = yield* show(cards, requested);
+        yield* Ref.set(telemetry, false);
+        yield* sql`CREATE TRIGGER fail_sent_write BEFORE UPDATE OF sent ON agent_feedback
         BEGIN SELECT RAISE(ABORT, 'The sent write failed.'); END`;
-      yield* Ref.set(failRecords, true);
-      expect(yield* Effect.result(answer(card, "send"))).toMatchObject({
-        _tag: "Failure",
-        failure: { reason: "record_failed" },
-      });
-      expect(yield* Ref.get(events)).toHaveLength(1);
-      yield* sql`DROP TRIGGER fail_sent_write`;
-      yield* Ref.set(failRecords, false);
-      // The report left the machine, so the next answer settles the card as sent.
-      yield* answer(card, "decline");
-      expect((yield* Queue.take(cards)).feedbackStatus).toBe("sent");
-      expect(yield* listFeedbackReports).toMatchObject([{ sent: true }]);
-    }).pipe(Effect.provide(layer));
-  }),
+        expect(yield* Effect.result(answer(card, "send"))).toMatchObject({
+          _tag: "Failure",
+          failure: { reason: "record_failed" },
+        });
+        expect((yield* Ref.get(shown)).get(card.turnItemId)?.feedbackStatus).toBe("pending");
+        expect(yield* Ref.get(events)).toEqual([]);
+        expect(yield* Ref.get(telemetryHandoffs)).toBe(1);
+        yield* sql`DROP TRIGGER fail_sent_write`;
+        yield* Ref.set(telemetry, true);
+        // A failed clear leaves delivery recorded as uncertain, which settles as sent.
+        yield* answer(card, "decline");
+        expect((yield* Queue.take(cards)).feedbackStatus).toBe("sent");
+        expect(yield* listFeedbackReports).toMatchObject([{ sent: true }]);
+        expect(yield* Ref.get(telemetryHandoffs)).toBe(1);
+        expect(yield* Ref.get(events)).toEqual([]);
+      }).pipe(Effect.provide(layer));
+    }),
 );
 
 it.effect("a card is shown while an answer waits for the settings lock", () =>
@@ -937,7 +971,7 @@ it.effect("a card is shown while an answer waits for the settings lock", () =>
 
 it.effect("a Send refused while Off settles the card before a later Send can store it", () =>
   Effect.gen(function* () {
-    const { mode, events, cards, shown, recordGates, layer } = yield* harness;
+    const { mode, events, cards, shown, recordGates, providerRead, layer } = yield* harness;
     yield* Effect.gen(function* () {
       const gate = (status: CardRecord["feedbackStatus"]) =>
         Effect.gen(function* () {
@@ -959,13 +993,14 @@ it.effect("a Send refused while Off settles the card before a later Send can sto
       // sent, after storing and sending its report.
       yield* Ref.set(mode, "auto");
       const marking = yield* gate("sent");
-      const second = yield* Effect.forkChild(Effect.result(answer(card, "send", true)));
-      const reachedSent = yield* Effect.forkChild(
-        Deferred.await(marking.entered).pipe(Effect.timeoutOption("1 second")),
-      );
-      yield* TestClock.adjust("1 second");
-      // The second Send waits for the first to finish, so it never stores a report.
-      expect((yield* Fiber.join(reachedSent))._tag).toBe("None");
+      const secondReachedAnswer = yield* Deferred.make<void>();
+      yield* Ref.set(providerRead, secondReachedAnswer);
+      const second = yield* Effect.forkChild(Effect.result(answer(card, "send", true)), {
+        startImmediately: true,
+      });
+      yield* Deferred.await(secondReachedAnswer);
+      expect(yield* listFeedbackReports).toEqual([]);
+      expect(yield* Ref.get(events)).toEqual([]);
       yield* Deferred.succeed(closing.release, undefined);
       yield* Deferred.succeed(marking.release, undefined);
       expect(yield* Fiber.join(refused)).toMatchObject({
@@ -998,7 +1033,11 @@ it.effect("a mode switch under way when a report is stored wins", () =>
        * the settings, then lets the switch finish. A read outside the lock has captured the old
        * mode by then, and returns it only after the switch.
        */
-      const switchDuring = <A, E, R>(to: AgentFeedbackMode, start: Effect.Effect<A, E, R>) =>
+      const switchDuring = <A, E, R>(
+        to: AgentFeedbackMode,
+        start: Effect.Effect<A, E, R>,
+        skipUnlocked = false,
+      ) =>
         Effect.gen(function* () {
           const gate = yield* Deferred.make<void>();
           const updating = yield* Deferred.make<void>();
@@ -1013,7 +1052,7 @@ it.effect("a mode switch under way when a report is stored wins", () =>
           yield* Deferred.await(updating);
           const begun = yield* Deferred.make<void>();
           const release = yield* Deferred.make<void>();
-          yield* Ref.set(reading, { begun, release });
+          yield* Ref.set(reading, { begun, release, skipUnlocked });
           const call = yield* Effect.forkChild(start);
           yield* Deferred.await(begun);
           yield* Deferred.succeed(gate, undefined);
@@ -1032,7 +1071,9 @@ it.effect("a mode switch under way when a report is stored wins", () =>
       yield* nothingKept;
 
       // Automatic to When I ask while an unprompted report is on its way: refused as itself.
-      expect(yield* switchDuring("on-request", feedback.submit(input, fromThread))).toMatchObject({
+      expect(
+        yield* switchDuring("on-request", feedback.submit(input, fromThread), true),
+      ).toMatchObject({
         _tag: "Failure",
         failure: { _tag: "FeedbackNotRequestedError" },
       });

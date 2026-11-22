@@ -51,8 +51,13 @@ export function MarkdownInsight(props: {
     >
       <Collapsible open={open} onOpenChange={setOpenOverride}>
         <CollapsibleTrigger
-          className="flex w-full min-w-0 items-center gap-1.5 py-1 text-start text-sm [&:dir(rtl):not([data-panel-open])_svg:last-child]:rotate-180 data-panel-open:[&_svg:last-child]:rotate-90"
-          data-thread-find-ignore=""
+          render={
+            <button
+              type="button"
+              className="flex w-full min-w-0 items-center gap-1.5 py-1 text-start text-sm [&:dir(rtl):not([data-panel-open])_svg:last-child]:rotate-180 data-panel-open:[&_svg:last-child]:rotate-90"
+              data-thread-find-ignore=""
+            />
+          }
         >
           <StarIcon className="size-3.5 shrink-0 text-info" aria-hidden />
           <span className="shrink-0 font-medium text-info" data-markdown-alert-label="">

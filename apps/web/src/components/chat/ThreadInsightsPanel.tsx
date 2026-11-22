@@ -21,6 +21,11 @@ export function ThreadInsightsPanel({
   section: "tasks" | "usage";
 }) {
   const gt = useGT();
+  const usageStatus = {
+    complete: gt("Complete"),
+    partial: gt("Partial"),
+    unavailable: gt("Unavailable"),
+  };
   const number = (value: number | null | undefined) =>
     value === null || value === undefined ? gt("Not reported") : value.toLocaleString();
   const dollars = (value: number | null) =>
@@ -193,8 +198,8 @@ export function ThreadInsightsPanel({
                 <p className="break-words font-medium">{row.title}</p>
                 <p className="text-xs text-muted-foreground">
                   <T>
-                    <Var>{row.usage.status}</Var> · <Var>{row.usage.measuredTurns}</Var>/
-                    <Var>{row.usage.turns}</Var> turns reported
+                    <Var>{usageStatus[row.usage.status]}</Var> ·{" "}
+                    <Var>{row.usage.measuredTurns}</Var>/<Var>{row.usage.turns}</Var> turns reported
                   </T>
                 </p>
                 <p className="mt-1 tabular-nums">

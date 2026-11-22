@@ -12506,44 +12506,44 @@
   "faa3bb26abb39c93": "Falló la guía de revisión",
   "b7df38b7d8792d78": "Abrir guía",
   "9e91e9a77b664e4e": "No se pudo iniciar una guía de revisión",
-  "0fdf303b060c2739": "This thread",
-  "a41601e9c64359b0": "An environment could not report tasks and usage.",
-  "cc02bc4f39965418": "Command progress",
-  "f0a82ff7f499d91f": "Tasks and usage",
-  "a83692b8cd5e99e5": "View tasks",
-  "0fdc2e47bbace99d": "View usage",
-  "454a79a42649f8ee": "Refresh tasks and usage",
-  "ad60d5af9d10fcfe": "Loading or unavailable",
-  "87dbd89feeec6588": "Environment unavailable or server update required",
-  "0a26ca58f93efe27": "Partial view: the family limit was reached.",
-  "ce7bea895f92ff52": "No task lists reported",
-  "e709555f8e0f4840": "{done}/{total} reported steps",
-  "093b08d4d0444572": "Reported task steps completed",
-  "447e6753ea2ccdbd": "Reported steps across this thread and its subagents. Lists may describe overlapping work.",
-  "05349f874cd663a3": "No task list reported",
-  "4a1a1779325aa069": "{done}/{total} steps",
-  "2ab7f4b6a405fd80": "No steps in this list",
-  "fd1ed6ea6f7ad2f4": "Partial recorded usage",
-  "b441ee8f90d97990": "Recorded usage",
-  "2ac182fde1a083fb": "Input (includes cache)",
-  "429fb3d15308b185": "Output (includes reasoning)",
-  "67749b025ccaab25": "API-equivalent estimate",
-  "12bf84bc0764da06": "{count} turns unpriced or missing a complete breakdown.",
-  "7b7e1d8341bf8069": "Provider extra usage is not added: it may overlap subagent usage.",
-  "a18645b363f90d43": "Subscription limits",
-  "a4b19a3d57be7d33": "Account-wide, across all threads and devices. Per-chat quota: not reported by providers.",
-  "01ab90e7e1767c4b": "· not included",
+  "0fdf303b060c2739": "Este hilo",
+  "a41601e9c64359b0": "Un entorno no pudo informar las tareas y el uso.",
+  "cc02bc4f39965418": "Progreso del comando",
+  "f0a82ff7f499d91f": "Tareas y uso",
+  "a83692b8cd5e99e5": "Ver tareas",
+  "0fdc2e47bbace99d": "Ver uso",
+  "454a79a42649f8ee": "Actualizar tareas y uso",
+  "ad60d5af9d10fcfe": "Cargando o no disponible",
+  "87dbd89feeec6588": "Entorno no disponible o el servidor requiere una actualización",
+  "0a26ca58f93efe27": "Vista parcial: se alcanzó el límite de hilos relacionados.",
+  "ce7bea895f92ff52": "No se informaron listas de tareas",
+  "e709555f8e0f4840": "{done}/{total} pasos informados",
+  "093b08d4d0444572": "Pasos de tareas informados y completados",
+  "447e6753ea2ccdbd": "Pasos informados en este hilo y sus subagentes. Las listas pueden incluir trabajo duplicado.",
+  "05349f874cd663a3": "No se informó ninguna lista de tareas",
+  "4a1a1779325aa069": "{done}/{total} pasos",
+  "2ab7f4b6a405fd80": "Esta lista no tiene pasos",
+  "fd1ed6ea6f7ad2f4": "Uso registrado parcial",
+  "b441ee8f90d97990": "Uso registrado",
+  "2ac182fde1a083fb": "Entrada (incluye caché)",
+  "429fb3d15308b185": "Salida (incluye razonamiento)",
+  "67749b025ccaab25": "Estimación según tarifas de la API",
+  "12bf84bc0764da06": "{count} turnos sin precio o sin un desglose completo.",
+  "7b7e1d8341bf8069": "El uso adicional del proveedor no se suma porque puede superponerse con el uso de los subagentes.",
+  "a18645b363f90d43": "Límites de suscripción",
+  "a4b19a3d57be7d33": "Se aplican a toda la cuenta, en todos los hilos y dispositivos. Los proveedores no informan una cuota por chat.",
+  "01ab90e7e1767c4b": "· no incluido",
   "e39241a4632e3aca": [
     {
       "i": 1,
       "k": "_gt_value_1",
       "v": "v"
     },
-    " thread records unavailable · not included"
+    " registros de hilos no disponibles · no incluidos"
   ],
-  "fb976abe5b22bbe6": "Tasks",
-  "08b86fb690f0e59a": "Standard-rate estimate, not your subscription bill. Unreported cache tokens are priced as uncached input.",
-  "1702b3279a7158e0": [
+  "fb976abe5b22bbe6": "Tareas",
+  "08b86fb690f0e59a": "Estimación a tarifa estándar, ajena a la factura de tu suscripción. Los tokens de caché no informados se calculan como entrada sin caché.",
+  "689a9885e5ade971": [
     {
       "i": 1,
       "k": "_gt_value_1",
@@ -12561,7 +12561,7 @@
       "k": "_gt_value_3",
       "v": "v"
     },
-    " turns reported"
+    " turnos informados"
   ],
   "00e73be23f8b62d8": [
     {
@@ -12569,13 +12569,14 @@
       "k": "_gt_value_1",
       "v": "v"
     },
-    " input ·",
-    " ",
+    " de entrada · ",
     {
       "i": 2,
       "k": "_gt_value_2",
       "v": "v"
     },
-    " output"
-  ]
+    " de salida"
+  ],
+  "1e84707a889198a0": "Completo",
+  "89fea43c0935af88": "Parcial"
 }
