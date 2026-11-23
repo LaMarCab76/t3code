@@ -669,7 +669,18 @@ layer("ProviderEventIngestorV2", (it) => {
       const now = yield* DateTime.now;
       const eventSink = yield* EventSink.EventSinkV2;
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
-      const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+      const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+      const rewindRequestedLock = yield* Deferred.make<void>();
+      const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2.pipe(
+        Effect.provide(Layer.fresh(ProviderEventIngestor.layer)),
+        Effect.provideService(ThreadCommandExecutor.ThreadCommandExecutor, {
+          ...executor,
+          withLock: (key, effect) =>
+            Deferred.succeed(rewindRequestedLock, undefined).pipe(
+              Effect.andThen(executor.withLock(key, effect)),
+            ),
+        }),
+      );
       const idAllocator = yield* IdAllocator.IdAllocatorV2;
       const threadEvent = yield* threadCreatedEvent(now);
       const threadId = threadEvent.threadId;
@@ -849,7 +860,7 @@ layer("ProviderEventIngestorV2", (it) => {
         nativeTurnId: null,
       });
 
-      yield* ingestor.ingestNormalized({
+      const rewind = ingestor.ingestNormalized({
         providerSessionId,
         providerInstanceId: modelSelection.instanceId,
         threadId,
@@ -885,6 +896,30 @@ layer("ProviderEventIngestorV2", (it) => {
           retainedNativeTurnIds: ["turn-started-outside-t3", "kept-turn"],
         },
       });
+
+      const rewindFiber = yield* executor.withLock(
+        threadId,
+        Effect.gen(function* () {
+          const current = yield* projectionStore.getThreadProjection(threadId);
+          const captured = current.runs.find((run) => run.id === unlocatedRun)!;
+          const fiber = yield* rewind.pipe(Effect.forkChild({ startImmediately: true }));
+          yield* Effect.raceFirst(Deferred.await(rewindRequestedLock), Fiber.await(fiber));
+          yield* eventSink.write({
+            events: [
+              {
+                id: yield* idAllocator.allocate.event({ threadId }),
+                type: "run.updated",
+                threadId,
+                runId: captured.id,
+                occurredAt: now,
+                payload: captured,
+              },
+            ],
+          });
+          return fiber;
+        }),
+      );
+      yield* Fiber.join(rewindFiber);
 
       const projection = yield* projectionStore.getThreadProjection(threadId);
       const runIds = [otherProviderRun, keptRun, abandonedRun, unlocatedRun, rewindingRun];

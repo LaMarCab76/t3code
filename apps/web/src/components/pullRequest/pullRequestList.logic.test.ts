@@ -563,6 +563,17 @@ describe("merging the environments' own listings", () => {
 
     expect(pullRequestListAnsweredEmpty({ data, isPending: false, error: null })).toBe(true);
     expect(pullRequestListAnsweredEmpty({ data, isPending: true, error: null })).toBe(false);
+    const unconfigured = mergePullRequestLists([
+      [
+        ENV_1,
+        answer({
+          providers: answer().providers.map((provider) => ({ ...provider, configured: false })),
+        }),
+      ],
+    ]);
+    expect(
+      pullRequestListAnsweredEmpty({ data: unconfigured, isPending: false, error: null }),
+    ).toBe(false);
   });
 
   it("folds a host reached from two environments into one switcher row", () => {

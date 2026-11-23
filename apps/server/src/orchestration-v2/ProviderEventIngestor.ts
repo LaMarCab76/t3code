@@ -913,12 +913,23 @@ export const layer: Layer.Layer<
                   });
                 }),
               ),
-              (effect) =>
-                input.event.type === "app_thread.created"
-                  ? threadCommands.withLock(input.event.appThread.id, effect)
-                  : input.event.type === "thread_model_selection.updated"
-                    ? threadCommands.withLock(input.event.threadId, effect)
-                    : effect,
+              (effect) => {
+                const { event } = input;
+                if (event.type === "app_thread.created")
+                  return threadCommands.withLock(event.appThread.id, effect);
+                if (event.type === "thread_model_selection.updated")
+                  return threadCommands.withLock(event.threadId, effect);
+                // A native rewind updates run rows that checkpoint capture reads under this lock.
+                if (
+                  event.type === "provider_thread.updated" &&
+                  event.retainedNativeTurnIds !== undefined
+                )
+                  return threadCommands.withLock(
+                    event.providerThread.appThreadId ?? input.threadId,
+                    effect,
+                  );
+                return effect;
+              },
             ),
         ),
     });

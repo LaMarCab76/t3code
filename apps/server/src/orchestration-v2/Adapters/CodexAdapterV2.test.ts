@@ -1560,6 +1560,50 @@ describe("CodexAdapterV2 session initialize", () => {
     return Predicate.isTagged(error, "CodexAppServerUnresponsiveError");
   };
 
+  it.effect("gives config/read and thread/start their own deadlines", () =>
+    Effect.gen(function* () {
+      const configReady = yield* Deferred.make<void>();
+      const releaseConfig = yield* Deferred.make<void>();
+      const startReady = yield* Deferred.make<void>();
+      const releaseStart = yield* Deferred.make<void>();
+      const hold = (ready: Deferred.Deferred<void>, release: Deferred.Deferred<void>) =>
+        Deferred.succeed(ready, undefined).pipe(Effect.andThen(Deferred.await(release)));
+      const nativeThreadId = "separate-thread-deadlines";
+      const session = yield* openReplaySession(
+        makeCodexReplayTranscript({
+          scenario: nativeThreadId,
+          entries: replayPreamble(nativeThreadId).slice(0, 5),
+        }),
+        (entry) =>
+          entry.label === "config/read"
+            ? hold(configReady, releaseConfig)
+            : entry.label === "thread/start"
+              ? hold(startReady, releaseStart)
+              : Effect.void,
+      );
+      const ensured = yield* session
+        .ensureThread(nativeThreadId)
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(configReady);
+      yield* TestClock.adjust("70 seconds");
+      yield* Deferred.succeed(releaseConfig, undefined);
+      yield* Deferred.await(startReady);
+      yield* TestClock.adjust("70 seconds");
+      yield* Deferred.succeed(releaseStart, undefined);
+      assert.equal((yield* Fiber.join(ensured)).nativeThreadRef?.nativeId, nativeThreadId);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
   // regression: #24300 a wedged shared app-server left thread/start pending and stayed ready
   it.effect("fails and retires a shared app-server that never answers thread/start", () =>
     Effect.gen(function* () {

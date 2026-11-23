@@ -595,7 +595,12 @@ export function pullRequestListAnsweredEmpty(view: {
   readonly isPending: boolean;
   readonly error: unknown;
 }): boolean {
-  return view.data?.entries.length === 0 && !view.isPending && view.error === null;
+  return (
+    !view.isPending &&
+    view.error === null &&
+    view.data?.entries.length === 0 &&
+    view.data.providers.every((provider) => provider.configured)
+  );
 }
 
 export const pullRequestEnvironmentSetKey = (environmentIds: ReadonlyArray<string>): string =>

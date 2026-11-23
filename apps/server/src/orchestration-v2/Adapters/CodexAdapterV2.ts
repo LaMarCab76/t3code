@@ -8157,19 +8157,21 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ]),
               ),
               Effect.flatMap(([mcpSession, stdioMcpServers]) =>
-                client.request("thread/start", {
-                  ...codexThreadRuntimeParams({
-                    threadId: threadInput.threadId,
-                    mcpSession,
-                    stdioMcpServers,
-                    modelSelection: threadInput.modelSelection,
-                    runtimePolicy: threadInput.runtimePolicy,
-                  }),
-                  // Codex tags the child's MCP calls with thread_source "subagent".
-                  ...(IdAllocator.isDelegatedTaskThread(threadInput.threadId)
-                    ? { threadSource: "subagent" }
-                    : {}),
-                }),
+                client
+                  .request("thread/start", {
+                    ...codexThreadRuntimeParams({
+                      threadId: threadInput.threadId,
+                      mcpSession,
+                      stdioMcpServers,
+                      modelSelection: threadInput.modelSelection,
+                      runtimePolicy: threadInput.runtimePolicy,
+                    }),
+                    // Codex tags the child's MCP calls with thread_source "subagent".
+                    ...(IdAllocator.isDelegatedTaskThread(threadInput.threadId)
+                      ? { threadSource: "subagent" }
+                      : {}),
+                  })
+                  .pipe(withAppServerDeadline("thread/start")),
               ),
               Effect.map((response): OrchestrationV2ProviderThread =>
                 providerThreadFromCodexThread({
@@ -8181,7 +8183,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   thread: response.thread,
                 }),
               ),
-              withAppServerDeadline("thread/start"),
               Effect.mapError(
                 (cause) =>
                   new ProviderAdapter.ProviderAdapterEnsureThreadError({

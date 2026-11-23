@@ -1074,7 +1074,11 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         }
 
         const config = yield* Effect.option(session.initialConfig);
-        yield* Ref.set(awaitingCompletion, true);
+        const requestCompletionMarker = Option.exists(
+          config,
+          (value) => value.threadResumeCompletionMarker === true,
+        );
+        yield* Ref.set(awaitingCompletion, requestCompletionMarker);
         yield* markSynchronizing;
         yield* Ref.set(resumingLive, false);
 
@@ -1151,14 +1155,18 @@ export const makeEnvironmentThreadState = Effect.fn("EnvironmentThreadState.make
         }
 
         const sequence = yield* SubscriptionRef.get(lastSequence);
-        const canResume = Option.isSome(current.data) && !(yield* Ref.get(forceSnapshot));
+        // A legacy replay with no new events cannot confirm that a cached cursor is current.
+        const canResume =
+          requestCompletionMarker &&
+          Option.isSome(current.data) &&
+          !(yield* Ref.get(forceSnapshot));
         yield* Ref.set(resuming, canResume);
         const acceptBoundedSnapshot = yield* Ref.get(acceptsBoundedSocketSnapshots);
 
         const input = {
           threadId,
           ...(canResume ? { afterSequence: sequence } : {}),
-          requestCompletionMarker: true as const,
+          ...(requestCompletionMarker ? { requestCompletionMarker: true as const } : {}),
           ...(acceptBoundedSnapshot
             ? {
                 acceptBoundedSnapshot: true as const,
