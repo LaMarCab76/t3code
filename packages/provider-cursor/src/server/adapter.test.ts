@@ -1392,7 +1392,12 @@ describe("CursorAdapterV2", () => {
       const firstPrompt = "Write me a 1000 word story about a dog.";
       const steerText = "No wait, a pig please.";
 
-      yield* runtime.startTurn(turnInput(1, firstPrompt));
+      const handoff = "Context from the other thread.";
+      const withHandoff = (ordinal: number, context: string, text: string) => {
+        const prefix = `${context}\n\nUser message:\n`;
+        return { ...turnInput(ordinal, prefix + text), inlineContextLength: prefix.length };
+      };
+      yield* runtime.startTurn(withHandoff(1, handoff, firstPrompt));
       const started = Option.getOrThrow(
         yield* runtime.events.pipe(
           Stream.filter((event) => event.type === "provider_turn.updated"),
@@ -1401,11 +1406,13 @@ describe("CursorAdapterV2", () => {
       );
       assert(started.type === "provider_turn.updated");
       yield* runtime.interruptTurn({ providerThread, providerTurnId: started.providerTurn.id });
-      yield* runtime.startTurn(turnInput(2, steerText));
+      yield* runtime.startTurn(withHandoff(2, `${handoff}\nAdditional context.`, steerText));
 
       assert.lengthOf(sentMessages, 2);
       const steered = sentMessages[1]!;
       assert.include(steered, steerText);
+      assert.include(steered, "Additional context.");
+      assert.equal(steered.split(handoff).length, 2, "restored handoff appears once");
       assert.include(
         steered,
         firstPrompt,
@@ -1422,7 +1429,7 @@ describe("CursorAdapterV2", () => {
         Stream.filter((event) => event.type === "turn.terminal" && event.status === "completed"),
         Stream.runHead,
       );
-      yield* runtime.startTurn(turnInput(3, "Now a cow."));
+      yield* runtime.startTurn(withHandoff(3, handoff, "Now a cow."));
       assert.notInclude(sentMessages[2]!, firstPrompt, "a finished turn carries nothing forward");
       assert.notInclude(
         sentMessages[2]!,
@@ -1507,7 +1514,7 @@ describe("CursorAdapterV2", () => {
         Stream.runHead,
       );
       yield* runtime.startTurn({
-        ...turnInput(12, "After resume."),
+        ...withHandoff(12, handoff, "After resume."),
         modelSelection: neonSelection,
       });
       assert.include(
@@ -1515,6 +1522,11 @@ describe("CursorAdapterV2", () => {
         "as gemini-4-neon",
         "native resume after compaction must not mark invalidated runtime instructions delivered",
       );
+      yield* interruptRunning;
+      yield* runtime.startTurn(turnInput(13, "One more update."));
+      assert.equal(sentMessages[12]!.split(handoff).length, 2, "keep context if not sent again");
+      assert.include(sentMessages[12]!, "After resume.");
+      assert.include(sentMessages[12]!, "One more update.");
     }).pipe(
       Effect.scoped,
       Effect.provide(
