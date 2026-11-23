@@ -9160,16 +9160,13 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
         yield* git(cwd, ["add", "staged.txt"]);
         const lockPath = (yield* Path.Path).join(cwd, ".git", "index.lock");
         yield* (yield* FileSystem.FileSystem).writeFileString(lockPath, "");
-        const { driver } = yield* makeDriverReleasingLock(
-          (args) => args.includes("reset"),
-          lockPath,
-        );
+        const { driver } = yield* makeDriverReleasingLock((args) => args.includes("add"), lockPath);
 
         const error = yield* driver
           .commit(cwd, "Add a", "", { stage: { filePaths: ["a.txt"] } })
           .pipe(Effect.flip);
 
-        assert.equal(error.operation, "GitVcsDriver.commit.reset");
+        assert.equal(error.operation, "GitVcsDriver.commit.addSelected");
         assert.equal(yield* git(cwd, ["rev-parse", "HEAD"]), head);
         assert.equal(yield* git(cwd, ["diff", "--cached", "--name-only"]), "staged.txt");
       }),

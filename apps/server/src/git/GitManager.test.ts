@@ -4023,6 +4023,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       NodeFS.writeFileSync(NodePath.join(repoDir, "a.txt"), "file a\n");
       NodeFS.writeFileSync(NodePath.join(repoDir, "b.txt"), "file b\n");
 
+      yield* runGit(repoDir, ["add", "b.txt"]);
       const { manager } = yield* makeManager();
       const result = yield* runStackedAction(manager, {
         cwd: repoDir,
@@ -4035,8 +4036,42 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
       const statusStdout = yield* runGit(repoDir, ["status", "--porcelain"]).pipe(
         Effect.map((r) => r.stdout),
       );
-      expect(statusStdout).toContain("b.txt");
+      expect(statusStdout).toContain("A  b.txt");
       expect(statusStdout).not.toContain("a.txt");
+    }),
+  );
+
+  it.effect("keeps unrelated staging when a prepared file selection becomes empty", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const readme = NodePath.join(repoDir, "README.md");
+      const original = NodeFS.readFileSync(readme);
+      NodeFS.writeFileSync(readme, "changed while drafting\n");
+      NodeFS.writeFileSync(NodePath.join(repoDir, "notes.txt"), "separately staged\n");
+      yield* runGit(repoDir, ["add", "notes.txt"]);
+      const head = (yield* runGit(repoDir, ["rev-parse", "HEAD"])).stdout;
+      const { manager } = yield* makeManager({
+        textGeneration: {
+          generateCommitMessage: () =>
+            Effect.sync(() => {
+              NodeFS.writeFileSync(readme, original);
+              return { subject: "Update readme", body: "" };
+            }),
+        },
+      });
+
+      const result = yield* runStackedAction(manager, {
+        cwd: repoDir,
+        action: "commit",
+        filePaths: ["README.md"],
+      });
+
+      expect(result.commit.status).toBe("skipped_no_changes");
+      expect((yield* runGit(repoDir, ["rev-parse", "HEAD"])).stdout).toBe(head);
+      expect((yield* runGit(repoDir, ["diff", "--cached", "--name-only"])).stdout.trim()).toBe(
+        "notes.txt",
+      );
     }),
   );
 

@@ -3123,6 +3123,71 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     return pathspecFromFileSupported;
   });
 
+  const assertCanCommitSelection = Effect.fn("GitVcsDriver.assertCanCommitSelection")(function* (
+    cwd: string,
+  ) {
+    const inProgressHeads = [
+      { head: "MERGE_HEAD", operation: "merge" },
+      { head: "CHERRY_PICK_HEAD", operation: "cherry-pick" },
+      { head: "REVERT_HEAD", operation: "revert" },
+      // A conflicted multi-commit `cherry-pick --no-commit` writes only the sequencer; reset
+      // would clear its unmerged entries, so `--continue` would walk past the conflict.
+      { head: "sequencer", operation: "cherry-pick or revert" },
+    ] as const;
+    const headPaths = yield* runGitStdout("GitVcsDriver.commit.mergeHead", cwd, [
+      "rev-parse",
+      ...inProgressHeads.flatMap(({ head }) => ["--git-path", head]),
+    ]);
+    const resolvedHeadPaths = headPaths.trim().split("\n");
+    // Reftable keeps CHERRY_PICK_HEAD and REVERT_HEAD as refs with no file under .git. A
+    // same-named branch resolves to its full name; an ambiguity warning would blank stdout.
+    const operationRefs = new Set<string>(["CHERRY_PICK_HEAD", "REVERT_HEAD"]);
+    const isOperationRef = (head: string) =>
+      runGitStdout(
+        "GitVcsDriver.commit.operationRef",
+        cwd,
+        [
+          "-c",
+          "core.warnAmbiguousRefs=false",
+          "rev-parse",
+          "--verify",
+          "--quiet",
+          "--symbolic-full-name",
+          head,
+        ],
+        true,
+      ).pipe(Effect.map((ref) => ref.trim() === head));
+    const inProgress = yield* Effect.findFirst(inProgressHeads, ({ head }, index) =>
+      fileSystem.exists(path.resolve(cwd, resolvedHeadPaths[index] ?? "")).pipe(
+        Effect.filterOrElse(
+          (exists) => exists || !operationRefs.has(head),
+          () => isOperationRef(head),
+        ),
+      ),
+    ).pipe(
+      Effect.mapError(
+        (cause) =>
+          new GitCommandError({
+            operation: "GitVcsDriver.commit.mergeHead",
+            command: "git commit",
+            cwd,
+            detail: "Could not check whether a merge, cherry-pick or revert is in progress.",
+            cause,
+          }),
+      ),
+    );
+    // Partial commits cannot finish an in-progress merge, cherry-pick or revert.
+    if (Option.isSome(inProgress)) {
+      const { operation } = inProgress.value;
+      return yield* new GitCommandError({
+        operation: "GitVcsDriver.commit",
+        command: "git commit",
+        cwd,
+        detail: `Cannot commit selected files during a ${operation}. Commit all files to finish the ${operation}.`,
+      });
+    }
+  });
+
   const stageCommitChanges = Effect.fnUntraced(function* (
     cwd: string,
     filePaths?: readonly string[],
@@ -3131,7 +3196,6 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const config = env
       ? ["-c", "core.splitIndex=false", "-c", "splitIndex.sharedIndexExpire=never"]
       : [];
-    let preserveUnselectedConflicts = false;
     if (filePaths && filePaths.length > 0) {
       if (env) {
         const head = yield* executeGit(
@@ -3147,96 +3211,51 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
           [...config, "read-tree", ...(head.exitCode === 0 ? ["HEAD"] : ["--empty"])],
           { env },
         );
-      } else {
-        const inProgressHeads = [
-          { head: "MERGE_HEAD", operation: "merge" },
-          { head: "CHERRY_PICK_HEAD", operation: "cherry-pick" },
-          { head: "REVERT_HEAD", operation: "revert" },
-          // A conflicted multi-commit `cherry-pick --no-commit` writes only the sequencer; reset
-          // would clear its unmerged entries, so `--continue` would walk past the conflict.
-          { head: "sequencer", operation: "cherry-pick or revert" },
-        ] as const;
-        const headPaths = yield* runGitStdout("GitVcsDriver.commit.mergeHead", cwd, [
-          "rev-parse",
-          ...inProgressHeads.flatMap(({ head }) => ["--git-path", head]),
-        ]);
-        const resolvedHeadPaths = headPaths.trim().split("\n");
-        // Reftable keeps CHERRY_PICK_HEAD and REVERT_HEAD as refs with no file under .git. A
-        // same-named branch resolves to its full name; an ambiguity warning would blank stdout.
-        const operationRefs = new Set<string>(["CHERRY_PICK_HEAD", "REVERT_HEAD"]);
-        const isOperationRef = (head: string) =>
-          runGitStdout(
-            "GitVcsDriver.commit.operationRef",
+      }
+      // Status paths are repository-relative, while cwd can be a subdirectory.
+      const pathspecForFile = (file: string) => `:(top,literal)${file}`;
+      let filesToAdd = filePaths;
+      if (!env) {
+        const stagedDeletions = new Set(
+          (yield* runGitStdoutWithOptions(
+            "GitVcsDriver.commit.stagedDeletions",
             cwd,
             [
               "-c",
-              "core.warnAmbiguousRefs=false",
-              "rev-parse",
-              "--verify",
-              "--quiet",
-              "--symbolic-full-name",
-              head,
+              "diff.relative=false",
+              "diff",
+              "--cached",
+              "--no-renames",
+              "--name-only",
+              "--diff-filter=D",
+              "--ignore-submodules=none",
+              "-z",
             ],
-            true,
-          ).pipe(Effect.map((ref) => ref.trim() === head));
-        const inProgress = yield* Effect.findFirst(inProgressHeads, ({ head }, index) =>
-          fileSystem.exists(path.resolve(cwd, resolvedHeadPaths[index] ?? "")).pipe(
-            Effect.filterOrElse(
-              (exists) => exists || !operationRefs.has(head),
-              () => isOperationRef(head),
-            ),
-          ),
-        ).pipe(
-          Effect.mapError(
-            (cause) =>
-              new GitCommandError({
-                operation: "GitVcsDriver.commit.mergeHead",
-                command: "git commit",
-                cwd,
-                detail: "Could not check whether a merge, cherry-pick or revert is in progress.",
-                cause,
-              }),
-          ),
+            { maxOutputBytes: Number.POSITIVE_INFINITY },
+          )).split("\0"),
         );
-        // Like git commit --only, reject partial commits before reset can discard their state.
-        if (Option.isSome(inProgress)) {
-          const { operation } = inProgress.value;
-          return yield* new GitCommandError({
-            operation: "GitVcsDriver.commit",
-            command: "git commit",
-            cwd,
-            detail: `Cannot commit selected files during a ${operation}. Commit all files to finish the ${operation}.`,
-          });
-        }
-        const selectedFiles = new Set(filePaths);
-        const unmergedPaths = yield* runGitStdoutWithOptions(
-          "GitVcsDriver.commit.unmergedPaths",
-          cwd,
-          ["-c", "diff.relative=false", "diff", "--cached", "--name-only", "--diff-filter=U", "-z"],
-          { maxOutputBytes: REVIEW_METADATA_MAX_OUTPUT_BYTES },
-        );
-        // Reset drops every conflict stage, so keep the index while unselected files are conflicted.
-        preserveUnselectedConflicts = unmergedPaths
-          .split("\0")
-          .some((file) => file.length > 0 && !selectedFiles.has(file));
-        if (!preserveUnselectedConflicts) {
-          yield* runGit("GitVcsDriver.commit.reset", cwd, ["reset", "--quiet"]);
-        }
+        // Git add cannot match an absent rename source, but commit --only reads it from HEAD.
+        filesToAdd = filePaths.filter((file) => !stagedDeletions.has(file));
       }
-      // Status paths are repository-relative, while cwd can be a subdirectory.
-      const pathspecs = filePaths.map((file) => `:(top,literal)${file}`);
-      const fromStdin = yield* supportsPathspecFromFile(cwd);
-      yield* runGit(
-        "GitVcsDriver.commit.addSelected",
-        cwd,
-        fromStdin
-          ? [...config, "add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"]
-          : [...config, "add", "-A", "--", ...pathspecs],
-        {
-          ...(env ? { env } : {}),
-          ...(fromStdin ? { stdin: pathspecs.map((pathspec) => `${pathspec}\0`).join("") } : {}),
-        },
-      );
+      if (filesToAdd.length > 0) {
+        const addPathspecs = filesToAdd.map(pathspecForFile);
+        const fromStdin = yield* supportsPathspecFromFile(cwd);
+        yield* runGit(
+          "GitVcsDriver.commit.addSelected",
+          cwd,
+          fromStdin
+            ? [...config, "add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"]
+            : [...config, "add", "-A", "--", ...addPathspecs],
+          {
+            ...(env ? { env } : {}),
+            ...(fromStdin
+              ? { stdin: addPathspecs.map((pathspec) => `${pathspec}\0`).join("") }
+              : {}),
+          },
+        );
+      }
+      // Commit only these paths so unrelated staged changes survive.
+      return env ? undefined : filePaths.map(pathspecForFile);
     } else {
       // add -A marks unmerged paths resolved, so refuse while one still has conflict markers.
       const unmergedPaths = (yield* runGitStdoutWithOptions(
@@ -3337,9 +3356,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         env ? { env } : {},
       );
     }
-    return preserveUnselectedConflicts && filePaths
-      ? filePaths.map((file) => `:(top,literal)${file}`)
-      : undefined;
+    return undefined;
   });
 
   const prepareCommitContext: GitVcsDriver.GitVcsDriver["Service"]["prepareCommitContext"] =
@@ -3488,43 +3505,32 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       "--no-ext-diff",
       "--no-textconv",
     ];
-    if (options?.stage?.unverified) {
-      const { filePaths } = options.stage;
-      // A selection can reset the whole index even if it was clean when inspected.
-      const needsScratchIndex =
-        (filePaths !== undefined && filePaths.length > 0) ||
+    const stage = options?.stage;
+    const hasSelection = (stage?.filePaths?.length ?? 0) > 0;
+    if (hasSelection) yield* assertCanCommitSelection(cwd);
+    const needsScratchIndex =
+      hasSelection ||
+      (stage?.unverified === true &&
         (yield* executeGit("GitVcsDriver.commit.indexChanges", cwd, [...diffCached, "--quiet"], {
           allowNonZeroExit: true,
-        })).exitCode !== 0;
-      if (
-        needsScratchIndex &&
-        (yield* prepareCommitContext(cwd, filePaths, { includePatch: false })) === null
-      ) {
-        return yield* new GitVcsDriver.GitNothingToCommitError({
-          operation: "GitVcsDriver.commit",
-          cwd,
-          detail: "Staging found no changes.",
-        });
-      }
+        })).exitCode !== 0);
+    if (
+      needsScratchIndex &&
+      (yield* prepareCommitContext(cwd, stage?.filePaths, { includePatch: false })) === null
+    ) {
+      return yield* new GitVcsDriver.GitNothingToCommitError({
+        operation: "GitVcsDriver.commit",
+        cwd,
+        detail: "Staging found no changes.",
+      });
     }
     const partialCommitPaths =
-      options?.stage !== undefined
-        ? yield* stageCommitChanges(cwd, options.stage.filePaths)
-        : undefined;
-    // Preserved unselected conflicts always show as index changes, so only selected paths count.
-    const selectedPaths = partialCommitPaths && new Set(options?.stage?.filePaths);
-    const hasStagedChanges = selectedPaths
-      ? (yield* runGitStdoutWithOptions(
-          "GitVcsDriver.commit.stagedChanges",
-          cwd,
-          [...diffCached, "--no-renames", "--name-only", "-z"],
-          { maxOutputBytes: REVIEW_METADATA_MAX_OUTPUT_BYTES },
-        ))
-          .split("\0")
-          .some((file) => file.length > 0 && selectedPaths.has(file))
-      : (yield* executeGit("GitVcsDriver.commit.stagedChanges", cwd, [...diffCached, "--quiet"], {
-          allowNonZeroExit: true,
-        })).exitCode !== 0;
+      stage === undefined ? undefined : yield* stageCommitChanges(cwd, stage.filePaths);
+    const hasStagedChanges =
+      partialCommitPaths !== undefined ||
+      (yield* executeGit("GitVcsDriver.commit.stagedChanges", cwd, [...diffCached, "--quiet"], {
+        allowNonZeroExit: true,
+      })).exitCode !== 0;
     if (!hasStagedChanges) {
       // Like git commit, a merge resolved to HEAD's tree still records its merge commit.
       const mergeHeadPath = yield* runGitStdout("GitVcsDriver.commit.mergeHead", cwd, [
