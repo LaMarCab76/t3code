@@ -1476,30 +1476,26 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     });
   });
 
-  // `--abbrev-ref` prints `remotes/origin/<name>` when a local `origin/<name>` branch exists.
-  const readCurrentUpstreamRef = Effect.fn("readCurrentUpstreamRef")(function* (cwd: string) {
-    const upstreamRef = yield* runGitStdout(
+  const readBranchUpstreamRef = Effect.fn("readBranchUpstreamRef")(function* (
+    cwd: string,
+    branch: string,
+  ) {
+    const revision = `${branch}@{upstream}`;
+    const fullRef = (yield* runGitStdout(
       "GitVcsDriver.resolveCurrentUpstream",
       cwd,
-      ["rev-parse", "--symbolic-full-name", "@{upstream}"],
+      ["rev-parse", "--verify", "--quiet", "--symbolic-full-name", "--end-of-options", revision],
       true,
-    ).pipe(Effect.map((stdout) => stdout.trim().replace(/^refs\/(?:remotes|heads)\//, "")));
-
-    if (upstreamRef.length === 0 || upstreamRef === "@{upstream}") {
-      return null;
-    }
-    return upstreamRef;
+    )).trim();
+    return fullRef === "" || fullRef === revision ? null : fullRef;
   });
 
-  const resolveCurrentUpstream = Effect.fn("resolveCurrentUpstream")(function* (
-    cwd: string,
-    knownUpstreamRef?: string,
-  ) {
-    const upstreamRef = knownUpstreamRef ?? (yield* readCurrentUpstreamRef(cwd));
-    if (upstreamRef === null) {
-      return null;
-    }
+  const shortUpstreamRef = (fullRef: string) => fullRef.replace(/^refs\/(?:remotes|heads)\//, "");
 
+  const resolveUpstreamDestination = Effect.fn("resolveUpstreamDestination")(function* (
+    cwd: string,
+    upstreamRef: string,
+  ) {
     const remoteNames = yield* runGitStdout("GitVcsDriver.listRemoteNames", cwd, ["remote"]).pipe(
       Effect.map(parseRemoteNames),
       Effect.orElseSucceed((): ReadonlyArray<string> => []),
@@ -2238,11 +2234,11 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     return yield* resolvePrimaryRemoteName(cwd).pipe(Effect.orElseSucceed(() => null));
   });
 
-  const remoteRefContainsHead = (cwd: string, remoteRef: string) =>
+  const remoteRefContainsHead = (cwd: string, sourceRef: string, remoteRef: string) =>
     executeGit(
       "GitVcsDriver.pushCurrentBranch.publishContainsHead",
       cwd,
-      ["merge-base", "--is-ancestor", "HEAD", `refs/remotes/${remoteRef}`],
+      ["merge-base", "--is-ancestor", sourceRef, `refs/remotes/${remoteRef}`],
       { allowNonZeroExit: true },
     ).pipe(
       Effect.map((result) => result.exitCode === 0),
@@ -2669,21 +2665,25 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       );
     }
     // `%(upstream:remotename)` is empty exactly when `@{upstream}` does not resolve.
-    const currentUpstreamRef =
-      upstreamRemoteName === "" ? null : yield* readCurrentUpstreamRef(cwd);
+    const fullUpstreamRef =
+      branch === null || upstreamRemoteName === ""
+        ? null
+        : yield* readBranchUpstreamRef(cwd, branch);
+    const currentUpstreamRef = fullUpstreamRef === null ? null : shortUpstreamRef(fullUpstreamRef);
     let upstreamRef = currentUpstreamRef;
     // Trimming a remote that starts with Unicode whitespace can leave a leading slash.
     if (currentUpstreamRef?.startsWith("/")) {
-      upstreamRef = (yield* resolveCurrentUpstream(cwd, currentUpstreamRef))?.upstreamRef ?? null;
+      upstreamRef =
+        (yield* resolveUpstreamDestination(cwd, currentUpstreamRef))?.upstreamRef ?? null;
     }
     let aheadCount = 0;
     let behindCount = 0;
 
-    if (upstreamRef) {
+    if (upstreamRef && fullUpstreamRef) {
       const divergence = yield* executeGit(
         "GitVcsDriver.statusDetailsRemote.divergence",
         cwd,
-        ["rev-list", "--left-right", "--count", `${headRef}...@{upstream}`],
+        ["rev-list", "--left-right", "--count", `${headRef}...${fullUpstreamRef}`],
         { allowNonZeroExit: true },
       );
       if (divergence.exitCode === 0) {
@@ -3641,6 +3641,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     cwd: string,
     branch: string,
     hasUpstream: boolean,
+    observedUpstream?: string | null,
   ) {
     if (!hasUpstream) {
       // A deleted upstream keeps its config: republish to it when it was this branch's own,
@@ -3679,11 +3680,14 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       };
     }
 
+    const fullUpstream =
+      observedUpstream === undefined
+        ? yield* readBranchUpstreamRef(cwd, branch).pipe(Effect.orElseSucceed(() => null))
+        : null;
+    const upstreamRef =
+      observedUpstream ?? (fullUpstream === null ? null : shortUpstreamRef(fullUpstream));
+    if (upstreamRef === null) return null;
     if ((yield* readConfigValue(cwd, `branch.${branch}.remote`)) === ".") {
-      const localUpstream = yield* readCurrentUpstreamRef(cwd).pipe(
-        Effect.orElseSucceed(() => null),
-      );
-      if (localUpstream === null) return null;
       // A local upstream is a base; publish under the full local name so `origin/main` never lands on remote `main`.
       const remoteName = yield* resolvePushRemoteName(cwd, branch).pipe(
         Effect.orElseSucceed(() => null),
@@ -3693,12 +3697,14 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         remoteName,
         branchName: branch,
         publishes: true,
-        upstream: { remoteName: ".", branchName: localUpstream, upstreamRef: localUpstream },
+        upstream: { remoteName: ".", branchName: upstreamRef, upstreamRef },
         pushRemote: null,
       };
     }
 
-    const upstream = yield* resolveCurrentUpstream(cwd).pipe(Effect.orElseSucceed(() => null));
+    const upstream = yield* resolveUpstreamDestination(cwd, upstreamRef).pipe(
+      Effect.orElseSucceed(() => null),
+    );
     if (!upstream) return null;
     if (isAliasOfUpstreamHead(branch, upstream.branchName, upstream.upstreamRef)) {
       // A fork workflow pushes to the configured push remote and keeps the upstream for pulls, as plain `git push` does.
@@ -3780,7 +3786,12 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     }
 
     const hasNoLocalDelta = details.aheadCount === 0 && details.behindCount === 0;
-    const destination = yield* resolvePushDestination(cwd, branch, details.hasUpstream);
+    const destination = yield* resolvePushDestination(
+      cwd,
+      branch,
+      details.hasUpstream,
+      details.upstreamRef,
+    );
     if (hasNoLocalDelta && details.hasUpstream) {
       if (!destination?.pushRemote) {
         // A local upstream and a separate push URL both leave the publish destination unchecked.
@@ -3806,7 +3817,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             remoteName: pushRemote,
             remoteBranch: branchName,
           }).pipe(
-            Effect.andThen(remoteRefContainsHead(cwd, pushRemoteRef)),
+            Effect.andThen(remoteRefContainsHead(cwd, sourceRef, pushRemoteRef)),
             Effect.orElseSucceed(() => false),
           ));
         if (pushRemoteHasHead) {
@@ -3834,6 +3845,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         if (
           (yield* remoteRefContainsHead(
             cwd,
+            sourceRef,
             `${destination.remoteName}/${destination.branchName}`,
           )) &&
           (yield* pushesOnlyToFetchUrl(cwd, destination.remoteName))
@@ -3933,7 +3945,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const [refName, currentUpstreamRef] = yield* Effect.all(
       [
         readCurrentBranch("GitVcsDriver.pullCurrentBranch.branch", cwd),
-        readCurrentUpstreamRef(cwd),
+        readBranchUpstreamRef(cwd, "").pipe(
+          Effect.map((ref) => (ref === null ? null : shortUpstreamRef(ref))),
+        ),
       ],
       { concurrency: 2 },
     );
@@ -5363,7 +5377,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     const gitDirArgs = ["--git-dir", gitCommonDir] as const;
     // Read occupancy first so a concurrent worktree addition changes the cached stamp.
     const worktrees = yield* Cache.get(worktreeBranchPathsCache, gitCommonDir);
-    const [refsResult, defaultRefResult, remoteNamesResult] = yield* Effect.all(
+    const [refsResult, remoteNamesResult] = yield* Effect.all(
       [
         executeGitWithStableDiagnostics(
           "GitVcsDriver.listRefs.snapshotRefs",
@@ -5381,22 +5395,6 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
             fallbackErrorDetail: "Git ref snapshot enumeration failed.",
           },
         ),
-        executeGit(
-          "GitVcsDriver.listRefs.defaultRef",
-          fetchCwd,
-          [
-            ...gitDirArgs,
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            "--symbolic-full-name",
-            "refs/remotes/origin/HEAD",
-          ],
-          {
-            timeoutMs: 5_000,
-            allowNonZeroExit: true,
-          },
-        ),
         executeGit("GitVcsDriver.listRefs.remoteNames", fetchCwd, [...gitDirArgs, "remote"], {
           timeoutMs: 5_000,
           allowNonZeroExit: true,
@@ -5412,14 +5410,15 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
         `GitVcsDriver.listRefs: remote name lookup returned code ${remoteNamesResult.exitCode} for ${gitCommonDir}: ${remoteNamesResult.stderr.trim()}. Falling back to an empty remote name list.`,
       );
     }
-    const defaultBranch =
-      defaultRefResult.exitCode === 0
-        ? parseDefaultBranchFromRemoteHeadRef(defaultRefResult.stdout, "origin")
-        : null;
+    const lines = refsResult.stdout.split("\n");
+    const defaultRef = lines.find((line) => line.startsWith("refs/remotes/origin/HEAD\t"));
+    const defaultBranch = parseDefaultBranchFromRemoteHeadRef(
+      defaultRef?.split("\t")[1] ?? "",
+      "origin",
+    );
     const localBranches: Array<{ readonly ref: VcsRef; readonly lastCommit: number }> = [];
     const remoteBranches: Array<{ readonly ref: VcsRef; readonly lastCommit: number }> = [];
 
-    const lines = refsResult.stdout.split("\n");
     for (const line of lines) {
       if (line.length === 0) continue;
       const [fullRefName, symbolicTarget, upstreamRef, , lastCommitRaw] = line.split("\t");

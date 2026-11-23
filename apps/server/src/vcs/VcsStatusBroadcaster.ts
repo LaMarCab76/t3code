@@ -746,10 +746,8 @@ export const make = Effect.gen(function* () {
             refsDigest: NodeCrypto.createHash("sha256").update(refs).digest("hex").slice(0, 32),
           };
     if (options?.localOnly) {
-      const [refs] = yield* Effect.all(
-        [workflow.readRefSnapshot(cwd), refreshLocalStatusCore(cwd)],
-        { concurrency: "unbounded" },
-      );
+      yield* refreshLocalStatusCore(cwd);
+      const refs = yield* workflow.readRefSnapshot(cwd);
       // Never cache a remote here: readers take `value: null` as "read and found no PR".
       const parts = yield* getStatusParts(cwd);
       return withRefsDigest(mergeGitStatusParts(parts.local, parts.remote), refs);

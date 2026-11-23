@@ -335,13 +335,26 @@ function readHistorySnapshots(): HistorySnapshot[] {
   }
 }
 
+async function withHistorySnapshotLock<A>(run: (locked: boolean) => A): Promise<A> {
+  if (!navigator.locks) return run(false);
+  let acquired = false;
+  try {
+    return await navigator.locks.request(BROWSER_HISTORY_STORAGE_KEY, () => {
+      acquired = true;
+      return run(true);
+    });
+  } catch (error) {
+    if (acquired) throw error;
+    return run(false);
+  }
+}
+
 function retireHistorySnapshots(snapshots: readonly HistorySnapshot[]): void {
   try {
     const storage = window.localStorage;
     for (const { key, raw } of snapshots) {
-      // Fallback keys are immutable. Older clients may still overwrite the original key.
-      if (key !== BROWSER_HISTORY_STORAGE_KEY || storage.getItem(key) === raw)
-        storage.removeItem(key);
+      // A quota-limited writer can replace an existing snapshot after the transaction read it.
+      if (storage.getItem(key) === raw) storage.removeItem(key);
     }
   } catch {
     // The browser can deny access to localStorage independently of IndexedDB.
@@ -442,20 +455,34 @@ function rebaseUnsavedHistory(
 
 // Without IndexedDB, merge into the freshest localStorage snapshot so a reload keeps new visits.
 function transactLegacyHistory(update: UpdateStoredHistory, current: PersistedBrowserHistory) {
-  const snapshots = readHistorySnapshots();
-  const base = mergeHistorySnapshots(undefined, snapshots) ?? current;
-  const history = update(base);
-  if (history === base) return { history, pending: undefined };
-  try {
-    window.localStorage.setItem(
-      `${BROWSER_HISTORY_FALLBACK_PREFIX}${randomUUID()}`,
-      JSON.stringify({ state: history, version: 1 }),
-    );
-    retireHistorySnapshots(snapshots);
-    return { history, pending: undefined };
-  } catch {
-    return { history, pending: { base, history } };
-  }
+  return withHistorySnapshotLock((locked) => {
+    const snapshots = readHistorySnapshots();
+    const base = mergeHistorySnapshots(current, snapshots) ?? current;
+    const history = update(base);
+    if (history === base) return { history, pending: undefined };
+    try {
+      const storage = window.localStorage;
+      const raw = JSON.stringify({ state: history, version: 1 });
+      let savedKey = `${BROWSER_HISTORY_FALLBACK_PREFIX}${randomUUID()}`;
+      try {
+        storage.setItem(savedKey, raw);
+      } catch (error) {
+        if (!locked || !(error instanceof DOMException) || error.name !== "QuotaExceededError")
+          throw error;
+        const largest = snapshots
+          .filter(({ key }) => key.startsWith(BROWSER_HISTORY_FALLBACK_PREFIX))
+          .toSorted((a, b) => b.raw.length - a.raw.length)[0];
+        if (!largest) throw error;
+        // An atomic replacement keeps the previous record if the new value still cannot fit.
+        storage.setItem(largest.key, raw);
+        savedKey = largest.key;
+      }
+      retireHistorySnapshots(snapshots.filter(({ key }) => key !== savedKey));
+      return { history, pending: undefined };
+    } catch {
+      return { history, pending: { base, history } };
+    }
+  });
 }
 
 function invalidateHistoryDatabase(opening: Promise<IDBDatabase>): void {
@@ -505,16 +532,26 @@ async function transactIndexedHistory(update?: UpdateStoredHistory, retry = true
     let snapshots: readonly HistorySnapshot[] = [];
     request.onsuccess = () => {
       const saved = request.result as PersistedBrowserHistory | undefined;
-      if (update) snapshots = readHistorySnapshots();
+      snapshots = readHistorySnapshots();
       const previous = mergeHistorySnapshots(saved, snapshots);
       history = update?.(previous) ?? previous ?? EMPTY_PERSISTED_HISTORY;
       changed = history !== saved;
-      if (update && changed) store.put(history, BROWSER_HISTORY_STORAGE_KEY);
+      if (update && changed) {
+        if (snapshots.length > 0)
+          history = boundThreadMappings(previous ?? EMPTY_PERSISTED_HISTORY, history);
+        store.put(history, BROWSER_HISTORY_STORAGE_KEY);
+      }
     };
     transaction.oncomplete = () => {
       // Keep the migration source until the IndexedDB snapshot has committed.
-      if (snapshots.length > 0) retireHistorySnapshots(snapshots);
-      resolve({ history, changed });
+      if (update && snapshots.length > 0) {
+        void withHistorySnapshotLock(() => retireHistorySnapshots(snapshots)).then(
+          () => resolve({ history, changed }),
+          reject,
+        );
+      } else {
+        resolve({ history, changed });
+      }
     };
     transaction.onabort = () => reject(transaction.error);
   });
@@ -546,7 +583,7 @@ export const useBrowserHistoryStore = create<BrowserHistoryStoreState>()((set, g
         return;
       }
       const { byProjectKey, projectKeyByThreadKey } = get();
-      const fallback = transactLegacyHistory(
+      const fallback = await transactLegacyHistory(
         persist,
         unsavedHistory?.base ?? { byProjectKey, projectKeyByThreadKey },
       );

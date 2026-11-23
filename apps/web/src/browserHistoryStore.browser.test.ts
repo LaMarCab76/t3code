@@ -132,6 +132,59 @@ it("refreshes the open history when another document adds a visit", async () => 
   }
 });
 
+it("caps the persisted mappings after importing multiple snapshots", async () => {
+  await resetHistoryFixture();
+  try {
+    using documents = new DisposableStack();
+    for (const group of ["first", "second"]) {
+      const mappings = Object.fromEntries(
+        Array.from({ length: 60 }, (_, index) => [`env:${group}-${index}`, "a"]),
+      );
+      localStorage.setItem(
+        fallbackPrefix + group,
+        JSON.stringify({
+          state: { byProjectKey: { a: [page] }, projectKeyByThreadKey: mappings },
+          version: 1,
+        }),
+      );
+    }
+    const store = await openHistoryDocument(documents);
+    await vi.waitFor(() => expect(store.getState().byProjectKey).toEqual({ a: [page] }));
+    const db = await openHistoryFixture(documents);
+    const saved = (await readHistoryFixture(db)) as {
+      projectKeyByThreadKey: Record<string, string>;
+    };
+    expect(Object.keys(saved.projectKeyByThreadKey)).toHaveLength(100);
+  } finally {
+    await resetHistoryFixture();
+  }
+});
+
+it("includes fallback history when receiving an IndexedDB notification", async () => {
+  await resetHistoryFixture();
+  try {
+    using documents = new DisposableStack();
+    const db = await openHistoryFixture(documents);
+    const channel = new BroadcastChannel(storageKey);
+    documents.defer(() => channel.close());
+    localStorage.setItem(
+      fallbackPrefix + "visit",
+      JSON.stringify({ state: { byProjectKey: { b: [otherEntry] } }, version: 1 }),
+    );
+    await writeHistoryFixture(db, { byProjectKey: { a: [page] }, projectKeyByThreadKey: {} });
+    // oxlint-disable-next-line unicorn/require-post-message-target-origin -- BroadcastChannel is scoped to the origin
+    channel.postMessage(null);
+    await vi.waitFor(() =>
+      expect(useBrowserHistoryStore.getState().byProjectKey).toEqual({
+        a: [page],
+        b: [otherEntry],
+      }),
+    );
+  } finally {
+    await resetHistoryFixture();
+  }
+});
+
 it("bounds saved thread mappings while keeping live registrations", async () => {
   await resetHistoryFixture();
   const mappings = Object.fromEntries(
@@ -321,6 +374,39 @@ it("keeps overlapping visits from independent documents", async () => {
   }
 });
 
+it("replaces a fallback snapshot when keeping both records would exceed quota", async () => {
+  await resetHistoryFixture();
+  try {
+    const store = useBrowserHistoryStore.getState();
+    const setItem = Storage.prototype.setItem;
+    {
+      using _transaction = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(() => {
+        throw new DOMException("Storage unavailable", "SecurityError");
+      });
+      store.recordVisit("a", oldEntry.url, oldEntry.lastVisitedAt);
+      await vi.waitFor(() => expect(fallbackKeys()).toHaveLength(1));
+      using _quota = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
+        this: Storage,
+        key: string,
+        value: string,
+      ) {
+        if (key.startsWith(fallbackPrefix) && this.getItem(key) === null)
+          throw new DOMException("Only one snapshot fits", "QuotaExceededError");
+        setItem.call(this, key, value);
+      });
+      store.setTitleForUrl("a", oldEntry.url, "Kept within quota");
+      await vi.waitFor(() =>
+        expect(JSON.parse(localStorage.getItem(fallbackKeys()[0]!) ?? "null")).toMatchObject({
+          state: { byProjectKey: { a: [{ ...oldEntry, title: "Kept within quota" }] } },
+        }),
+      );
+      expect(fallbackKeys()).toHaveLength(1);
+    }
+  } finally {
+    await resetHistoryFixture();
+  }
+});
+
 it("keeps visits saved while IndexedDB could not open", async () => {
   await resetHistoryFixture();
   try {
@@ -486,6 +572,10 @@ it.each([
     await vi.waitFor(async () =>
       expect(await readHistoryFixture(db)).toHaveProperty("byProjectKey.a", [oldEntry]),
     );
+    localStorage.setItem(
+      storageKey,
+      JSON.stringify({ state: { byProjectKey: { b: [otherEntry] } }, version: 1 }),
+    );
     {
       using _transaction = vi.spyOn(IDBDatabase.prototype, "transaction").mockImplementation(() => {
         throw new DOMException("Storage unavailable", "SecurityError");
@@ -501,7 +591,10 @@ it.each([
     const expected = [{ ...oldEntry, title: indexedTitle ?? "Recovered title" }];
     const recovered = await openHistoryDocument(fixture);
     await vi.waitFor(() => expect(recovered.getState().byProjectKey.a).toEqual(expected));
-    expect(await readHistoryFixture(db)).toHaveProperty("byProjectKey.a", expected);
+    expect(await readHistoryFixture(db)).toHaveProperty("byProjectKey", {
+      a: expected,
+      b: [otherEntry],
+    });
   } finally {
     await resetHistoryFixture();
   }

@@ -8,9 +8,9 @@ vi.mock("~/env", () => ({ isElectron: true }));
 vi.mock(import("../../state/portForwards"), async (importOriginal) => ({
   ...(await importOriginal()),
   canForwardPorts: () => true,
-  useForwardLocality: () => "remote" as const,
+  useForwardLocality: () => "pending" as const,
   usePortForwards: () => [],
-  forwardPort: (async (environmentId: string, remotePort: number) => ({
+  forwardPort: vi.fn(async (environmentId: string, remotePort: number) => ({
     environmentId,
     remotePort,
     localPort: 45000,
@@ -50,6 +50,7 @@ vi.mock(import("../../portDiscoveryState"), async (importOriginal) => ({
 }));
 
 import { render } from "../../../test/render";
+import { forwardPort } from "../../state/portForwards";
 import { ThreadServersPanel } from "./ThreadServersPanel";
 
 const panel = (threadId: string) => (
@@ -87,5 +88,17 @@ it("opens a remote server in the system browser through the forward a modified c
   await page.getByText("localhost:3000", { exact: true }).click({ modifiers: ["ControlOrMeta"] });
   await vi.waitFor(() =>
     expect(shell.openExternal).toHaveBeenCalledWith("http://localhost:45000/"),
+  );
+});
+
+it("opens a local server on a modified click before locality resolves", async () => {
+  shell.openExternal.mockClear();
+  vi.mocked(forwardPort).mockRejectedValueOnce(
+    new Error("Same machine", { cause: new Error("LoopbackTunnelSameMachineError") }),
+  );
+  await using _screen = await render(panel("a"));
+  await page.getByText("localhost:3000", { exact: true }).click({ modifiers: ["ControlOrMeta"] });
+  await vi.waitFor(() =>
+    expect(shell.openExternal).toHaveBeenCalledExactlyOnceWith("http://localhost:3000"),
   );
 });

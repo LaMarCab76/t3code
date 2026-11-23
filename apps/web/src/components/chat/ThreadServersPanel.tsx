@@ -31,6 +31,7 @@ import {
   findPortForward,
   forwardedUrl,
   forwardPort,
+  isSameMachinePortForwardError,
   stopPortForward,
   useForwardLocality,
   usePortForwards,
@@ -111,6 +112,7 @@ function ThreadServersList(props: ThreadServersPanelProps) {
         ? await forwardPort(props.environmentId, server.port).then(
             (forward) => forwardedUrl(forward, server.url),
             (error: unknown) => {
+              if (isSameMachinePortForwardError(error)) return server.url;
               reportFailure(gt("Could not forward port {port}", { port: server.port }), error);
               return null;
             },

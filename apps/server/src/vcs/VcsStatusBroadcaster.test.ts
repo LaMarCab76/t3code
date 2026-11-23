@@ -1579,6 +1579,28 @@ describe("VcsStatusBroadcaster", () => {
     });
   });
 
+  it.effect("reads the local-only refs digest after refreshing status", () => {
+    const state: Parameters<typeof layerTestFor>[0] = {
+      currentLocalStatus: baseLocalStatus,
+      currentRemoteStatus: null,
+      localStatusCalls: 0,
+      remoteStatusCalls: 0,
+      localInvalidationCalls: 0,
+      remoteInvalidationCalls: 0,
+    };
+    return Effect.gen(function* () {
+      const broadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
+      const before = yield* broadcaster.refreshStatus("/repo", { localOnly: true });
+      state.beforeLocalStatus = Effect.sync(() => {
+        state.refSnapshot = "moved";
+      });
+      const after = yield* broadcaster.refreshStatus("/repo", { localOnly: true });
+      assert.isString(before.refsDigest);
+      assert.isString(after.refsDigest);
+      assert.notEqual(after.refsDigest, before.refsDigest);
+    }).pipe(Effect.provide(layerTestFor(state)));
+  });
+
   it.effect("an explicit refresh re-reads local totals only after refs moved", () => {
     const totals = (insertions: number): VcsStatusLocalResult => ({
       ...baseLocalStatus,
@@ -1639,7 +1661,7 @@ describe("VcsStatusBroadcaster", () => {
       assert.equal(state.localStatusCalls, 2);
       assert.deepStrictEqual(moved.branchChanges, totals(0).branchChanges);
       assert.isString(moved.refsDigest);
-      assert.notEqual(moved.refsDigest, unmoved.refsDigest);
+      assert.notEqual(moved.refsDigest, worktreeChanged.refsDigest);
       assert.deepStrictEqual(
         [...(yield* Fiber.join(events))].map((event) => event._tag),
         // The first refresh adds the totals this palette-style subscription skipped.

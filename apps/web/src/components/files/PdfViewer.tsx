@@ -43,6 +43,8 @@ type PdfPosition = PdfViewState & { width: number; ratios: readonly number[] };
 // Thread switches unmount the preview; retain only the most recent documents.
 const positions = new Map<string, PdfPosition>();
 
+const PDF_ANNOTATION_HIDDEN = 2;
+
 type PdfLink = { box: readonly [number, number, number, number] } & (
   | { url: string }
   | { page: number }
@@ -134,14 +136,23 @@ function PdfPage(props: {
       const linked = page.getAnnotations({ intent: "display" }).then(async (annotations) => {
         const found: PdfLink[] = [];
         for (const annotation of annotations) {
-          if (annotation.subtype !== "Link") continue;
+          if (
+            annotation.subtype !== "Link" ||
+            ((annotation.annotationFlags ?? 0) & PDF_ANNOTATION_HIDDEN) !== 0
+          )
+            continue;
           const [x1, y1] = viewport.convertToViewportPoint(annotation.rect[0], annotation.rect[1]);
           const [x2, y2] = viewport.convertToViewportPoint(annotation.rect[2], annotation.rect[3]);
+          const left = Math.max(0, Math.min(x1, x2));
+          const right = Math.min(viewport.width, Math.max(x1, x2));
+          const top = Math.max(0, Math.min(y1, y2));
+          const bottom = Math.min(viewport.height, Math.max(y1, y2));
+          if (!(left < right && top < bottom)) continue;
           const box = [
-            Math.min(x1, x2) / viewport.width,
-            Math.min(y1, y2) / viewport.height,
-            Math.abs(x2 - x1) / viewport.width,
-            Math.abs(y2 - y1) / viewport.height,
+            left / viewport.width,
+            top / viewport.height,
+            (right - left) / viewport.width,
+            (bottom - top) / viewport.height,
           ] as const;
           if (typeof annotation.url === "string" && /^https?:\/\//i.test(annotation.url)) {
             found.push({ box, url: annotation.url });

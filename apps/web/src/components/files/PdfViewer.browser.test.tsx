@@ -267,7 +267,8 @@ it("follows a link to another page and exposes a web link", async () => {
         text: "BT /F1 24 Tf 30 700 Td (See p. 2) Tj 0 -60 Td (Website) Tj ET",
         annots: [
           "<< /Type /Annot /Subtype /Link /Rect [30 690 200 730] /Border [0 0 0] /Dest [5 0 R /XYZ 0 792 0] >>",
-          "<< /Type /Annot /Subtype /Link /Rect [30 630 200 670] /Border [0 0 0] /A << /S /URI /URI (https://example.com/) >> >>",
+          "<< /Type /Annot /Subtype /Link /Rect [30 -30 200 670] /Border [0 0 0] /A << /S /URI /URI (https://example.com/) >> >>",
+          "<< /Type /Annot /Subtype /Link /F 2 /Rect [30 610 200 620] /A << /S /URI /URI (https://example.com/hidden) >> >>",
         ].join(" "),
       },
       { box: "0 0 612 792", rotate: 0, text: "BT /F1 24 Tf 30 700 Td (Target) Tj ET" },
@@ -287,6 +288,10 @@ it("follows a link to another page and exposes a web link", async () => {
       return link!;
     });
     expect(getComputedStyle(web).cursor).toBe("pointer");
+    expect(web.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      web.parentElement!.getBoundingClientRect().bottom + 1,
+    );
+    expect(region.querySelector('a[href="https://example.com/hidden"]')).toBeNull();
     const internal = await vi.waitFor(() => {
       const link = Array.from(region.querySelectorAll<HTMLAnchorElement>("a")).find(
         (anchor) => anchor !== web,

@@ -10300,6 +10300,58 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
         }),
     );
 
+    it.effect("uses the captured push branch when HEAD switches during divergence", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir("git-remote-");
+        yield* initRepoWithCommit(cwd);
+        yield* git(cwd, ["switch", "-c", "feature"]);
+        yield* git(remote, ["init", "--bare"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "-u", "origin", "feature"]);
+        yield* git(cwd, ["commit", "--allow-empty", "-m", "Feature ahead"]);
+        const feature = yield* git(cwd, ["rev-parse", "HEAD"]);
+        yield* git(cwd, ["branch", "other"]);
+        yield* git(cwd, ["push", "origin", "other"]);
+        yield* git(cwd, ["branch", "--set-upstream-to=origin/other", "other"]);
+
+        const delegate = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const fixtureDriver = yield* GitVcsDriver.GitVcsDriver;
+        let switched = false;
+        const spawner = ChildProcessSpawner.make((command) =>
+          Effect.gen(function* () {
+            if (
+              ChildProcess.isStandardCommand(command) &&
+              !switched &&
+              command.args.includes("--left-right")
+            ) {
+              switched = true;
+              yield* git(cwd, ["switch", "other"]).pipe(
+                Effect.provideService(GitVcsDriver.GitVcsDriver, fixtureDriver),
+                Effect.orDie,
+              );
+            }
+            return yield* delegate.spawn(command);
+          }),
+        );
+        const driver = yield* makeGitVcsDriverCore().pipe(
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        );
+
+        const pushed = yield* driver.pushCurrentBranch(cwd, null);
+        assert.isTrue(switched);
+        assert.deepInclude(pushed, {
+          status: "pushed",
+          branch: "feature",
+          upstreamBranch: "origin/feature",
+        });
+        assert.equal(
+          yield* git(remote, ["--git-dir=.", "rev-parse", "refs/heads/feature"]),
+          feature,
+        );
+      }),
+    );
+
     it.effect(
       "pushes upstream branches to the remote branch name, not the upstream shorthand",
       () =>

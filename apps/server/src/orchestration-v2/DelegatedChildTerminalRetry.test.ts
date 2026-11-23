@@ -175,7 +175,8 @@ const runDelegation = (input: {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
       const watch = (predicate: (event: OrchestrationV2DomainEvent) => boolean) =>
-        orchestrator.streamDomainEvents.pipe(
+        orchestrator.streamStoredEvents.pipe(
+          Stream.map((stored) => stored.event),
           Stream.filter(predicate),
           Stream.take(1),
           Stream.runDrain,

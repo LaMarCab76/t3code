@@ -302,7 +302,12 @@ export function useEnvironmentSpeechInput(input: HookInput) {
       submit(latestRef.current.input.readDraft().text);
       return;
     }
-    session.queueSubmission(latestRef.current.input.ownerKey, submit);
+    const { ownerKey } = latestRef.current.input;
+    session.queueSubmission(ownerKey, (text) => {
+      const current = latestRef.current.input;
+      if (mountedRef.current && current.ownerKey === ownerKey && current.disabled) return;
+      submit(text);
+    });
   });
 
   const createTarget = useStableCallback((): VoiceInputTarget => {
@@ -335,12 +340,15 @@ export function useEnvironmentSpeechInput(input: HookInput) {
       },
       commitDraft: (text, selection) => {
         if (!live()) {
-          persistent?.commitStoredText(text);
-          return;
+          if (persistent === null) return false;
+          persistent.commitStoredText(text);
+          return persistent.readStoredText() === text;
         }
-        if (latestRef.current.input.disabled) return;
+        if (latestRef.current.input.disabled) return false;
         latestRef.current.input.commitDraft(text, selection);
+        return true;
       },
+      canSubmit: () => (live() ? !latestRef.current.input.disabled : persistent !== null),
       readContext: () => (live() ? readContext() : startContext),
     };
   });

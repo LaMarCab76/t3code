@@ -169,6 +169,18 @@ describe("Azure DevOps repository keys", () => {
     ).toBe(false);
   });
 
+  it.each([
+    "https://dev.azure.com/acme/_git/web/pullrequest/7",
+    "https://acme.visualstudio.com/_git/web/pullrequest/7",
+  ])("matches project-less links to a project named after the repository (%s)", (url) => {
+    const remoteUrl = "https://dev.azure.com/acme/web/_git/web";
+    const identity: ChangeRequestProjectIdentity = {
+      canonicalKey: registry.repositoryKeyFromRemote(remoteUrl),
+      locator: { source: "git-remote", remoteName: "origin", remoteUrl },
+    };
+    expect(definition.isChangeRequestInRepository(identity, parse(url)!)).toBe(true);
+  });
+
   it("matches a repository however its name is percent-encoded", () => {
     const remoteUrl = "https://example@dev.azure.com/example/Sample%20(Beta)/_git/Sample%20(Beta)";
     const canonicalKey = registry.repositoryKeyFromRemote(remoteUrl);
