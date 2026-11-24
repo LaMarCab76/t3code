@@ -183,10 +183,6 @@ export function antigravitySessionMode(
   return modeId === "yolo" || modeId === "auto_edit" ? "default" : modeId;
 }
 
-// Only calls that name T3's server: before agy 1.5.8 "Running <tool>" names no server, so another
-// MCP server's tool of the same name would pass.
-const ANTIGRAVITY_T3_MCP_TITLE = /^Run mcp_t3-code_(?<tool>[A-Za-z0-9_]+)\??$/;
-
 // call_mcp_tool is the one call whose rawInput names a server and tool; in every other call
 // rawInput is the tool's own arguments.
 const ANTIGRAVITY_PROXIED_MCP_TITLE = /^MCP Tool (?<tool>[A-Za-z0-9_]+)\??$/;
@@ -194,17 +190,14 @@ const ANTIGRAVITY_PROXIED_MCP_TITLE = /^MCP Tool (?<tool>[A-Za-z0-9_]+)\??$/;
 function isAntigravityT3McpRequest(request: EffectAcpSchema.RequestPermissionRequest): boolean {
   const title = request.toolCall.title?.trim() ?? "";
   const rawInput = unknownRecord(request.toolCall.rawInput);
-  const proxiedTool = ANTIGRAVITY_PROXIED_MCP_TITLE.exec(title)?.groups?.tool;
-  if (proxiedTool !== undefined) {
-    return (
-      rawInput?.ServerName === "t3-code" &&
-      rawInput.ToolName === proxiedTool &&
-      T3_MCP_TOOL_NAMES.has(proxiedTool)
-    );
-  }
   if (typeof rawInput?.CommandLine === "string") return false;
-  const tool = ANTIGRAVITY_T3_MCP_TITLE.exec(title)?.groups?.tool;
-  return tool !== undefined && T3_MCP_TOOL_NAMES.has(tool);
+  const proxiedTool = ANTIGRAVITY_PROXIED_MCP_TITLE.exec(title)?.groups?.tool;
+  return (
+    proxiedTool !== undefined &&
+    rawInput?.ServerName === "t3-code" &&
+    rawInput.ToolName === proxiedTool &&
+    T3_MCP_TOOL_NAMES.has(proxiedTool)
+  );
 }
 
 export function antigravityPermissionDisposition(
