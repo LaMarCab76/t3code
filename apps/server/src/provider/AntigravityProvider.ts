@@ -19,6 +19,7 @@ import * as FiberHandle from "effect/FiberHandle";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import type * as EffectAcpErrors from "effect-acp/errors";
@@ -172,6 +173,9 @@ interface AntigravityProviderOptions {
   readonly clearUsage?: Effect.Effect<void>;
   readonly maintenanceCapabilities?: ProviderMaintenanceCapabilities;
   readonly auth?: { readonly type: string; readonly label: string };
+  /** Modes the last session advertised, saved because initialize alone does not report them. */
+  readonly rememberedRuntimeModes?: ReadonlyArray<RuntimeMode>;
+  readonly rememberRuntimeModes?: (modes: ReadonlyArray<RuntimeMode>) => Effect.Effect<void>;
 }
 
 const RUNTIME_MODES_WITHOUT_AUTO = [
@@ -209,7 +213,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
       presentation: {
         displayName: "Antigravity",
         showInteractionModeToggle: false,
-        supportedRuntimeModes: RUNTIME_MODES_WITHOUT_AUTO,
+        supportedRuntimeModes: options.rememberedRuntimeModes ?? RUNTIME_MODES_WITHOUT_AUTO,
       },
       enabled: settings.enabled,
       checkedAt,
@@ -246,6 +250,21 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
       thinkingLevels.set(model.currentValue, antigravityThinkingConfig(configOptions) ?? null);
     }
   };
+  const runtimeModesWriteGate = yield* Semaphore.make(1);
+  let rememberedRuntimeModes = initialDraft.supportedRuntimeModes;
+  const rememberRuntimeModes = Effect.fn("AntigravityProvider.rememberRuntimeModes")(function* () {
+    const remember = options.rememberRuntimeModes;
+    if (!remember) return;
+    yield* runtimeModesWriteGate.withPermit(
+      Effect.gen(function* () {
+        const { draft } = yield* SubscriptionRef.get(metadata);
+        const current = draft.supportedRuntimeModes;
+        if (!current || rememberedRuntimeModes?.join() === current.join()) return;
+        yield* remember(current);
+        rememberedRuntimeModes = current;
+      }),
+    );
+  });
   const getSnapshot = SubscriptionRef.get(metadata).pipe(
     Effect.flatMap((state) => options.stampIdentity(state.draft)),
   );
@@ -400,17 +419,18 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
     const before = yield* SubscriptionRef.get(metadata);
     const supportsTextGeneration = yield* options.supportsTextGeneration;
     const updatedAt = DateTime.formatIso(yield* DateTime.now);
-    yield* SubscriptionRef.update(metadata, (state) => {
+    const supportedRuntimeModes = antigravityRuntimeModes(started.sessionSetupResult);
+    const accepted = yield* SubscriptionRef.modify(metadata, (state) => {
       if (
         state.authRevision !== before.authRevision &&
         state.draft.auth.status === "unauthenticated"
       ) {
-        return state;
+        return [false, state] as const;
       }
       const { message: _previousMessage, ...draft } = state.draft;
       const workspaces = draft.workspaceSnapshots ?? [];
       const workspace = cwd ? workspaces.find((entry) => entry.cwd === cwd) : undefined;
-      return {
+      const next = {
         authRevision: state.authRevision + 1,
         draft: {
           ...draft,
@@ -424,7 +444,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
           },
           checkedAt: updatedAt,
           models: buildAntigravityModelsFromSession(started.sessionSetupResult, thinkingLevels),
-          supportedRuntimeModes: antigravityRuntimeModes(started.sessionSetupResult),
+          supportedRuntimeModes,
           supportsTextGeneration,
           ...(cwd
             ? {
@@ -441,7 +461,9 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
             : {}),
         },
       } satisfies AntigravityProviderState;
+      return [true, next] as const;
     });
+    if (accepted) yield* rememberRuntimeModes();
     if (!before.draft.usageLimits || before.draft.usageLimits.unavailable) yield* refreshUsage();
   });
 
@@ -519,6 +541,7 @@ export const makeAntigravityProvider = Effect.fn("makeAntigravityProvider")(func
           },
         }) satisfies AntigravityProviderState,
     );
+    yield* rememberRuntimeModes();
     discoveredSkills.clear();
     thinkingLevels.clear();
   });

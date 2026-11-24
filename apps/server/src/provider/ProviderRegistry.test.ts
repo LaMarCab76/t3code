@@ -565,6 +565,11 @@ const layerTestNodeServices = Layer.mergeAll(
   Layer.succeed(ServerEnvironment.ServerEnvironmentIdentity, {
     getEnvironmentId: Effect.succeed(EnvironmentId.make("00000000-0000-4000-8000-000000000001")),
   }),
+  // A login shell that prints nothing, so refreshes never take PATH from the developer's profile.
+  Layer.effect(
+    HostProcess.Environment,
+    Effect.sync(() => ({ ...process.env, SHELL: "/usr/bin/true" })),
+  ),
   // An empty home, so the developer's own Claude settings never reach provider probes.
   Layer.effect(
     HostProcess.HomeDirectory,
@@ -2562,13 +2567,29 @@ it.layer(
         }),
     );
 
-    it.effect(
-      "rebuilds only instances missing their CLI when a refresh finds a new Windows PATH",
-      () => {
-        const env: NodeJS.ProcessEnv = { PATH: "C:\\Windows" };
+    it.effect.each([
+      {
+        name: "Windows PATH",
+        platform: "win32" as const,
+        path: "C:\\Windows",
+        expectedPath: "C:\\Windows;C:\\Tools",
+      },
+      {
+        name: "login-shell PATH",
+        platform: "linux" as const,
+        path: "/usr/bin",
+        expectedPath: "/opt/late:/usr/bin",
+      },
+    ])("rebuilds only instances missing their CLI when a refresh finds a new $name", (host) =>
+      Effect.suspend(() => {
+        const env: NodeJS.ProcessEnv = { PATH: host.path, SHELL: "/bin/sh" };
         return Effect.gen(function* () {
           const driver = ProviderDriverKind.make("codex");
-          const makeInstance = (id: string, installed: boolean): ProviderInstance => {
+          const makeInstance = (
+            id: string,
+            installed: boolean,
+            installedAfterProbe = installed,
+          ): ProviderInstance => {
             const instanceId = ProviderInstanceId.make(id);
             const provider = {
               instanceId,
@@ -2583,6 +2604,7 @@ it.layer(
               slashCommands: [],
               skills: [],
             } as const satisfies ServerProvider;
+            let current: ServerProvider = provider;
             return {
               instanceId,
               driverKind: driver,
@@ -2597,8 +2619,15 @@ it.layer(
                       packageName: null,
                     }),
                   ),
-                getSnapshot: Effect.succeed(provider),
-                refresh: Effect.succeed(provider),
+                getSnapshot: Effect.sync(() => current),
+                refresh: Effect.sync(() => {
+                  current = {
+                    ...provider,
+                    installed: installedAfterProbe,
+                    status: installedAfterProbe ? "ready" : "error",
+                  };
+                  return current;
+                }),
                 streamChanges: Stream.empty,
                 applyUsageLimits: () => Effect.void,
               },
@@ -2606,7 +2635,11 @@ it.layer(
               textGeneration: {} as ProviderInstance["textGeneration"],
             };
           };
-          const instances = [makeInstance("present", true), makeInstance("missing", false)];
+          const instances = [
+            makeInstance("present", true),
+            makeInstance("missing", false),
+            makeInstance("missing-after-probe", true, false),
+          ];
           const rebuilt: Array<ReadonlyArray<ProviderInstanceId>> = [];
           const changes = yield* PubSub.unbounded<void>();
           const registry = yield* ProviderRegistry.ProviderRegistry.pipe(
@@ -2627,7 +2660,17 @@ it.layer(
                   }),
                 ),
                 Layer.provideMerge(
-                  ServerConfig.layerTest(process.cwd(), { prefix: "t3-provider-registry-path-" }),
+                  ServerConfig.layerTest(process.cwd(), {
+                    prefix: "t3-provider-registry-path-",
+                  }),
+                ),
+                Layer.provide(
+                  layerMockSpawner(() => ({
+                    stdout:
+                      "__T3CODE_ENV_PATH_START__\n/opt/late:/usr/bin\n__T3CODE_ENV_PATH_END__\n",
+                    stderr: "",
+                    code: 0,
+                  })),
                 ),
                 Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
               ),
@@ -2636,16 +2679,21 @@ it.layer(
 
           yield* registry.refresh();
 
-          assert.strictEqual(env.PATH, "C:\\Windows;C:\\Tools");
+          assert.strictEqual(env.PATH, host.expectedPath);
           assert.deepStrictEqual(rebuilt, [[ProviderInstanceId.make("missing")]]);
+          yield* registry.refresh();
+          assert.deepStrictEqual(rebuilt, [
+            [ProviderInstanceId.make("missing")],
+            [ProviderInstanceId.make("missing-after-probe")],
+          ]);
         }).pipe(
-          Effect.provideService(HostProcess.Platform, "win32"),
+          Effect.provideService(HostProcess.Platform, host.platform),
           Effect.provideService(HostProcess.Environment, env),
           Effect.provideService(WindowsShellEnvironment, () =>
             Effect.succeed({ PATH: "C:\\Windows;C:\\Tools" }),
           ),
         );
-      },
+      }),
     );
 
     it.effect("rescans a requested cwd whose snapshot is still current", () =>

@@ -26,12 +26,14 @@ import * as Ref from "effect/Ref";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as Semaphore from "effect/Semaphore";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import * as ModelManifest from "./ModelManifest.ts";
 import { applyProviderCompatibility } from "./providerCompatibility.ts";
 import * as ServerConfig from "../config.ts";
-import { refreshWindowsPath } from "../os-jank.ts";
+import { refreshPathFromLoginShell, refreshWindowsPath } from "../os-jank.ts";
 import * as ProviderInstanceRegistry from "./ProviderInstanceRegistry.ts";
 import * as ProviderInstanceRegistryMutator from "./ProviderInstanceRegistryMutator.ts";
 import {
@@ -747,22 +749,48 @@ export const layer = Layer.effect(
     // A refresh is how a user asks T3 to see a CLI installed since launch; a burst shares one probe.
     // Drivers copy the environment when built, so instances still missing their CLI are rebuilt
     // on the new PATH. They cannot have live sessions, and installed ones keep theirs.
-    const refreshHostPath = yield* refreshWindowsPath().pipe(
-      Effect.flatMap((changed) =>
-        changed
-          ? Ref.get(providersRef).pipe(
-              Effect.flatMap((providers) =>
-                instanceRegistryMutator.rebuild(
-                  providers
-                    .filter((provider) => provider.enabled && !provider.installed)
-                    .map((provider) => provider.instanceId),
-                ),
-              ),
-            )
-          : Effect.void,
-      ),
+    // Compared with the last PATH seen here, since other features re-read the login shell too.
+    const hostEnvironment = yield* HostProcess.Environment;
+    const readHostPath = () => hostEnvironment.PATH ?? hostEnvironment.Path ?? hostEnvironment.path;
+    const initialHostPath = readHostPath();
+    type HostPathRebuilds = {
+      readonly path: string | undefined;
+      readonly rebuilt: ReadonlySet<ProviderInstanceId>;
+      readonly refreshed: boolean;
+    };
+    const pathRebuilds = yield* Ref.make<HostPathRebuilds>({
+      path: initialHostPath,
+      rebuilt: new Set(),
+      refreshed: false,
+    });
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const readRefreshedHostPath = yield* refreshWindowsPath().pipe(
+      Effect.andThen(refreshPathFromLoginShell()),
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       Effect.cachedWithTTL(Duration.seconds(10)),
     );
+    const refreshHostPath = Effect.fn("ProviderRegistry.refreshHostPath")(function* () {
+      yield* readRefreshedHostPath;
+      const path = readHostPath();
+      const providers = yield* Ref.get(providersRef);
+      const missing = yield* Ref.modify<HostPathRebuilds, ReadonlyArray<ProviderInstanceId>>(
+        pathRebuilds,
+        (current) => {
+          const rebuilt = current.path === path ? current.rebuilt : new Set<ProviderInstanceId>();
+          if (!current.refreshed && current.path === path) return [[], current];
+          const candidates = providers.flatMap((provider) =>
+            provider.enabled && !provider.installed && !rebuilt.has(provider.instanceId)
+              ? [provider.instanceId]
+              : [],
+          );
+          return [
+            candidates,
+            { path, rebuilt: new Set([...rebuilt, ...candidates]), refreshed: true },
+          ];
+        },
+      );
+      if (missing.length > 0) yield* instanceRegistryMutator.rebuild(missing);
+    });
     const refreshAllInFlightRef = yield* Ref.make<Option.Option<RefreshAllCompletion>>(
       Option.none(),
     );
@@ -771,7 +799,7 @@ export const layer = Layer.effect(
     const probedManifestUpdatedAt = yield* Ref.make(initialManifest.updatedAt);
 
     const refreshAll = Effect.fn("refreshAll")(function* () {
-      yield* refreshHostPath;
+      yield* refreshHostPath();
       const claimed = yield* Ref.modify(
         refreshAllInFlightRef,
         (
@@ -825,7 +853,7 @@ export const layer = Layer.effect(
     const refreshInstance = Effect.fn("refreshInstance")(function* (
       instanceId: ProviderInstanceId,
     ) {
-      yield* refreshHostPath;
+      yield* refreshHostPath();
       yield* syncLiveSourcesAndContinue;
       const instance = (yield* Ref.get(liveSubsRef)).get(instanceId);
       if (!instance) {

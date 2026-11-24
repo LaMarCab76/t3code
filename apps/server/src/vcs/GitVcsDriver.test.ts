@@ -154,6 +154,30 @@ it.effect.each([
     }).pipe(Effect.scoped, Effect.provide(layerGitContract)),
 );
 
+it.effect("requires the private remote's effective push destination to match its fetch URL", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-private-remote-" });
+    const git = yield* GitVcsDriver.GitVcsDriver;
+    const url = "https://source.tanstack.com/@team/repo.private.git";
+    yield* runGit(cwd, ["init"]);
+    yield* runGit(cwd, ["remote", "add", "private", url]);
+    const input = { cwd, preferredName: "private", url, pushOnlyToFetchUrl: true };
+    assert.equal(yield* git.ensureRemote(input), "private");
+    yield* runGit(cwd, ["remote", "set-url", "--push", "private", url]);
+    yield* runGit(cwd, [
+      "remote",
+      "set-url",
+      "--add",
+      "--push",
+      "private",
+      "https://example.invalid/team/repo",
+    ]);
+    const error = yield* git.ensureRemote(input).pipe(Effect.flip);
+    assert.include(error.detail, "must push exclusively");
+  }).pipe(Effect.scoped, Effect.provide(layerGitContract)),
+);
+
 interface UntrackedBlobChange {
   readonly git: Effect.Success<ReturnType<typeof makeCheckpointFixture>>["git"];
   readonly write: (

@@ -1,7 +1,8 @@
 # Working with threads
 
 Use a new thread for a separate task. Choose **New worktree** when its code changes
-need a separate branch and working directory.
+need a separate branch and working directory. Threads in the same checkout share its
+branch. The branch controls refuse to switch it while one of those threads is working.
 
 ## Start a thread
 

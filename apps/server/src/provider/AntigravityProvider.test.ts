@@ -7,6 +7,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderSetupError,
+  type RuntimeMode,
   type ServerProviderUsageLimits,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
@@ -138,8 +139,13 @@ const makeHarness = Effect.fn("makeAntigravityProviderHarness")(function* (
     readonly enabled?: boolean;
     readonly safe?: boolean;
     readonly probeUsage?: Effect.Effect<ServerProviderUsageLimits>;
+    readonly rememberedRuntimeModes?: ReadonlyArray<RuntimeMode>;
+    readonly beforeRememberRuntimeModes?: (
+      modes: ReadonlyArray<RuntimeMode>,
+    ) => Effect.Effect<void>;
   } = {},
 ) {
+  const savedRuntimeModes = yield* Ref.make<ReadonlyArray<ReadonlyArray<RuntimeMode>>>([]);
   const initialProbe = yield* Deferred.make<EffectAcpSchema.InitializeResponse, ProbeError>();
   const probeCalls = yield* Ref.make(0);
   const safetyCalls = yield* Ref.make(0);
@@ -153,6 +159,13 @@ const makeHarness = Effect.fn("makeAntigravityProviderHarness")(function* (
       stampIdentity: (snapshot) => Effect.succeed({ ...snapshot, instanceId, driver }),
       ...(options.auth ? { auth: options.auth } : {}),
       ...(options.probeUsage ? { probeUsage: options.probeUsage } : {}),
+      ...(options.rememberedRuntimeModes
+        ? { rememberedRuntimeModes: options.rememberedRuntimeModes }
+        : {}),
+      rememberRuntimeModes: (modes) =>
+        (options.beforeRememberRuntimeModes?.(modes) ?? Effect.void).pipe(
+          Effect.andThen(Ref.update(savedRuntimeModes, (saved) => [...saved, modes])),
+        ),
       probe: Ref.update(probeCalls, (count) => count + 1).pipe(
         Effect.andThen(Ref.get(probe)),
         Effect.flatten,
@@ -187,6 +200,7 @@ const makeHarness = Effect.fn("makeAntigravityProviderHarness")(function* (
     initialUpdate,
     initialize,
     nextPublish,
+    savedRuntimeModes,
   };
 });
 
@@ -381,6 +395,67 @@ it.layer(layerTest)("Antigravity provider snapshots", (it) => {
       yield* harness.provider.onSessionStarted(startedWithAuto);
       yield* harness.provider.onSignedOut;
       expect(yield* supportedModes).toEqual(withoutAuto);
+      const withAuto: ReadonlyArray<RuntimeMode> = [
+        "approval-required",
+        "auto-accept-edits",
+        "auto",
+        "full-access",
+      ];
+      expect(yield* Ref.get(harness.savedRuntimeModes)).toEqual([
+        withAuto,
+        withoutAuto,
+        withAuto,
+        withoutAuto,
+      ]);
+
+      // A restart offers what the last session advertised before any session starts.
+      const restarted = yield* makeHarness({ rememberedRuntimeModes: withAuto });
+      yield* restarted.initialize;
+      expect(yield* restarted.provider.snapshot.getSnapshot).toMatchObject({
+        supportedRuntimeModes: withAuto,
+      });
+    }),
+  );
+
+  it.effect("persists sign-out modes after an already-started session save", () =>
+    Effect.gen(function* () {
+      const writing = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const harness = yield* makeHarness({
+        beforeRememberRuntimeModes: (modes) =>
+          modes.includes("auto")
+            ? Deferred.succeed(writing, undefined).pipe(Effect.andThen(Deferred.await(release)))
+            : Effect.void,
+      });
+      yield* harness.initialize;
+      const session = yield* harness.provider
+        .onSessionStarted({
+          ...started,
+          sessionSetupResult: {
+            ...sessionSetupResult,
+            modes: {
+              currentModeId: "default",
+              availableModes: [
+                { id: "default", name: "Default" },
+                { id: "auto", name: "Auto" },
+              ],
+            },
+          },
+        })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(writing);
+      const signedOut = yield* harness.nextPublish(
+        (snapshot) => snapshot.auth.status === "unauthenticated",
+      );
+      const signOut = yield* harness.provider.onSignedOut.pipe(
+        Effect.forkChild({ startImmediately: true }),
+      );
+      yield* signedOut;
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(session);
+      yield* Fiber.join(signOut);
+      const saved = yield* Ref.get(harness.savedRuntimeModes);
+      expect(saved.map((modes) => modes.includes("auto"))).toEqual([true, false]);
     }),
   );
 

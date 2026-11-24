@@ -106,6 +106,13 @@ it.each(["resume", "draft", "question"] as const)(
   },
 );
 
+it("keeps Stop available when a preparing image holds the next send", async () => {
+  const props = setup();
+  await using screen = await render(<ComposerPrimaryActions {...props} isSendHeld />);
+  await screen.getByRole("button", { name: "Stop generation" }).click();
+  expect(props.onInterrupt).toHaveBeenCalledTimes(1);
+});
+
 it("allows retry after ten seconds and protects a late stop", async () => {
   const props = setup();
   await using screen = await render(<ComposerPrimaryActions {...props} />);

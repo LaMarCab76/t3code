@@ -25,9 +25,11 @@ import {
 import * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
 import {
   acpPermissionDisposition,
+  unknownRecord,
   type AcpRuntimePolicy,
 } from "@t3tools/provider-acp/server/clientPolicy";
 import type { AcpSessionModeState } from "@t3tools/provider-acp/server/runtimeModel";
+import { T3_MCP_TOOL_NAMES } from "@t3tools/shared/t3McpToolPresentation";
 import packageJson from "../../../package.json" with { type: "json" };
 import { normalizeAntigravitySessionUpdate } from "./AntigravityProtocol.ts";
 
@@ -181,13 +183,31 @@ export function antigravitySessionMode(
   return modeId === "yolo" || modeId === "auto_edit" ? "default" : modeId;
 }
 
+function isAntigravityT3McpRequest(request: EffectAcpSchema.RequestPermissionRequest): boolean {
+  const rawInput = unknownRecord(request.toolCall.rawInput);
+  return (
+    rawInput?.ServerName === "t3-code" &&
+    typeof rawInput.ToolName === "string" &&
+    T3_MCP_TOOL_NAMES.has(rawInput.ToolName)
+  );
+}
+
 export function antigravityPermissionDisposition(
   policy: AcpRuntimePolicy,
   request: EffectAcpSchema.RequestPermissionRequest,
 ) {
   const disposition = acpPermissionDisposition(policy, request);
+  if (disposition === "deny") return "deny";
+  // T3 authorizes its own MCP server, so Auto and Auto-accept edits run it unasked, as Claude does.
+  if (
+    (policy.runtimeMode === "auto" || policy.runtimeMode === "auto-accept-edits") &&
+    (policy.approvalPolicy === undefined || policy.approvalPolicy === "never") &&
+    isAntigravityT3McpRequest(request)
+  ) {
+    return "allow";
+  }
   // agy's Auto has already reviewed what it sends; the user decides unless the sandbox forbids it.
-  return policy.runtimeMode === "auto" && disposition !== "deny" ? "ask" : disposition;
+  return policy.runtimeMode === "auto" ? "ask" : disposition;
 }
 
 /** The runtime mode an Antigravity session mode grants; the inverse of `antigravityPermissionMode`. */

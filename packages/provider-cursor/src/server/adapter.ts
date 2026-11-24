@@ -971,6 +971,11 @@ interface ActiveCursorTextStream {
   nextSegment: number;
 }
 
+interface CursorPrompt {
+  readonly text: string;
+  readonly withoutInlineContext: string;
+}
+
 interface ActiveCursorTurn {
   readonly input: ProviderAdapter.ProviderAdapterV2TurnInput;
   readonly run: CursorAgentSdk.CursorAgentSdkRun;
@@ -984,7 +989,7 @@ interface ActiveCursorTurn {
   assistantReply: CursorTransportFailure;
   readonly reasoning: ActiveCursorTextStream;
   /** The user text this run sent, before runtime instructions; absent for /compress and resume. */
-  readonly prompt: string | undefined;
+  readonly prompt: CursorPrompt | undefined;
   readonly message: string | SDKUserMessage;
   readonly runtimeInstructions: string | undefined;
   compacted: boolean;
@@ -1099,7 +1104,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
         const interruptedPrompt = yield* Ref.make<{
           readonly agent: string;
           readonly runId: string;
-          readonly text: string;
+          readonly prompt: CursorPrompt;
           readonly message: string | SDKUserMessage;
           readonly runtimeInstructions: string | undefined;
         } | null>(null);
@@ -2510,6 +2515,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
           readonly status: OrchestrationV2ProviderTurn["status"];
           readonly completedAt: DateTime.Utc | null;
           readonly tokenUsage?: OrchestrationV2ProviderTurn["tokenUsage"];
+          readonly promptDropped?: true;
         }): OrchestrationV2ProviderTurn => ({
           id: input.context.providerTurnId,
           providerThreadId: input.context.input.providerThread.id,
@@ -2525,6 +2531,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
           startedAt: input.context.startedAt,
           completedAt: input.completedAt,
           ...(input.tokenUsage === undefined ? {} : { tokenUsage: input.tokenUsage }),
+          ...(input.promptDropped === true ? { promptDropped: true as const } : {}),
           ...(input.completedAt === null || input.context.usage === undefined
             ? {}
             : {
@@ -2590,6 +2597,15 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               }).pipe(Effect.as(undefined)),
             ),
           );
+          // Cursor only keeps a run in conversation history once it saves its first checkpoint.
+          const promptDropped =
+            input.status !== "completed" &&
+            !input.context.compacted &&
+            input.context.prompt !== undefined &&
+            (yield* (
+              input.context.session.runCheckpointed?.(input.context.run.runId) ??
+              Effect.succeed(false)
+            ).pipe(Effect.orElseSucceed(() => undefined))) === false;
           yield* emitProviderEvent({
             type: "provider_turn.updated",
             driver: CursorAgentSdk.CURSOR_PROVIDER,
@@ -2597,6 +2613,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               context: input.context,
               status: input.status,
               completedAt,
+              ...(promptDropped ? { promptDropped: true as const } : {}),
               ...(contextUsage === undefined
                 ? {}
                 : {
@@ -2633,6 +2650,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                   status: input.status,
                   failure: input.failure ?? makeProviderFailure({ class: "provider_error" }),
                   threadDisposition,
+                  ...(promptDropped ? { promptDropped: true as const } : {}),
                 }
               : {
                   type: "turn.terminal",
@@ -2643,6 +2661,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                   status: input.status,
                   failure: null,
                   threadDisposition,
+                  ...(promptDropped ? { promptDropped: true as const } : {}),
                 },
           );
           if (input.context.runtimeInstructions !== undefined) {
@@ -2660,7 +2679,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
             yield* Ref.set(interruptedPrompt, {
               agent: input.context.run.agentId,
               runId: input.context.run.runId,
-              text: input.context.prompt,
+              prompt: input.context.prompt,
               message: input.context.message,
               runtimeInstructions: input.context.compacted
                 ? undefined
@@ -2826,33 +2845,49 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
             readonly backgroundWait: boolean;
             readonly runtime: string | undefined;
           },
-          interrupted: string | undefined,
+          interrupted: CursorPrompt | undefined,
         ) {
           const rawText = turnInput.message.text;
           if (rawText.trim() === "/compress" && turnInput.message.attachments.length === 0) {
             return { message: "/compress", prompt: undefined, runtimeInstructions: undefined };
           }
-          const newText = t3OrchestrationPrompt({
-            prompt: yield* providerMessageTextWithAttachmentPaths({
-              text: yield* resolveCursorSkillText(
-                rawText,
-                turnInput.runtimePolicy.cwd ?? undefined,
-              ),
-              attachments: turnInput.message.attachments,
-              resolveAttachmentPath: host.resolveAttachmentPath,
-              resolveExtractedTextPath: host.resolveExtractedTextPath,
-            }),
-            hasT3Mcp: mcpServers !== undefined,
-            hasDeviceTools,
-            orchestrationDelivered: delivered.orchestration,
-            deviceInstructionsDelivered: delivered.device,
-            providerInstructions: CURSOR_BACKGROUND_WAIT_INSTRUCTIONS,
-            providerInstructionsDelivered: delivered.backgroundWait,
+          const inlineContext = rawText.slice(0, turnInput.inlineContextLength ?? 0);
+          const userMessage = yield* resolveCursorSkillText(
+            rawText.slice(inlineContext.length),
+            turnInput.runtimePolicy.cwd ?? undefined,
+          );
+          const textWithAttachments = yield* providerMessageTextWithAttachmentPaths({
+            text: inlineContext + userMessage,
+            attachments: turnInput.message.attachments,
+            resolveAttachmentPath: host.resolveAttachmentPath,
+            resolveExtractedTextPath: host.resolveExtractedTextPath,
           });
-          const userText =
-            interrupted === undefined
-              ? newText
-              : `Your previous turn was interrupted and is missing from your history. Some of its work may already be done. Its request was:\n\n${interrupted}\n\nThe new message, which may continue or change that request:\n\n${newText}`;
+          const formatPrompt = (text: string, previous: string | undefined) => {
+            const next = t3OrchestrationPrompt({
+              prompt: text,
+              hasT3Mcp: mcpServers !== undefined,
+              hasDeviceTools,
+              orchestrationDelivered: delivered.orchestration,
+              deviceInstructionsDelivered: delivered.device,
+              providerInstructions: CURSOR_BACKGROUND_WAIT_INSTRUCTIONS,
+              providerInstructionsDelivered: delivered.backgroundWait,
+            });
+            return previous === undefined
+              ? next
+              : `Your previous turn was interrupted and is missing from your history. Some of its work may already be done. Its request was:\n\n${previous}\n\nThe new message, which may continue or change that request:\n\n${next}`;
+          };
+          // When orchestration supplies fresh inline context, it already includes the restored handoffs.
+          const userText = formatPrompt(
+            textWithAttachments,
+            inlineContext === "" ? interrupted?.text : interrupted?.withoutInlineContext,
+          );
+          const withoutInlineContext =
+            inlineContext === "" && interrupted?.text === interrupted?.withoutInlineContext
+              ? userText
+              : formatPrompt(
+                  textWithAttachments.slice(inlineContext.length),
+                  interrupted?.withoutInlineContext,
+                );
           const images = yield* Effect.forEach(
             turnInput.message.attachments.filter(isProviderNativeImageAttachment),
             (attachment: ChatAttachment) =>
@@ -2902,7 +2937,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
             : userText;
           return {
             message: images.length === 0 ? text : ({ text, images } satisfies SDKUserMessage),
-            prompt: userText,
+            prompt: { text: userText, withoutInlineContext },
             runtimeInstructions: sendRuntimeInstructions ? runtimeInstructions : undefined,
           };
         });
@@ -2980,7 +3015,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                 : resume === "replay"
                   ? {
                       message: dropped!.message,
-                      prompt: dropped!.text,
+                      prompt: dropped!.prompt,
                       runtimeInstructions: dropped!.runtimeInstructions,
                     }
                   : yield* resolveUserMessage(
@@ -2988,7 +3023,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                       mcpServers,
                       hasDeviceTools,
                       delivered,
-                      dropped?.text,
+                      dropped?.prompt,
                     );
             const compacted = resume === undefined && prompt === undefined;
             const pendingUpdates: Array<InteractionUpdate> = [];

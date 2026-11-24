@@ -50,6 +50,19 @@ export function effectiveAccount(
   );
 }
 
+function privateCompanionName(
+  repository: string | null,
+  head: string | null | undefined,
+  visibility: string | undefined,
+): string | null {
+  if (visibility === "public" || repository === null || typeof head !== "string") return null;
+  const prefix = repository.toLowerCase() + ".private";
+  const key = head.toLowerCase();
+  return key.startsWith(prefix) && /^(?:-[2-9]|-[1-9]\d+)?$/.test(key.slice(prefix.length))
+    ? head
+    : null;
+}
+
 const decodeUser = Schema.decodeEffect(Schema.fromJsonString(Json.SourceUser));
 
 const authAccounts = (accounts: ReturnType<typeof parseTanStackSourceAuthStatus>) =>
@@ -302,12 +315,18 @@ export const make = Effect.gen(function* () {
     return yield* error(operation, input.cwd, "No TanStack Source repository remote was found.");
   });
 
-  const toChangeRequest = (target: Target, pull: Json.SourcePullDetail): ChangeRequest => {
-    const headRepository = pull.headRepo ?? target.repository;
+  const toChangeRequest = (
+    target: Target,
+    pull: Json.SourcePullDetail,
+  ): ChangeRequest & { readonly visibility: string | undefined } => {
+    const requiresPrivateHeadPush =
+      pull.visibility === "private" ||
+      privateCompanionName(target.repository, pull.headRepo, pull.visibility) !== null;
+    const headRepository = pull.headRepo ?? (requiresPrivateHeadPush ? null : target.repository);
     const headBranch = Json.headBranchName(pull.head);
     // A pull request synced from a GitHub fork names its head only by its pull ref.
     const crossRepository =
-      headRepository.toLowerCase() !== target.repository.toLowerCase() ||
+      headRepository?.toLowerCase() !== target.repository.toLowerCase() ||
       headBranch.startsWith("refs/");
     const updatedAt = pull.mergedAt ?? pull.createdAt;
     return {
@@ -323,8 +342,10 @@ export const make = Effect.gen(function* () {
       mergedAt: pull.mergedAt === null ? null : Json.iso(pull.mergedAt),
       updatedAt: Option.some(DateTime.makeUnsafe(updatedAt)),
       isCrossRepository: crossRepository,
+      visibility: pull.visibility,
       headRepositoryNameWithOwner: headRepository,
-      headRepositoryOwnerLogin: headRepository.split("/")[0] ?? null,
+      headRepositoryOwnerLogin: headRepository?.split("/")[0] ?? null,
+      ...(requiresPrivateHeadPush ? { requiresPrivateHeadPush: true as const } : {}),
     };
   };
 
@@ -395,6 +416,18 @@ export const make = Effect.gen(function* () {
       },
     ),
     createsDraftChangeRequests: true,
+    privateChangeRequestRemote: Effect.fn(
+      "TanStackSourceSourceControlProvider.privateChangeRequestRemote",
+    )(function* (input) {
+      const target = yield* resolveTarget("privateChangeRequestRemote", input);
+      const companion = yield* read(
+        "privateChangeRequestRemote",
+        input.cwd,
+        { host: target.host, method: "POST", path: `/repos/${target.repository}/private-remote` },
+        Repository,
+      );
+      return { url: companion.cloneUrl, repository: `${companion.owner}/${companion.name}` };
+    }),
     createChangeRequest: Effect.fn("TanStackSourceSourceControlProvider.createChangeRequest")(
       function* (input) {
         const target = yield* resolveTarget("createChangeRequest", {
@@ -437,6 +470,7 @@ export const make = Effect.gen(function* () {
               base: input.target?.refName ?? input.baseRefName,
               ...(body.trim().length === 0 ? {} : { body }),
               ...(input.draft === true ? { draft: true } : {}),
+              ...(input.private === true ? { private: true } : {}),
             },
           })
           .pipe(
@@ -494,7 +528,8 @@ export const make = Effect.gen(function* () {
         return repository.defaultBranch;
       },
     ),
-    // Every pull request's head is published as `refs/pull/<n>/head`, forks and GitHub sync too.
+    // A pull request's head is published as `refs/pull/<n>/head`, forks and GitHub sync too. A
+    // private one has no such ref: its branch is read from the companion repository.
     checkoutChangeRequest: Effect.fn("TanStackSourceSourceControlProvider.checkoutChangeRequest")(
       function* (input) {
         const pull = yield* getPull(input);
@@ -519,28 +554,79 @@ export const make = Effect.gen(function* () {
                 });
           const operation = "TanStackSourceSourceControlProvider.checkoutChangeRequest";
           const branches = yield* git.listLocalBranchNames(input.cwd);
-          if (!pull.isCrossRepository) {
+          const companion = privateCompanionName(
+            pullRepository,
+            pull.headRepositoryNameWithOwner,
+            pull.visibility,
+          );
+          if (!pull.isCrossRepository || companion !== null) {
             const localBranch = pull.headRefName;
-            const remoteBranch = { cwd: input.cwd, remoteName, remoteBranch: localBranch };
-            if (input.force !== true && !branches.includes(localBranch))
-              yield* git.fetchRemoteBranch({ ...remoteBranch, localBranch });
-            else yield* git.fetchRemoteTrackingBranch(remoteBranch);
+            const remoteBranch = {
+              cwd: input.cwd,
+              remoteName:
+                companion === null
+                  ? remoteName
+                  : yield* git.ensureRemote({
+                      cwd: input.cwd,
+                      preferredName: companion.split("/")[0] ?? "private",
+                      url: `${Hosts.webRepositoryUrl(HOST, companion)}.git`,
+                      pushOnlyToFetchUrl: true,
+                    }),
+              remoteBranch: localBranch,
+            };
+            const exists = branches.includes(localBranch);
+            const tracking = `refs/remotes/${remoteBranch.remoteName}/${localBranch}`;
+            if (input.force === true || exists || companion !== null)
+              yield* git.fetchRemoteTrackingBranch(remoteBranch);
+            if (companion !== null) {
+              if (exists && input.force !== true) {
+                const canFastForward = yield* git
+                  .execute({
+                    operation,
+                    cwd: input.cwd,
+                    args: ["merge-base", "--is-ancestor", `refs/heads/${localBranch}`, tracking],
+                  })
+                  .pipe(
+                    Effect.as(true),
+                    Effect.orElseSucceed(() => false),
+                  );
+                if (!canFastForward)
+                  return yield* error(
+                    "checkoutChangeRequest",
+                    input.cwd,
+                    `Local branch ${localBranch} has commits pull request #${pull.number} does not. Rename it, or check out with force to replace it.`,
+                  );
+              }
+              // Pin the private route before writing a local ref that contains private commits.
+              yield* git.writeConfigValue({
+                cwd: input.cwd,
+                key: `branch.${localBranch}.pushRemote`,
+                value: remoteBranch.remoteName,
+              });
+            }
             if (input.force === true)
               yield* git.execute({
                 operation,
                 cwd: input.cwd,
-                // The upstream is recorded next, through the host's serialized config write.
-                args: [
-                  "checkout",
-                  "--no-track",
-                  "-B",
-                  localBranch,
-                  `refs/remotes/${remoteName}/${localBranch}`,
-                  "--",
-                ],
+                args: ["checkout", "--no-track", "-B", localBranch, tracking, "--"],
+              });
+            else if (!exists) {
+              if (companion !== null)
+                yield* git.createBranch({
+                  cwd: input.cwd,
+                  branch: localBranch,
+                  startPoint: tracking,
+                });
+              else yield* git.fetchRemoteBranch({ ...remoteBranch, localBranch });
+            }
+            yield* Effect.scoped(git.switchRef({ cwd: input.cwd, refName: localBranch }));
+            if (companion !== null && exists && input.force !== true)
+              yield* git.execute({
+                operation,
+                cwd: input.cwd,
+                args: ["merge", "--ff-only", tracking],
               });
             yield* git.setBranchUpstream({ ...remoteBranch, branch: localBranch });
-            yield* Effect.scoped(git.switchRef({ cwd: input.cwd, refName: localBranch }));
             return;
           }
           // A fork's head, or one synced from GitHub, is only reachable through its pull ref.

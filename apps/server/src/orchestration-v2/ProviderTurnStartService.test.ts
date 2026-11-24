@@ -52,6 +52,7 @@ import * as CheckpointService from "./CheckpointService.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import {
   withCheckpointRestoreReservation,
+  withCheckoutMutationReservation,
   withWorkspaceLease,
 } from "../workspace/workspaceLease.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
@@ -2874,6 +2875,14 @@ effectIt.effect.each(["cleanup-first", "startup-first"])(
 // lease before the restore is released; realPath models the symlink alias and missing worktrees.
 effectIt.effect.each([
   {
+    overlap: "a project-root thread during a checkout switch",
+    restorePath: "/tmp/native-account-project",
+    worktreePath: undefined,
+    realPaths: {},
+    missing: [],
+    reservation: withCheckoutMutationReservation,
+  },
+  {
     overlap: "a project-root thread during a restore of the project checkout",
     restorePath: "/tmp/native-account-project",
     worktreePath: undefined,
@@ -2906,7 +2915,7 @@ effectIt.effect.each([
   },
 ] as const)(
   "does not start provider work in $overlap until the restore finishes",
-  ({ restorePath, worktreePath, realPaths, missing }) =>
+  ({ restorePath, worktreePath, realPaths, missing, ...scenario }) =>
     Effect.gen(function* () {
       const order: Array<string> = [];
       const releaseRestore = yield* Deferred.make<void>();
@@ -2937,7 +2946,9 @@ effectIt.effect.each([
       );
       // The reservation CheckpointRollbackServiceV2.execute holds around its
       // isolation check, provider rollback, and git restore of `restorePath`.
-      const restore = yield* withCheckpointRestoreReservation(
+      const reserve =
+        "reservation" in scenario ? scenario.reservation : withCheckpointRestoreReservation;
+      const restore = yield* reserve(
         fileSystem,
         yield* Path.Path,
         restorePath,
