@@ -7761,6 +7761,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ...(turnInput.appContext === undefined ? {} : { appContext: turnInput.appContext }),
               ...(configuredReasoningSummary === undefined ? {} : { configuredReasoningSummary }),
             });
+            yield* rejectIfRetired;
             yield* Ref.update(pendingRootTurns, (current) => {
               const updated = new Map(current);
               updated.set(threadId, turnInput);
@@ -8156,6 +8157,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   readStdioMcpServers(threadInput.runtimePolicy.cwd),
                 ]),
               ),
+              Effect.tap(() => rejectIfRetired),
               Effect.flatMap(([mcpSession, stdioMcpServers]) =>
                 client
                   .request("thread/start", {
