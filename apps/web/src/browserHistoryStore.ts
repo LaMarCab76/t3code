@@ -1,3 +1,5 @@
+import { sha256 } from "@noble/hashes/sha2";
+import { bytesToHex } from "@noble/hashes/utils";
 import {
   scopedProjectKey,
   scopedThreadKey,
@@ -33,6 +35,7 @@ import { readPreparedConnection } from "~/state/session";
 
 import { isLocalLoopbackHost, normalizeHostname } from "./browser/browserTargetResolver";
 import { useComposerDraftStore } from "./composerDraftStore";
+import { randomUUID } from "./lib/utils";
 import {
   ensureClientSettingsHydrated,
   getClientSettings,
@@ -135,7 +138,10 @@ function evictExcessProjects(
   return Object.fromEntries(kept.map((key) => [key, byProjectKey[key] ?? []]));
 }
 
-export function migratePersistedBrowserHistoryState(persistedState: unknown): {
+export function migratePersistedBrowserHistoryState(
+  persistedState: unknown,
+  fallbackRemovals?: Readonly<Record<string, number>>,
+): {
   byProjectKey: Record<string, BrowserHistoryEntry[]>;
 } {
   if (!persistedState || typeof persistedState !== "object") return { byProjectKey: {} };
@@ -144,7 +150,6 @@ export function migratePersistedBrowserHistoryState(persistedState: unknown): {
   const byProjectKey: Record<string, BrowserHistoryEntry[]> = {};
   for (const [projectKey, value] of Object.entries(raw as Record<string, unknown>)) {
     if (!Array.isArray(value)) continue;
-    const seenUrls = new Set<string>();
     const entries = value
       .flatMap<BrowserHistoryEntry>((candidate) => {
         if (!candidate || typeof candidate !== "object") return [];
@@ -153,6 +158,12 @@ export function migratePersistedBrowserHistoryState(persistedState: unknown): {
         const normalizedUrl = normalizeHistoryUrl(url);
         if (!normalizedUrl) return [];
         if (!isValidHistoryTimestamp(lastVisitedAt)) return [];
+        if (
+          fallbackRemovals &&
+          lastVisitedAt <=
+            (fallbackRemovals[historyRemovalKey(projectKey, normalizedUrl)] ?? -Infinity)
+        )
+          return [];
         return [
           {
             url: normalizedUrl,
@@ -163,20 +174,26 @@ export function migratePersistedBrowserHistoryState(persistedState: unknown): {
           },
         ];
       })
-      .toSorted((a, b) => b.lastVisitedAt - a.lastVisitedAt)
-      .filter((entry) => {
-        const key = visitLookupKey(entry.url);
-        if (seenUrls.has(key)) return false;
-        seenUrls.add(key);
-        return true;
-      })
-      .slice(0, BROWSER_HISTORY_MAX_ENTRIES_PER_PROJECT);
-    if (entries.length > 0) byProjectKey[projectKey] = entries;
+      .toSorted((a, b) => b.lastVisitedAt - a.lastVisitedAt);
+    const latest = new Map<string, BrowserHistoryEntry>();
+    for (const entry of entries) {
+      const key = visitLookupKey(entry.url);
+      const current = latest.get(key);
+      if (!current) latest.set(key, entry);
+      else if (current.lastVisitedAt === entry.lastVisitedAt && !current.title && entry.title)
+        latest.set(key, { ...current, title: entry.title });
+    }
+    if (latest.size > 0)
+      byProjectKey[projectKey] = [...latest.values()].slice(
+        0,
+        BROWSER_HISTORY_MAX_ENTRIES_PER_PROJECT,
+      );
   }
   return { byProjectKey: evictExcessProjects(byProjectKey) };
 }
 
 const BROWSER_HISTORY_STORAGE_KEY = "t3code:browser-history:v1";
+const BROWSER_HISTORY_FALLBACK_PREFIX = `${BROWSER_HISTORY_STORAGE_KEY}:fallback:`;
 
 const MAX_PERSISTED_THREAD_MAPPINGS = 100;
 const PENDING_MAX_PER_THREAD = 10;
@@ -223,9 +240,32 @@ function addPendingByThread<T>(
 type PersistedBrowserHistory = Pick<
   BrowserHistoryStoreState,
   "byProjectKey" | "projectKeyByThreadKey"
->;
+> & { readonly fallbackRemovals?: Readonly<Record<string, number>> };
 
 type UpdateHistory = (state: PersistedBrowserHistory) => PersistedBrowserHistory;
+type UpdateStoredHistory = (state: PersistedBrowserHistory | undefined) => PersistedBrowserHistory;
+
+interface UnsavedHistory {
+  readonly base: PersistedBrowserHistory;
+  readonly history: PersistedBrowserHistory;
+}
+
+function historyRemovalKey(projectKey: string, url: string): string {
+  // Keep the removal without retaining the deleted URL.
+  return bytesToHex(
+    sha256(new TextEncoder().encode(JSON.stringify([projectKey, visitLookupKey(url)]))),
+  );
+}
+
+function readFallbackRemovals(state: unknown): Record<string, number> {
+  const raw = (state as { fallbackRemovals?: unknown } | null | undefined)?.fallbackRemovals;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  return Object.fromEntries(
+    Object.entries(raw).filter(
+      ([key, value]) => /^[a-f0-9]{64}$/.test(key) && isValidHistoryTimestamp(value),
+    ),
+  );
+}
 
 function boundThreadMappings(
   previous: PersistedBrowserHistory,
@@ -253,60 +293,196 @@ const EMPTY_PERSISTED_HISTORY: PersistedBrowserHistory = {
 };
 let historyDatabase: Promise<IDBDatabase> | undefined;
 let historyChannel: BroadcastChannel | undefined;
+let historySync = Promise.resolve();
+let unsavedHistory: UnsavedHistory | undefined;
 
-function readLegacyHistory<Missing = PersistedBrowserHistory>(
-  missing: Missing = EMPTY_PERSISTED_HISTORY as Missing,
-): PersistedBrowserHistory | Missing {
+interface HistorySnapshot {
+  readonly key: string;
+  readonly raw: string;
+  readonly history: PersistedBrowserHistory;
+}
+
+function readHistorySnapshots(): HistorySnapshot[] {
   try {
-    const value = window.localStorage.getItem(BROWSER_HISTORY_STORAGE_KEY);
-    if (value === null) return missing;
-    const parsed: { state?: unknown } | null = JSON.parse(value);
-    return {
-      ...migratePersistedBrowserHistoryState(parsed?.state),
-      projectKeyByThreadKey: migratePersistedThreadProjectKeys(parsed?.state),
-    };
+    const storage = window.localStorage;
+    const keys = [BROWSER_HISTORY_STORAGE_KEY];
+    for (let index = 0; index < storage.length; index++) {
+      const key = storage.key(index);
+      if (key?.startsWith(BROWSER_HISTORY_FALLBACK_PREFIX)) keys.push(key);
+    }
+    return keys.flatMap((key) => {
+      const raw = storage.getItem(key);
+      if (raw === null) return [];
+      try {
+        const parsed: { state?: unknown } | null = JSON.parse(raw);
+        return [
+          {
+            key,
+            raw,
+            history: {
+              ...migratePersistedBrowserHistoryState(parsed?.state),
+              projectKeyByThreadKey: migratePersistedThreadProjectKeys(parsed?.state),
+              fallbackRemovals: readFallbackRemovals(parsed?.state),
+            },
+          },
+        ];
+      } catch {
+        return [];
+      }
+    });
   } catch {
-    return EMPTY_PERSISTED_HISTORY;
+    return [];
   }
 }
 
-function retireLegacyHistory(): void {
+async function withHistorySnapshotLock<A>(run: (locked: boolean) => A): Promise<A> {
+  if (!navigator.locks) return run(false);
+  let acquired = false;
   try {
-    window.localStorage.removeItem(BROWSER_HISTORY_STORAGE_KEY);
+    return await navigator.locks.request(BROWSER_HISTORY_STORAGE_KEY, () => {
+      acquired = true;
+      return run(true);
+    });
+  } catch (error) {
+    if (acquired) throw error;
+    return run(false);
+  }
+}
+
+function retireHistorySnapshots(snapshots: readonly HistorySnapshot[]): void {
+  try {
+    const storage = window.localStorage;
+    for (const { key, raw } of snapshots) {
+      // A quota-limited writer can replace an existing snapshot after the transaction read it.
+      if (storage.getItem(key) === raw) storage.removeItem(key);
+    }
   } catch {
     // The browser can deny access to localStorage independently of IndexedDB.
   }
 }
 
-// localStorage can gain visits after migration: from the fallback below, or a tab on an older build.
-function mergeLegacyHistory(
-  saved: PersistedBrowserHistory,
-  legacy: PersistedBrowserHistory,
-): PersistedBrowserHistory {
-  const byProjectKey = { ...saved.byProjectKey };
-  for (const [projectKey, entries] of Object.entries(legacy.byProjectKey))
-    byProjectKey[projectKey] = [...(byProjectKey[projectKey] ?? []), ...entries];
+function mergeHistorySnapshots(
+  saved: PersistedBrowserHistory | undefined,
+  snapshots: readonly HistorySnapshot[],
+): PersistedBrowserHistory | undefined {
+  if (snapshots.length === 0) return saved;
+  const histories = snapshots.map(({ history }) => history);
+  return mergeHistories(saved ? [saved, ...histories] : histories);
+}
+
+function mergeHistories(histories: readonly PersistedBrowserHistory[]): PersistedBrowserHistory {
+  const byProjectKey: Record<string, BrowserHistoryEntry[]> = Object.create(null);
+  const fallbackRemovals: Record<string, number> = {};
+  for (const history of histories) {
+    for (const [projectKey, entries] of Object.entries(history.byProjectKey))
+      (byProjectKey[projectKey] ??= []).push(...entries);
+    for (const [key, at] of Object.entries(history.fallbackRemovals ?? {}))
+      fallbackRemovals[key] = Math.max(at, fallbackRemovals[key] ?? -Infinity);
+  }
+  const hasRemovals = Object.keys(fallbackRemovals).length > 0;
   return {
-    ...migratePersistedBrowserHistoryState({ byProjectKey }),
-    projectKeyByThreadKey: { ...legacy.projectKeyByThreadKey, ...saved.projectKeyByThreadKey },
+    ...migratePersistedBrowserHistoryState(
+      { byProjectKey },
+      hasRemovals ? fallbackRemovals : undefined,
+    ),
+    projectKeyByThreadKey: Object.fromEntries(
+      histories.toReversed().flatMap((history) => Object.entries(history.projectKeyByThreadKey)),
+    ),
+    ...(hasRemovals ? { fallbackRemovals } : {}),
   };
 }
 
-// Without IndexedDB, merge into the freshest localStorage snapshot so a reload keeps new visits.
-function transactLegacyHistory(update: UpdateHistory, current: PersistedBrowserHistory) {
-  const previous = readLegacyHistory(current);
-  const next = update(previous);
-  if (next === previous) return previous;
-  const history = boundThreadMappings(previous, next);
-  try {
-    window.localStorage.setItem(
-      BROWSER_HISTORY_STORAGE_KEY,
-      JSON.stringify({ state: history, version: 1 }),
-    );
-  } catch {
-    // History stays in memory when the browser denies both storage APIs.
+function rebaseUnsavedHistory(
+  saved: PersistedBrowserHistory | undefined,
+  pending: UnsavedHistory,
+): PersistedBrowserHistory {
+  if (
+    !saved ||
+    saved === pending.base ||
+    (Object.keys(saved.byProjectKey).length === 0 &&
+      Object.keys(saved.projectKeyByThreadKey).length === 0 &&
+      Object.keys(saved.fallbackRemovals ?? {}).length === 0)
+  )
+    return pending.history;
+
+  const byProjectKey = { ...saved.byProjectKey };
+  const byVisitKey = (visits: readonly BrowserHistoryEntry[] | undefined) =>
+    new Map(visits?.map((entry) => [visitLookupKey(entry.url), entry] as const));
+  for (const [projectKey, entries] of Object.entries(pending.history.byProjectKey)) {
+    const baseEntries = pending.base.byProjectKey[projectKey];
+    if (entries === baseEntries) continue;
+    const base = byVisitKey(baseEntries);
+    const current = byVisitKey(saved.byProjectKey[projectKey]);
+    for (const entry of entries) {
+      const key = visitLookupKey(entry.url);
+      const before = base.get(key);
+      if (
+        before?.lastVisitedAt === entry.lastVisitedAt &&
+        before.url === entry.url &&
+        before.title === entry.title
+      )
+        continue;
+      const durable = current.get(key);
+      if (!durable || entry.lastVisitedAt > durable.lastVisitedAt) {
+        current.set(key, entry);
+      } else if (
+        entry.lastVisitedAt === durable.lastVisitedAt &&
+        entry.title &&
+        entry.title !== before?.title &&
+        (durable.title === before?.title || durable.title === undefined)
+      ) {
+        current.set(key, { ...durable, title: entry.title });
+      }
+    }
+    byProjectKey[projectKey] = [...current.values()];
   }
-  return history;
+  const updatedThreadMappings = Object.entries(pending.history.projectKeyByThreadKey).filter(
+    ([threadKey, projectKey]) => pending.base.projectKeyByThreadKey[threadKey] !== projectKey,
+  );
+  return mergeHistories([
+    {
+      ...saved,
+      byProjectKey,
+      projectKeyByThreadKey: Object.fromEntries(
+        [
+          ...new Map([...Object.entries(saved.projectKeyByThreadKey), ...updatedThreadMappings]),
+        ].slice(-MAX_PERSISTED_THREAD_MAPPINGS),
+      ),
+    },
+    { ...EMPTY_PERSISTED_HISTORY, fallbackRemovals: pending.history.fallbackRemovals ?? {} },
+  ]);
+}
+
+// Without IndexedDB, merge into the freshest localStorage snapshot so a reload keeps new visits.
+function transactLegacyHistory(update: UpdateStoredHistory, current: PersistedBrowserHistory) {
+  return withHistorySnapshotLock((locked) => {
+    const snapshots = readHistorySnapshots();
+    const base = mergeHistorySnapshots(current, snapshots) ?? current;
+    const history = update(base);
+    if (history === base) return { history, pending: undefined };
+    try {
+      const storage = window.localStorage;
+      const raw = JSON.stringify({ state: history, version: 1 });
+      let savedKey = `${BROWSER_HISTORY_FALLBACK_PREFIX}${randomUUID()}`;
+      try {
+        storage.setItem(savedKey, raw);
+      } catch (error) {
+        if (!locked || !(error instanceof DOMException) || error.name !== "QuotaExceededError")
+          throw error;
+        const largest = snapshots
+          .filter(({ key }) => key.startsWith(BROWSER_HISTORY_FALLBACK_PREFIX))
+          .toSorted((a, b) => b.raw.length - a.raw.length)[0];
+        if (!largest) throw error;
+        // An atomic replacement keeps the previous record if the new value still cannot fit.
+        storage.setItem(largest.key, raw);
+        savedKey = largest.key;
+      }
+      retireHistorySnapshots(snapshots.filter(({ key }) => key !== savedKey));
+      return { history, pending: undefined };
+    } catch {
+      return { history, pending: { base, history } };
+    }
+  });
 }
 
 function invalidateHistoryDatabase(opening: Promise<IDBDatabase>): void {
@@ -334,7 +510,7 @@ function openHistoryDatabase() {
   return opening;
 }
 
-async function transactIndexedHistory(update?: UpdateHistory, retry = true) {
+async function transactIndexedHistory(update?: UpdateStoredHistory, retry = true) {
   const opening = openHistoryDatabase();
   const db = await opening;
   let transaction: IDBTransaction;
@@ -353,22 +529,29 @@ async function transactIndexedHistory(update?: UpdateHistory, retry = true) {
     const request = store.get(BROWSER_HISTORY_STORAGE_KEY);
     let history: PersistedBrowserHistory;
     let changed = false;
+    let snapshots: readonly HistorySnapshot[] = [];
     request.onsuccess = () => {
       const saved = request.result as PersistedBrowserHistory | undefined;
-      const legacy = update ? readLegacyHistory(null) : null;
-      const previous =
-        saved && legacy
-          ? mergeLegacyHistory(saved, legacy)
-          : (saved ?? legacy ?? EMPTY_PERSISTED_HISTORY);
-      const next = update?.(previous) ?? previous;
-      history = next === previous ? previous : boundThreadMappings(previous, next);
+      snapshots = readHistorySnapshots();
+      const previous = mergeHistorySnapshots(saved, snapshots);
+      history = update?.(previous) ?? previous ?? EMPTY_PERSISTED_HISTORY;
       changed = history !== saved;
-      if (update && changed) store.put(history, BROWSER_HISTORY_STORAGE_KEY);
+      if (update && changed) {
+        if (snapshots.length > 0)
+          history = boundThreadMappings(previous ?? EMPTY_PERSISTED_HISTORY, history);
+        store.put(history, BROWSER_HISTORY_STORAGE_KEY);
+      }
     };
     transaction.oncomplete = () => {
       // Keep the migration source until the IndexedDB snapshot has committed.
-      if (update) retireLegacyHistory();
-      resolve({ history, changed });
+      if (update && snapshots.length > 0) {
+        void withHistorySnapshotLock(() => retireHistorySnapshots(snapshots)).then(
+          () => resolve({ history, changed }),
+          reject,
+        );
+      } else {
+        resolve({ history, changed });
+      }
     };
     transaction.onabort = () => reject(transaction.error);
   });
@@ -383,17 +566,30 @@ export const useBrowserHistoryStore = create<BrowserHistoryStoreState>()((set, g
       publish(update(get()));
       return;
     }
-    void transactIndexedHistory(update).then(
-      ({ history, changed }) => {
-        publish(history);
+    historySync = historySync.then(async () => {
+      const persist: UpdateStoredHistory = (saved) => {
+        const base = unsavedHistory
+          ? rebaseUnsavedHistory(saved, unsavedHistory)
+          : (saved ?? EMPTY_PERSISTED_HISTORY);
+        const next = update(base);
+        return next === base ? base : boundThreadMappings(base, next);
+      };
+      const saved = await transactIndexedHistory(persist).catch(() => null);
+      if (saved) {
+        unsavedHistory = undefined;
+        publish(saved.history);
         // oxlint-disable-next-line unicorn/require-post-message-target-origin -- BroadcastChannel is scoped to the origin
-        if (changed) historyChannel?.postMessage(null);
-      },
-      () => {
-        const { byProjectKey, projectKeyByThreadKey } = get();
-        publish(transactLegacyHistory(update, { byProjectKey, projectKeyByThreadKey }));
-      },
-    );
+        if (saved.changed) historyChannel?.postMessage(null);
+        return;
+      }
+      const { byProjectKey, projectKeyByThreadKey } = get();
+      const fallback = await transactLegacyHistory(
+        persist,
+        unsavedHistory?.base ?? { byProjectKey, projectKeyByThreadKey },
+      );
+      unsavedHistory = fallback.pending;
+      publish(fallback.history);
+    });
   };
 
   return mergeBrowserHistoryState(undefined, {
@@ -404,6 +600,11 @@ export const useBrowserHistoryStore = create<BrowserHistoryStoreState>()((set, g
       const normalized = normalizeHistoryUrl(url);
       if (!normalized) return;
       updateHistory((state) => {
+        if (
+          state.fallbackRemovals &&
+          at <= (state.fallbackRemovals[historyRemovalKey(projectKey, normalized)] ?? -Infinity)
+        )
+          return state;
         const entries = state.byProjectKey[projectKey] ?? [];
         return {
           ...state,
@@ -448,15 +649,26 @@ export const useBrowserHistoryStore = create<BrowserHistoryStoreState>()((set, g
     removeUrl: (projectKey, url) => {
       const normalized = normalizeHistoryUrl(url);
       if (!normalized) return;
+      const visitKey = visitLookupKey(normalized);
+      const observed = get().byProjectKey[projectKey]?.find(
+        (entry) => visitLookupKey(entry.url) === visitKey,
+      );
       updateHistory((state) => {
-        const entries = state.byProjectKey[projectKey];
-        if (!entries) return state;
-        const next = entries.filter((candidate) => candidate.url !== normalized);
-        if (next.length === entries.length) return state;
-        const byProjectKey = { ...state.byProjectKey };
-        if (next.length === 0) delete byProjectKey[projectKey];
-        else byProjectKey[projectKey] = next;
-        return { ...state, byProjectKey };
+        const entries = state.byProjectKey[projectKey] ?? [];
+        const index = entries.findIndex((entry) => visitLookupKey(entry.url) === visitKey);
+        const entry = entries[index];
+        const removedThrough = observed?.lastVisitedAt ?? entry?.lastVisitedAt;
+        if (removedThrough === undefined) return state;
+        let next = state;
+        if (entry && entry.lastVisitedAt <= removedThrough) {
+          const byProjectKey = { ...state.byProjectKey };
+          if (entries.length === 1) delete byProjectKey[projectKey];
+          else byProjectKey[projectKey] = entries.toSpliced(index, 1);
+          next = { ...state, byProjectKey };
+        }
+        const key = historyRemovalKey(projectKey, normalized);
+        if (removedThrough <= (state.fallbackRemovals?.[key] ?? -Infinity)) return next;
+        return { ...next, fallbackRemovals: { ...state.fallbackRemovals, [key]: removedThrough } };
       });
     },
     registerThreadProject: (ref, projectKey) => {
@@ -499,10 +711,11 @@ if (typeof window !== "undefined") {
   }
   if (historyChannel) {
     historyChannel.onmessage = () => {
-      void transactIndexedHistory().then(
-        ({ history }) => useBrowserHistoryStore.setState({ byProjectKey: history.byProjectKey }),
-        () => undefined,
-      );
+      historySync = historySync.then(async () => {
+        if (unsavedHistory) return;
+        const saved = await transactIndexedHistory().catch(() => null);
+        if (saved) useBrowserHistoryStore.setState({ byProjectKey: saved.history.byProjectKey });
+      });
     };
   }
   const hydrate = (history: PersistedBrowserHistory) => {
@@ -514,9 +727,10 @@ if (typeof window !== "undefined") {
       },
     }));
   };
-  void transactIndexedHistory((history) => history).then(
+  historySync = transactIndexedHistory((history) => history ?? EMPTY_PERSISTED_HISTORY).then(
     ({ history }) => hydrate(history),
-    () => hydrate(readLegacyHistory()),
+    () =>
+      hydrate(mergeHistorySnapshots(undefined, readHistorySnapshots()) ?? EMPTY_PERSISTED_HISTORY),
   );
   import.meta.hot?.dispose(() => {
     historyChannel?.close();
@@ -753,7 +967,9 @@ export function useThreadRecentHistory(
   );
 }
 
-export function resetBrowserHistoryForTests(): void {
+export async function resetBrowserHistoryForTests(): Promise<void> {
+  await historySync;
+  unsavedHistory = undefined;
   useBrowserHistoryStore.setState({
     byProjectKey: {},
     projectKeyByThreadKey: {},

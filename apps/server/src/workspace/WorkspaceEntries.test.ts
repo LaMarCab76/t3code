@@ -238,26 +238,31 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceEntries", (it) => {
         const stat = NodeFSP.stat;
         const readdir = vi.mocked(NodeFSP.readdir);
         const readDirectory = readdir.getMockImplementation()!;
-        using _restore = {
-          [Symbol.dispose]: () => {
-            held.resolve();
-            readdir.mockImplementation(readDirectory);
-          },
-        };
-        using _stat = vi.spyOn(NodeFSP, "stat").mockImplementation((async (
-          ...args: Parameters<typeof stat>
-        ) => {
-          if (String(args[0]).startsWith(slow + path.sep)) {
-            if (++heldCount === 2) started.resolve();
-            await held.promise;
-          }
-          return stat(...args);
-        }) as typeof stat);
-        readdir.mockImplementation((async (...args: Parameters<typeof NodeFSP.readdir>) => {
-          const entries = await readDirectory(...args);
-          if (String(args[0]) === next) nextRead.resolve();
-          return entries;
-        }) as typeof NodeFSP.readdir);
+        yield* Effect.acquireRelease(
+          Effect.sync(() => {
+            const slowStat = vi.spyOn(NodeFSP, "stat").mockImplementation((async (
+              ...args: Parameters<typeof stat>
+            ) => {
+              if (String(args[0]).startsWith(slow + path.sep)) {
+                if (++heldCount === 2) started.resolve();
+                await held.promise;
+              }
+              return stat(...args);
+            }) as typeof stat);
+            readdir.mockImplementation((async (...args: Parameters<typeof NodeFSP.readdir>) => {
+              const entries = await readDirectory(...args);
+              if (String(args[0]) === next) nextRead.resolve();
+              return entries;
+            }) as typeof NodeFSP.readdir);
+            return slowStat;
+          }),
+          (slowStat) =>
+            Effect.sync(() => {
+              held.resolve();
+              slowStat.mockRestore();
+              readdir.mockImplementation(readDirectory);
+            }),
+        );
 
         const workspace = yield* WorkspaceEntries.WorkspaceEntries;
         const first = yield* workspace

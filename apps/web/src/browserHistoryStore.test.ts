@@ -179,8 +179,8 @@ function settle(
   applyPreviewServerSnapshot(ref, snapshot);
 }
 
-function resetStores(): () => void {
-  resetBrowserHistoryForTests();
+async function resetStores(): Promise<() => void> {
+  await resetBrowserHistoryForTests();
   resetPreviewStateForTests();
   return startPreviewTitleRecording();
 }

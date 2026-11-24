@@ -299,7 +299,7 @@ export const ComposerPrimaryActions = memo(function ComposerPrimaryActions({
   const withStopButton = (action: ReactNode) => (
     <>
       {action}
-      {stopPhase === "pending" || stopPhase === "timedOut"
+      {(isSendHeld && canInterrupt) || stopPhase === "pending" || stopPhase === "timedOut"
         ? renderStopGenerationButton(false)
         : null}
     </>

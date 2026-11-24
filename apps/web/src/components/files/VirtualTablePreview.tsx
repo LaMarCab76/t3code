@@ -404,6 +404,7 @@ function ScaledRows(
         if (existing && (existing.row === row || sameRowCells(existing.row, row))) {
           existing.row = row;
         } else {
+          cache.delete(index);
           uncached.push({ index, row });
         }
       }

@@ -8570,6 +8570,13 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
             (row) => row.id === threadId,
           )!;
           const memoryShell = ProjectionStore.threadShellFromProjection(projection);
+          const { threads: workingThreads } = yield* projectionStore.getShellSnapshot({
+            activityOnly: true,
+          });
+          assert.equal(
+            workingThreads.some((row) => row.id === threadId),
+            activityStatus !== "completed",
+          );
           const expected = activityStatus === "completed" ? null : DateTime.toEpochMillis(now);
           const timestamp = (value: DateTime.Utc | null | undefined) =>
             value == null ? null : DateTime.toEpochMillis(value);

@@ -7551,6 +7551,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 turn.status !== "running"))))
       ) {
         dispatchMode = { type: "start_immediately" };
+      } else if (dispatchMode.type === "steer_active" && target?.status === "waiting") {
+        dispatchMode = { type: "queue_after_active" };
       }
     }
     // Stop leaves the run reading as running until its provider stops. A plain
@@ -16662,7 +16664,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       : dispatch;
   });
 
-  const parentTaskSyncRetries = yield* FiberSet.make();
+  const retryDelegatedCompletionDelivery = Effect.fn(
+    "Orchestrator.retryDelegatedCompletionDelivery",
+  )(function* (threadId: ThreadId, runId: RunId) {
+    yield* threadDispatch.withLock(
+      threadId,
+      Effect.gen(function* () {
+        const message = yield* projectionStore.getRunMessage(threadId, runId);
+        if (message?.delegatedCompletion === undefined) return;
+        // A prior attempt may have committed the next generation before offering its wake.
+        yield* offerDelegatedCompletionDelivery(threadId, message.delegatedCompletion.parentRunId);
+        yield* finalizeDelegatedCompletionDelivery(threadId, runId);
+      }),
+    );
+  });
+
+  const delegatedTaskRetries = yield* FiberSet.make();
   const syncDelegatedParentTask = Effect.fn("Orchestrator.syncDelegatedParentTask")(function* (
     childThreadId: ThreadId,
     options: { readonly syncRunId: RunId | undefined; readonly retry: boolean },
@@ -16706,7 +16723,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   cause,
                 }),
               ),
-              FiberSet.run(parentTaskSyncRetries),
+              FiberSet.run(delegatedTaskRetries),
             ),
           ),
         ),
@@ -16742,7 +16759,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 threadId,
                 runId: run.id,
                 cause,
-              }),
+              }).pipe(
+                Effect.andThen(
+                  run.status === "completed" ||
+                    run.status === "interrupted" ||
+                    run.status === "cancelled"
+                    ? Effect.void
+                    : retryDelegatedCompletionDelivery(threadId, run.id).pipe(
+                        Effect.retry({ schedule: parentTaskSyncRetry }),
+                        Effect.delay("1 second"),
+                        Effect.catchCause((retryCause) =>
+                          Effect.logWarning(
+                            "Failed to retry settlement for its delegated delivery",
+                            {
+                              threadId,
+                              runId: run.id,
+                              cause: retryCause,
+                            },
+                          ),
+                        ),
+                        FiberSet.run(delegatedTaskRetries),
+                      ),
+                ),
+              ),
             ),
           );
         yield* threadDispatch
@@ -17067,19 +17106,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ) {
       const completedRunId = options?.completedRunId;
       if (completedRunId !== undefined) {
-        yield* threadDispatch.withLock(
-          threadId,
-          Effect.gen(function* () {
-            const message = yield* projectionStore.getRunMessage(threadId, completedRunId);
-            if (message?.delegatedCompletion === undefined) return;
-            // A prior attempt may have committed the next generation before offering its wake.
-            yield* offerDelegatedCompletionDelivery(
-              threadId,
-              message.delegatedCompletion.parentRunId,
-            );
-            yield* finalizeDelegatedCompletionDelivery(threadId, completedRunId);
-          }),
-        );
+        yield* retryDelegatedCompletionDelivery(threadId, completedRunId);
       }
       const sourceRunId = options?.sourceRunId;
       const parentThreadId = yield* appOwnedSubagentParentThreadId(threadId);

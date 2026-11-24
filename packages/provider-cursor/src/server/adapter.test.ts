@@ -756,13 +756,14 @@ describe("CursorAdapterV2", () => {
     ),
   );
 
-  it.effect("marks failed turns as promptDropped only when Cursor did not checkpoint the run", () =>
+  it.effect("marks uncheckpointed failed or interrupted turns as promptDropped", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const workspace = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "cursor-v2-dropped-",
       });
       const checkpointedRuns = new Set<string>();
+      const stopped = yield* Deferred.make<void>();
       let sendCalls = 0;
       const instanceId = ProviderInstanceId.make("cursor");
       const threadId = ThreadId.make("cursor-dropped-thread");
@@ -799,15 +800,23 @@ describe("CursorAdapterV2", () => {
                   return {
                     agentId: "native-cursor-dropped",
                     runId,
-                    cancel: Effect.void,
-                    wait: Effect.succeed({
-                      id: runId,
-                      status: "error" as const,
-                      error: {
-                        message:
-                          'AI Model Not Found Invalid parameters for registry model: "gemini-4-neon"',
-                      },
-                    }),
+                    cancel:
+                      runId === "native-cursor-run-4"
+                        ? Deferred.succeed(stopped, undefined)
+                        : Effect.void,
+                    wait:
+                      runId === "native-cursor-run-4"
+                        ? Deferred.await(stopped).pipe(
+                            Effect.as({ id: runId, status: "cancelled" as const }),
+                          )
+                        : Effect.succeed({
+                            id: runId,
+                            status: "error" as const,
+                            error: {
+                              message:
+                                'AI Model Not Found Invalid parameters for registry model: "gemini-4-neon"',
+                            },
+                          }),
                   };
                 }),
             }),
@@ -850,7 +859,7 @@ describe("CursorAdapterV2", () => {
         lastVisitedAt: null,
         deletedAt: null,
       };
-      const runFailed = (ordinal: number) =>
+      const runTurn = (ordinal: number, interrupt = false) =>
         Effect.gen(function* () {
           yield* runtime.startTurn({
             threadId,
@@ -871,6 +880,19 @@ describe("CursorAdapterV2", () => {
               attachments: [],
             },
           });
+          if (interrupt) {
+            const started = Option.getOrThrow(
+              yield* runtime.events.pipe(
+                Stream.filter((event) => event.type === "provider_turn.updated"),
+                Stream.runHead,
+              ),
+            );
+            assert(started.type === "provider_turn.updated");
+            yield* runtime.interruptTurn({
+              providerThread,
+              providerTurnId: started.providerTurn.id,
+            });
+          }
           const events = yield* runtime.events.pipe(
             Stream.takeUntil((event) => event.type === "turn.terminal"),
             Stream.runCollect,
@@ -887,22 +909,27 @@ describe("CursorAdapterV2", () => {
         });
 
       // Uncheckpointed failure: Cursor never persisted the prompt.
-      const uncheckpointed = yield* runFailed(1);
+      const uncheckpointed = yield* runTurn(1);
       assert.equal(uncheckpointed.terminal?.status, "failed");
       assert.equal(uncheckpointed.terminal?.promptDropped, true);
       assert.equal(uncheckpointed.turn?.promptDropped, true);
 
       // Checkpointed failure: Cursor kept the run's prompt in its store.
       checkpointedRuns.add("native-cursor-run-2");
-      const checkpointed = yield* runFailed(2);
+      const checkpointed = yield* runTurn(2);
       assert.equal(checkpointed.terminal?.status, "failed");
       assert.isUndefined(checkpointed.terminal?.promptDropped);
       assert.isUndefined(checkpointed.turn?.promptDropped);
 
-      const unknown = yield* runFailed(3);
+      const unknown = yield* runTurn(3);
       assert.equal(unknown.terminal?.status, "failed");
       assert.isUndefined(unknown.terminal?.promptDropped);
       assert.isUndefined(unknown.turn?.promptDropped);
+
+      const interrupted = yield* runTurn(4, true);
+      assert.equal(interrupted.terminal?.status, "interrupted");
+      assert.equal(interrupted.terminal?.promptDropped, true);
+      assert.equal(interrupted.turn?.promptDropped, true);
     }).pipe(
       Effect.scoped,
       Effect.provide(
@@ -1365,7 +1392,12 @@ describe("CursorAdapterV2", () => {
       const firstPrompt = "Write me a 1000 word story about a dog.";
       const steerText = "No wait, a pig please.";
 
-      yield* runtime.startTurn(turnInput(1, firstPrompt));
+      const handoff = "Context from the other thread.";
+      const withHandoff = (ordinal: number, context: string, text: string) => {
+        const prefix = `${context}\n\nUser message:\n`;
+        return { ...turnInput(ordinal, prefix + text), inlineContextLength: prefix.length };
+      };
+      yield* runtime.startTurn(withHandoff(1, handoff, firstPrompt));
       const started = Option.getOrThrow(
         yield* runtime.events.pipe(
           Stream.filter((event) => event.type === "provider_turn.updated"),
@@ -1374,11 +1406,13 @@ describe("CursorAdapterV2", () => {
       );
       assert(started.type === "provider_turn.updated");
       yield* runtime.interruptTurn({ providerThread, providerTurnId: started.providerTurn.id });
-      yield* runtime.startTurn(turnInput(2, steerText));
+      yield* runtime.startTurn(withHandoff(2, `${handoff}\nAdditional context.`, steerText));
 
       assert.lengthOf(sentMessages, 2);
       const steered = sentMessages[1]!;
       assert.include(steered, steerText);
+      assert.include(steered, "Additional context.");
+      assert.equal(steered.split(handoff).length, 2, "restored handoff appears once");
       assert.include(
         steered,
         firstPrompt,
@@ -1395,7 +1429,7 @@ describe("CursorAdapterV2", () => {
         Stream.filter((event) => event.type === "turn.terminal" && event.status === "completed"),
         Stream.runHead,
       );
-      yield* runtime.startTurn(turnInput(3, "Now a cow."));
+      yield* runtime.startTurn(withHandoff(3, handoff, "Now a cow."));
       assert.notInclude(sentMessages[2]!, firstPrompt, "a finished turn carries nothing forward");
       assert.notInclude(
         sentMessages[2]!,
@@ -1480,7 +1514,7 @@ describe("CursorAdapterV2", () => {
         Stream.runHead,
       );
       yield* runtime.startTurn({
-        ...turnInput(12, "After resume."),
+        ...withHandoff(12, handoff, "After resume."),
         modelSelection: neonSelection,
       });
       assert.include(
@@ -1488,6 +1522,11 @@ describe("CursorAdapterV2", () => {
         "as gemini-4-neon",
         "native resume after compaction must not mark invalidated runtime instructions delivered",
       );
+      yield* interruptRunning;
+      yield* runtime.startTurn(turnInput(13, "One more update."));
+      assert.equal(sentMessages[12]!.split(handoff).length, 2, "keep context if not sent again");
+      assert.include(sentMessages[12]!, "After resume.");
+      assert.include(sentMessages[12]!, "One more update.");
     }).pipe(
       Effect.scoped,
       Effect.provide(

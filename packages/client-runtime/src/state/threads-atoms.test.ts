@@ -54,9 +54,11 @@ const SNAPSHOT: OrchestrationV2ThreadDetailSnapshot = { snapshotSequence: 7, pro
 const makeHarness = Effect.fn("TestThreadAtoms.makeHarness")(function* (options?: {
   readonly snapshot?: OrchestrationV2ThreadDetailSnapshot;
   readonly socketSnapshot?: false;
+  readonly legacyCompletion?: true;
 }) {
   const subscriptions = yield* Queue.unbounded<{
     readonly afterSequence: number | undefined;
+    readonly requestCompletionMarker: boolean | undefined;
     readonly events: Queue.Queue<OrchestrationV2ThreadStreamItem>;
     readonly closed: Deferred.Deferred<void>;
   }>();
@@ -71,7 +73,10 @@ const makeHarness = Effect.fn("TestThreadAtoms.makeHarness")(function* (options?
   let opened = 0;
   let active = 0;
   const client = {
-    [ORCHESTRATION_V2_WS_METHODS.subscribeThread]: (input: { readonly afterSequence?: number }) =>
+    [ORCHESTRATION_V2_WS_METHODS.subscribeThread]: (input: {
+      readonly afterSequence?: number;
+      readonly requestCompletionMarker?: boolean;
+    }) =>
       Stream.unwrap(
         Effect.gen(function* () {
           const events = yield* Queue.unbounded<OrchestrationV2ThreadStreamItem>();
@@ -86,7 +91,12 @@ const makeHarness = Effect.fn("TestThreadAtoms.makeHarness")(function* (options?
                 active -= 1;
               }).pipe(Effect.andThen(Deferred.succeed(closed, undefined))),
           );
-          yield* Queue.offer(subscriptions, { afterSequence: input.afterSequence, events, closed });
+          yield* Queue.offer(subscriptions, {
+            afterSequence: input.afterSequence,
+            requestCompletionMarker: input.requestCompletionMarker,
+            events,
+            closed,
+          });
           // Like a paging server, a fresh subscribe opens with the bounded snapshot.
           if (input.afterSequence === undefined && options?.socketSnapshot !== false) {
             yield* Queue.offer(events, { kind: "snapshot", ...snapshot });
@@ -98,7 +108,7 @@ const makeHarness = Effect.fn("TestThreadAtoms.makeHarness")(function* (options?
   const session: RpcSession = {
     client,
     initialConfig: Effect.succeed({
-      threadResumeCompletionMarker: true,
+      ...(options?.legacyCompletion ? {} : { threadResumeCompletionMarker: true }),
       threadSnapshotPagination: true,
     } as never),
     subscribeServerConfig: (input = {}) => client.subscribeServerConfig(input),
@@ -407,6 +417,40 @@ describe("createEnvironmentThreadStateAtoms", () => {
     }),
   );
 });
+
+it.effect("uses fresh snapshots on cold opens and reconnects without completion markers", () =>
+  Effect.gen(function* () {
+    const h = yield* makeHarness({ legacyCompletion: true });
+    const unmount = h.registry.mount(h.stateAtom);
+    const first = yield* Queue.take(h.subscriptions);
+    expect(first.requestCompletionMarker).toBeUndefined();
+    yield* observeState(h.registry, h.stateAtom, (state) => state.status === "live");
+    unmount();
+    yield* Deferred.await(first.closed);
+
+    const remount = h.registry.mount(h.stateAtom);
+    const resumed = yield* Queue.take(h.subscriptions);
+    expect(resumed.afterSequence).toBeUndefined();
+    expect(resumed.requestCompletionMarker).toBeUndefined();
+    yield* Queue.offer(resumed.events, {
+      kind: "event",
+      sequence: 8,
+      event: {
+        id: EventId.make("legacy-metadata"),
+        type: "thread.metadata-updated",
+        threadId: THREAD_ID,
+        occurredAt: THREAD.thread.updatedAt,
+        payload: { ...THREAD.thread, title: "Legacy live update" },
+      },
+    });
+    const live = yield* observeState(h.registry, h.stateAtom, (state) =>
+      Option.exists(state.data, (data) => data.thread.title === "Legacy live update"),
+    );
+    expect(live.status).toBe("live");
+    remount();
+    yield* Deferred.await(resumed.closed);
+  }),
+);
 
 it.effect("keeps snapshot boundaries and completion markers ordered inside a replay batch", () =>
   Effect.gen(function* () {

@@ -23,6 +23,7 @@ import { GlobalVoiceInputIndicator } from "../components/chat/GlobalVoiceInputIn
 import { VoiceInputSetup } from "../components/chat/VoiceInputSetup";
 import type { createBrowserVoiceInputPlatform } from "./browserVoiceInput";
 import { useEnvironmentSpeechInput } from "./useEnvironmentSpeechInput";
+import { VoiceInputSession } from "./voiceInputSession";
 import {
   chooseAudioDestination,
   chooseTranscriptCleanup,
@@ -119,7 +120,9 @@ vi.mock("../hooks/useSettings", () => ({
       ),
     }),
 }));
-vi.mock("./runEnvironmentSpeech", () => ({ runEnvironmentSpeech: Effect.runPromise }));
+vi.mock("./runEnvironmentSpeech", async () => ({
+  runEnvironmentSpeech: (await import("effect/Effect")).runPromise,
+}));
 vi.mock("../components/ui/toast", () => ({ toastManager: { add: vi.fn() } }));
 vi.mock("@t3tools/client-runtime/voice-input", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@t3tools/client-runtime/voice-input")>()),
@@ -275,6 +278,7 @@ function Probe(props: {
   readonly showWizard?: boolean;
   readonly ownerKey?: string;
   readonly persistent?: boolean;
+  readonly disabled?: boolean;
 }) {
   const value = useEnvironmentSpeechInput({
     environmentId: THREAD_ENV as EnvironmentId,
@@ -282,6 +286,7 @@ function Probe(props: {
     projectName: props.projectName,
     cleanup: props.cleanup,
     ownerKey: props.ownerKey ?? "draft",
+    disabled: props.disabled === true,
     persistentDraft: props.persistent
       ? {
           readStoredText: () => mocks.storedDraft,
@@ -986,6 +991,34 @@ it("lets the user retry after a status failure without reselecting the destinati
   await act(() => mocks.voice.start());
   await act(() => mocks.voice.stop());
   expect(mocks.transcribeCalls).toEqual(["env-a"]);
+});
+
+it("submits the accepted transcript even before the live field rerenders", async () => {
+  setup({ destination: "env-a" });
+  const submit = vi.fn();
+  await using _screen = await render(<Probe ownerKey="thread-a" />);
+  await act(() => mocks.voice.start());
+  await act(async () => mocks.voice.submitAfterDictation(submit));
+  await vi.waitFor(() => expect(submit).toHaveBeenCalledExactlyOnceWith("dictated"));
+  expect(mocks.committed).toHaveBeenCalledWith("dictated", expect.anything());
+});
+
+it("refuses a late queued submission for the same disabled owner", async () => {
+  setup({ destination: "env-a" });
+  const queued: { submit?: (text: string) => void } = {};
+  using _queue = vi
+    .spyOn(VoiceInputSession.prototype, "queueSubmission")
+    .mockImplementationOnce((_ownerKey, submit) => {
+      queued.submit = submit;
+      return true;
+    });
+  const submit = vi.fn();
+  await using screen = await render(<Probe ownerKey="thread-a" persistent />);
+  await act(() => mocks.voice.start());
+  mocks.voice.submitAfterDictation(submit);
+  await screen.rerender(<Probe ownerKey="thread-a" persistent disabled />);
+  queued.submit!("transcript that arrived after disabling dictation");
+  expect(submit).not.toHaveBeenCalled();
 });
 
 it("delivers a queued submission for a persistent draft after switching owners", async () => {

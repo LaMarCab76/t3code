@@ -62,7 +62,8 @@ export type VoiceInputTarget = {
   readonly persistent: boolean;
   readonly open: (() => void) | null;
   readonly readDraft: () => DraftInput | null;
-  readonly commitDraft: (text: string, selection: DraftInput["selection"]) => void;
+  readonly commitDraft: (text: string, selection: DraftInput["selection"]) => boolean;
+  readonly canSubmit: () => boolean;
   readonly readContext: () => VoiceRecordingContext;
 };
 
@@ -243,9 +244,11 @@ export class VoiceInputSession {
         return target && draft ? { ownerKey: target.ownerKey, ...draft } : null;
       },
       commitDraft: (text, selection) => {
-        const ownerKey = this.target?.ownerKey ?? null;
-        this.target?.commitDraft(text, selection);
-        if (ownerKey !== null && this.pendingSubmission?.ownerKey === ownerKey) {
+        const target = this.target;
+        if (
+          target?.commitDraft(text, selection) &&
+          this.pendingSubmission?.ownerKey === target.ownerKey
+        ) {
           this.pendingSubmission.text = text;
         }
       },
@@ -263,7 +266,12 @@ export class VoiceInputSession {
         if (state.phase === "idle" && this.pendingSubmission !== null) {
           const pending = this.pendingSubmission;
           this.pendingSubmission = null;
-          if (pending.text !== undefined) pending.submit(pending.text);
+          if (
+            pending.text !== undefined &&
+            this.target?.ownerKey === pending.ownerKey &&
+            this.target.canSubmit()
+          )
+            pending.submit(pending.text);
         }
       },
     });

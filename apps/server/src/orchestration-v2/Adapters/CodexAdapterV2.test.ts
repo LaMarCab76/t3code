@@ -1176,6 +1176,7 @@ describe("CodexAdapterV2 session initialize", () => {
     transcript: CodexReplay.CodexAppServerReplayTranscript,
     beforeEmitInbound?: CodexReplay.CodexAppServerReplayDriver["beforeEmitInbound"],
     compatibility?: CodexAdapterV2.CodexAdapterV2Options["compatibility"],
+    awaitTermination?: CodexClient.CodexAppServerClient["Service"]["awaitTermination"],
   ) =>
     Effect.gen(function* () {
       const driver = yield* CodexReplay.makeReplayDriver(
@@ -1198,6 +1199,7 @@ describe("CodexAdapterV2 session initialize", () => {
                 (client) =>
                   ({
                     ...client,
+                    awaitTermination: awaitTermination ?? client.awaitTermination,
                     request: (method, params) =>
                       Effect.sync(() => {
                         if (method === "initialize") initializeRequests++;
@@ -1559,6 +1561,133 @@ describe("CodexAdapterV2 session initialize", () => {
     }
     return Predicate.isTagged(error, "CodexAppServerUnresponsiveError");
   };
+
+  it.effect("gives config/read and thread/start their own deadlines", () =>
+    Effect.gen(function* () {
+      const configReady = yield* Deferred.make<void>();
+      const releaseConfig = yield* Deferred.make<void>();
+      const startReady = yield* Deferred.make<void>();
+      const releaseStart = yield* Deferred.make<void>();
+      const hold = (ready: Deferred.Deferred<void>, release: Deferred.Deferred<void>) =>
+        Deferred.succeed(ready, undefined).pipe(Effect.andThen(Deferred.await(release)));
+      const nativeThreadId = "separate-thread-deadlines";
+      const session = yield* openReplaySession(
+        makeCodexReplayTranscript({
+          scenario: nativeThreadId,
+          entries: replayPreamble(nativeThreadId).slice(0, 5),
+        }),
+        (entry) =>
+          entry.label === "config/read"
+            ? hold(configReady, releaseConfig)
+            : entry.label === "thread/start"
+              ? hold(startReady, releaseStart)
+              : Effect.void,
+      );
+      const ensured = yield* session
+        .ensureThread(nativeThreadId)
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(configReady);
+      yield* TestClock.adjust("70 seconds");
+      yield* Deferred.succeed(releaseConfig, undefined);
+      yield* Deferred.await(startReady);
+      yield* TestClock.adjust("70 seconds");
+      yield* Deferred.succeed(releaseStart, undefined);
+      assert.equal((yield* Fiber.join(ensured)).nativeThreadRef?.nativeId, nativeThreadId);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
+  it.effect.each(["thread/start", "turn/start"] as const)(
+    "refuses %s when the app-server retires while config is pending",
+    (method) =>
+      Effect.gen(function* () {
+        const waitingForConfig = yield* Deferred.make<void>();
+        const releaseConfig = yield* Deferred.make<void>();
+        const retire = yield* Deferred.make<void>();
+        const nativeThreadId = "retired-during-config";
+        const preamble = codexReplayPreamble({
+          nativeThreadId,
+          nativeTurnId: "return-after-retirement",
+          prompt: "Hello",
+        });
+        let holdConfig = method === "thread/start";
+        const session = yield* openReplaySession(
+          makeCodexReplayTranscript({
+            scenario: method,
+            entries: preamble.slice(0, method === "thread/start" ? 5 : 7),
+          }),
+          (entry) =>
+            entry.label === "config/read" && holdConfig
+              ? Deferred.succeed(waitingForConfig, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseConfig)),
+                )
+              : Effect.void,
+          undefined,
+          Deferred.await(retire).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new CodexError.CodexAppServerProcessExitedError({
+                  code: 17,
+                  pid: 52,
+                }),
+              ),
+            ),
+          ),
+        );
+        const eventsExit = yield* Stream.runDrain(session.events).pipe(
+          Effect.exit,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        const threadId = ThreadId.make("thread-retired-during-config");
+        const start = yield* Effect.gen(function* () {
+          if (method === "thread/start") return session.ensureThread(threadId).pipe(Effect.asVoid);
+          const providerThread = yield* session.ensureThread(threadId);
+          holdConfig = true;
+          return session.runtime.startTurn(
+            makeCodexTestTurnInput({
+              threadId,
+              providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("retired-during-config-attempt"),
+              text: "Hello",
+            }),
+          );
+        });
+        const pending = yield* Effect.exit(start).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Deferred.await(waitingForConfig);
+        yield* Deferred.succeed(retire, undefined);
+        assert.isTrue(Exit.isFailure(yield* Fiber.join(eventsExit)));
+        yield* Deferred.succeed(releaseConfig, undefined);
+        const outcome = yield* Fiber.join(pending);
+        const error = Exit.isFailure(outcome) ? Cause.squash(outcome.cause) : undefined;
+        assert.isTrue(
+          Predicate.hasProperty(error, "cause") &&
+            Predicate.isTagged(error.cause, "CodexAppServerRetiredError"),
+          `retired app-server did not refuse ${method}`,
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+  );
 
   // regression: #24300 a wedged shared app-server left thread/start pending and stayed ready
   it.effect("fails and retires a shared app-server that never answers thread/start", () =>

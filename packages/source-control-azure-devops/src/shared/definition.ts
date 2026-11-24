@@ -63,7 +63,9 @@ function canonicalRepositoryKey(key: string): string | null {
     .replace(
       /^([^.]+)\.visualstudio\.com\/(?:defaultcollection\/)?([^/]+)\/_git\/([^/]+)$/u,
       "dev.azure.com/$1/$2/_git/$3",
-    );
+    )
+    .replace(/^dev\.azure\.com\/([^/]+)\/_git\/([^/]+)$/u, "dev.azure.com/$1/$2/_git/$2")
+    .replace(/^([^.]+)\.visualstudio\.com\/_git\/([^/]+)$/u, "dev.azure.com/$1/$2/_git/$2");
   return canonical.startsWith("dev.azure.com/") ? canonical : null;
 }
 

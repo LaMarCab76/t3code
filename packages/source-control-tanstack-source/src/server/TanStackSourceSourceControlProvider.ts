@@ -50,6 +50,19 @@ export function effectiveAccount(
   );
 }
 
+function privateCompanionName(
+  repository: string | null,
+  head: string | null | undefined,
+  visibility: string | undefined,
+): string | null {
+  if (visibility === "public" || repository === null || typeof head !== "string") return null;
+  const prefix = repository.toLowerCase() + ".private";
+  const key = head.toLowerCase();
+  return key.startsWith(prefix) && /^(?:-[2-9]|-[1-9]\d+)?$/.test(key.slice(prefix.length))
+    ? head
+    : null;
+}
+
 const decodeUser = Schema.decodeEffect(Schema.fromJsonString(Json.SourceUser));
 
 const authAccounts = (accounts: ReturnType<typeof parseTanStackSourceAuthStatus>) =>
@@ -302,12 +315,18 @@ export const make = Effect.gen(function* () {
     return yield* error(operation, input.cwd, "No TanStack Source repository remote was found.");
   });
 
-  const toChangeRequest = (target: Target, pull: Json.SourcePullDetail): ChangeRequest => {
-    const headRepository = pull.headRepo ?? target.repository;
+  const toChangeRequest = (
+    target: Target,
+    pull: Json.SourcePullDetail,
+  ): ChangeRequest & { readonly visibility: string | undefined } => {
+    const requiresPrivateHeadPush =
+      pull.visibility === "private" ||
+      privateCompanionName(target.repository, pull.headRepo, pull.visibility) !== null;
+    const headRepository = pull.headRepo ?? (requiresPrivateHeadPush ? null : target.repository);
     const headBranch = Json.headBranchName(pull.head);
     // A pull request synced from a GitHub fork names its head only by its pull ref.
     const crossRepository =
-      headRepository.toLowerCase() !== target.repository.toLowerCase() ||
+      headRepository?.toLowerCase() !== target.repository.toLowerCase() ||
       headBranch.startsWith("refs/");
     const updatedAt = pull.mergedAt ?? pull.createdAt;
     return {
@@ -323,8 +342,10 @@ export const make = Effect.gen(function* () {
       mergedAt: pull.mergedAt === null ? null : Json.iso(pull.mergedAt),
       updatedAt: Option.some(DateTime.makeUnsafe(updatedAt)),
       isCrossRepository: crossRepository,
+      visibility: pull.visibility,
       headRepositoryNameWithOwner: headRepository,
-      headRepositoryOwnerLogin: headRepository.split("/")[0] ?? null,
+      headRepositoryOwnerLogin: headRepository?.split("/")[0] ?? null,
+      ...(requiresPrivateHeadPush ? { requiresPrivateHeadPush: true as const } : {}),
     };
   };
 
@@ -533,12 +554,11 @@ export const make = Effect.gen(function* () {
                 });
           const operation = "TanStackSourceSourceControlProvider.checkoutChangeRequest";
           const branches = yield* git.listLocalBranchNames(input.cwd);
-          const companion =
-            pullRepository !== null &&
-            pull.headRepositoryNameWithOwner?.toLowerCase() ===
-              `${pullRepository}.private`.toLowerCase()
-              ? pull.headRepositoryNameWithOwner
-              : null;
+          const companion = privateCompanionName(
+            pullRepository,
+            pull.headRepositoryNameWithOwner,
+            pull.visibility,
+          );
           if (!pull.isCrossRepository || companion !== null) {
             const localBranch = pull.headRefName;
             const remoteBranch = {

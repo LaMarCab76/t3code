@@ -1122,6 +1122,46 @@ it.effect.each(
   }),
 );
 
+it.effect("queues a delayed steer for an already waiting run", () =>
+  Effect.gen(function* () {
+    const { layer, startFirstTurn } = yield* nextTurnSelectionHarness("steer-into-waiting");
+    yield* Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadId = yield* startFirstTurn;
+      const run = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+      yield* (yield* EventSink.EventSinkV2).write({
+        events: [
+          {
+            id: EventId.make("waiting-run"),
+            type: "run.updated",
+            threadId,
+            occurredAt: yield* DateTime.now,
+            payload: { ...run, status: "waiting" },
+          },
+        ],
+      });
+      const messageId = MessageId.make("message:delayed-steer");
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("delayed-steer"),
+        threadId,
+        messageId,
+        text: "Queue this while waiting",
+        attachments: [],
+        deliveryIntent: "steer",
+        dispatchMode: { type: "steer_active", targetRunId: run.id },
+        createdBy: "user",
+        creationSource: "mobile",
+      });
+      const after = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(
+        after.runs.find((candidate) => candidate.userMessageId === messageId)?.status,
+        "queued",
+      );
+    }).pipe(Effect.provide(layer));
+  }),
+);
+
 it.effect("force sends multiple queued messages and can force send a requeued message again", () =>
   Effect.gen(function* () {
     const { started, steered, layer, startFirstTurn } = yield* nextTurnSelectionHarness(

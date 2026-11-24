@@ -611,7 +611,7 @@ it.effect("skips post-turn captures that waited out another capture's timeout in
             appRunOrdinal: 1,
             capturedAt: scope.createdAt,
           })
-          .pipe(Effect.forkChild);
+          .pipe(Effect.forkChild({ startImmediately: true }));
       // A baseline's short budget running out says nothing about a post-turn capture.
       const baseline = yield* checkpoints
         .captureBaseline({ scope: scopeFor("baseline"), ordinalWithinScope: 0 })

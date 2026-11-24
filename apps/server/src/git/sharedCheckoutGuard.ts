@@ -5,6 +5,8 @@ import {
 } from "@t3tools/contracts";
 import { isWindowsAbsolutePath, normalizeProjectPathForComparison } from "@t3tools/shared/path";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 
 import * as GitWorkflowService from "./GitWorkflowService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -55,90 +57,86 @@ export const assertCheckoutIdle = Effect.fn("sharedCheckoutGuard.assertCheckoutI
   const projectService = yield* ProjectService.ProjectService;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const workspaceFolders = yield* WorkspaceFolders.WorkspaceFolders;
-  // `git checkout` from a subdirectory moves the whole checkout; records may hold either spelling.
+  const fileSystem = yield* FileSystem.FileSystem;
+  const identify = (path: string) =>
+    fileSystem.realPath(path).pipe(
+      Effect.orElseSucceed(() => path),
+      Effect.map(checkoutIdentity),
+    );
   const root = yield* gitWorkflow.repositoryRoot(cwd).pipe(Effect.orElseSucceed(() => null));
-  const checkoutPaths = [...new Set([cwd, ...(root === null ? [] : [root])])];
-  const checkoutIds = new Set(checkoutPaths.map(checkoutIdentity));
-  const rootId = root === null ? null : checkoutIdentity(root);
+  const cwdId = yield* identify(cwd);
+  const rootId = root === null ? null : yield* identify(root);
   const rootPrefix = rootId === null ? null : rootId.endsWith("/") ? rootId : rootId + "/";
-  const projects = yield* projectService.snapshot.pipe(
-    Effect.map((snapshot) => snapshot.projects),
-    Effect.orElseSucceed(() => []),
+  const failure = (detail: string) =>
+    new GitCommandError({ operation, command: "git checkout", cwd, detail });
+  const cannotVerify = () =>
+    failure("Could not verify that this checkout is idle. Try again or use a separate worktree.");
+  const snapshot = yield* threadManagement
+    .getShellSnapshot({ activityOnly: true })
+    .pipe(Effect.mapError(cannotVerify));
+  // Archiving a thread does not stop its run.
+  const threads = [...snapshot.threads, ...snapshot.archivedThreads].filter(
+    (thread) => (thread.activityRunStatus ?? null) !== null,
   );
-  // A project rooted inside the checkout shares it, as in a monorepo package, unless it is its
-  // own repository nested there.
-  const nested = yield* Effect.forEach(
-    projects.filter(({ workspaceRoot }) => {
-      const id = checkoutIdentity(workspaceRoot);
-      return rootPrefix !== null && !checkoutIds.has(id) && id.startsWith(rootPrefix);
-    }),
-    (project) =>
-      gitWorkflow.repositoryRoot(project.workspaceRoot).pipe(
-        Effect.map((projectRoot) =>
-          projectRoot !== null && checkoutIdentity(projectRoot) === rootId ? [project] : [],
-        ),
-        Effect.orElseSucceed(() => []),
-      ),
-    { concurrency: "unbounded" },
+  const localIds = new Set(
+    threads.flatMap((thread) => (thread.worktreePath === null ? [thread.projectId] : [])),
   );
-  const sharingTrackedFolders = yield* Effect.forEach(
-    projects.filter(({ workspaceRoot, trackedFolders }) => {
-      const id = checkoutIdentity(workspaceRoot);
-      return (
-        rootId !== null &&
-        !checkoutIds.has(id) &&
-        (rootId.startsWith(id.endsWith("/") ? id : id + "/") || (trackedFolders?.length ?? 0) > 0)
-      );
-    }),
+  const linkedThreads = new Map<string, ProjectId>();
+  for (const thread of threads) {
+    if (thread.worktreePath !== null) linkedThreads.set(thread.worktreePath, thread.projectId);
+  }
+  const projectList =
+    localIds.size === 0
+      ? []
+      : (yield* projectService.snapshot.pipe(Effect.mapError(cannotVerify))).projects;
+  const sameCheckout = (id: string) => id === cwdId || id === rootId;
+  const sameRepository = Effect.fnUntraced(function* (path: string) {
+    const actual = yield* gitWorkflow.repositoryRoot(path).pipe(Effect.mapError(cannotVerify));
+    return actual !== null && sameCheckout(yield* identify(actual));
+  });
+  const reachesCheckout = Effect.fnUntraced(function* (
+    projectId: ProjectId,
+    worktreePath: string | null,
+  ) {
+    const { folders } = yield* workspaceFolders
+      .forThread({ projectId, worktreePath })
+      .pipe(Effect.mapError(cannotVerify));
+    const match = yield* Effect.findFirst(folders, (folder) =>
+      folder.isGitRepository ? sameRepository(folder.path) : Effect.succeed(false),
+    );
+    return Option.isSome(match);
+  });
+  const matchingProjects = yield* Effect.filter(
+    projectList.filter((project) => localIds.has(project.id)),
     (project) =>
-      workspaceFolders.forThread({ projectId: project.id, worktreePath: null }).pipe(
-        Effect.flatMap(({ folders }) =>
-          Effect.findFirst(folders, (folder) =>
-            gitWorkflow.repositoryRoot(folder.path).pipe(
-              Effect.map(
-                (folderRoot) => folderRoot !== null && checkoutIdentity(folderRoot) === rootId,
-              ),
-              Effect.orElseSucceed(() => false),
-            ),
-          ),
-        ),
-        Effect.map((match) => (match._tag === "Some" ? [project] : [])),
-        Effect.orElseSucceed(() => []),
-      ),
+      Effect.gen(function* () {
+        const id = yield* identify(project.workspaceRoot);
+        if (sameCheckout(id)) return true;
+        if (
+          rootPrefix !== null &&
+          id.startsWith(rootPrefix) &&
+          (yield* sameRepository(project.workspaceRoot))
+        )
+          return true;
+        return yield* reachesCheckout(project.id, null);
+      }),
     { concurrency: 4 },
   );
-  const projectIds = new Set(
-    [
-      ...projects.filter(({ workspaceRoot }) => checkoutIds.has(checkoutIdentity(workspaceRoot))),
-      ...nested.flat(),
-      ...sharingTrackedFolders.flat(),
-    ].map(({ id }) => id),
-  );
-  // Archiving does not stop a run. Keep successful lookups so a busy thread can still be named.
-  const snapshots = yield* Effect.forEach(
-    [
-      ...checkoutPaths.map((worktreePath) => threadManagement.getShellSnapshot({ worktreePath })),
-      ...[...projectIds].map((projectId) => threadManagement.getShellSnapshot({ projectId })),
-    ],
-    (snapshot) => snapshot.pipe(Effect.orElseSucceed(() => null)),
-    { concurrency: "unbounded" },
+  const matchingWorktrees = yield* Effect.filter(
+    [...linkedThreads],
+    ([path, projectId]) =>
+      Effect.gen(function* () {
+        if (sameCheckout(yield* identify(path))) return true;
+        return yield* reachesCheckout(projectId, path);
+      }),
+    { concurrency: 4 },
   );
   const busy = busyThreadsInCheckout({
-    checkoutPaths,
-    projectIds,
-    threads: snapshots.flatMap((snapshot) =>
-      snapshot ? [...snapshot.threads, ...snapshot.archivedThreads] : [],
-    ),
+    checkoutPaths: matchingWorktrees.map(([path]) => path),
+    projectIds: new Set(matchingProjects.map((project) => project.id)),
+    threads,
   });
+  if (busy.length === 0) return;
   const titles = [...new Map(busy.map((thread) => [thread.id, thread.title])).values()];
-  if (titles.length === 0 && !snapshots.includes(null)) return;
-  return yield* new GitCommandError({
-    operation,
-    command: "git checkout",
-    cwd,
-    detail:
-      titles.length > 0
-        ? describeBusyCheckout(titles)
-        : "Could not verify that this checkout is idle. Try again or use a separate worktree.",
-  });
+  return yield* failure(describeBusyCheckout(titles));
 });

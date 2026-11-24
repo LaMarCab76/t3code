@@ -35,6 +35,7 @@ export const ChangeRequest = Schema.Struct({
   isCrossRepository: Schema.optional(Schema.Boolean),
   headRepositoryNameWithOwner: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   headRepositoryOwnerLogin: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  requiresPrivateHeadPush: Schema.optional(Schema.Literal(true)),
 });
 export type ChangeRequest = typeof ChangeRequest.Type;
 
