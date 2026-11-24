@@ -6638,9 +6638,14 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
     }),
   );
 
-  it.effect.each([{ blocker: null }, { blocker: "t3code" }, { blocker: "t3code/pr-81" }])(
-    "preserves fork upstream tracking when preparing a worktree PR thread (local branch $blocker)",
-    ({ blocker }) =>
+  it.effect.each([
+    { blocker: null, privateHead: false },
+    { blocker: "t3code", privateHead: false },
+    { blocker: "t3code/pr-81", privateHead: false },
+    { blocker: null, privateHead: true },
+  ])(
+    "preserves fork upstream tracking when preparing a worktree PR thread (local branch $blocker, private head $privateHead)",
+    ({ blocker, privateHead }) =>
       Effect.gen(function* () {
         const repoDir = yield* makeTempDir("t3code-git-manager-");
         yield* initRepo(repoDir);
@@ -6655,6 +6660,9 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
         yield* runGit(repoDir, ["commit", "-m", "Fork PR branch"]);
         yield* runGit(repoDir, ["push", "-u", "fork-seed", "feature/pr-fork"]);
         yield* runGit(repoDir, ["checkout", "main"]);
+        if (privateHead) {
+          yield* runGit(repoDir, ["config", "remote.pushDefault", "origin"]);
+        }
         const mainHead = (yield* runGit(repoDir, ["rev-parse", "main"])).stdout.trim();
         // A local branch owning a parent of the generated `t3code/pr-<n>/<head>` ref must not block checkout.
         if (blocker !== null) yield* runGit(repoDir, ["branch", blocker]);
@@ -6669,6 +6677,7 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
               headRefName: "feature/pr-fork",
               state: "open",
               isCrossRepository: true,
+              ...(privateHead ? { requiresPrivateHeadPush: true as const } : {}),
               headRepositoryNameWithOwner: "octocat/codething-mvp",
               headRepositoryOwnerLogin: "octocat",
             },
@@ -6694,6 +6703,14 @@ it.layer(layerGitManagerTest)("GitManager", (it) => {
           "@{upstream}",
         ])).stdout.trim();
         expect(upstreamRef).toBe("fork-seed/feature/pr-fork");
+        if (privateHead) {
+          const route = yield* runGit(
+            result.worktreePath!,
+            ["config", "--get", `branch.${result.branch}.pushRemote`],
+            true,
+          );
+          expect(route.stdout.trim()).toBe("fork-seed");
+        }
         expect(upstreamRef.startsWith("origin/")).toBe(false);
         expect(
           (yield* runGit(result.worktreePath as string, [

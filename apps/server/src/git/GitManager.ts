@@ -317,6 +317,7 @@ interface PullRequestHeadRemoteInfo {
   isCrossRepository?: boolean | undefined;
   headRepositoryNameWithOwner?: string | null | undefined;
   headRepositoryOwnerLogin?: string | null | undefined;
+  requiresPrivateHeadPush?: true | undefined;
 }
 
 interface BranchHeadContext {
@@ -767,8 +768,10 @@ function toPullRequestHeadRemoteInfo(pr: {
   isCrossRepository?: boolean | undefined;
   headRepositoryNameWithOwner?: string | null | undefined;
   headRepositoryOwnerLogin?: string | null | undefined;
+  requiresPrivateHeadPush?: true | undefined;
 }): PullRequestHeadRemoteInfo {
   return {
+    ...(pr.requiresPrivateHeadPush === true ? { requiresPrivateHeadPush: true } : {}),
     ...(pr.isCrossRepository !== undefined ? { isCrossRepository: pr.isCrossRepository } : {}),
     ...(pr.headRepositoryNameWithOwner !== undefined
       ? { headRepositoryNameWithOwner: pr.headRepositoryNameWithOwner }
@@ -1067,6 +1070,32 @@ export const make = Effect.gen(function* () {
     return host ? { host } : {};
   };
 
+  const ensureNamedPullRequestHeadRemote = Effect.fn("GitManager.ensureNamedPullRequestHeadRemote")(
+    function* (
+      cwd: string,
+      pullRequest: ResolvedPullRequest & PullRequestHeadRemoteInfo,
+      repositoryNameWithOwner: string,
+    ) {
+      const cloneUrls = yield* (yield* sourceControlProvider(cwd)).getRepositoryCloneUrls({
+        cwd,
+        repository: repositoryNameWithOwner,
+        ...pullRequestHostOptions(pullRequest.url),
+      });
+      const originRemoteUrl = yield* readRemoteUrl(cwd, "origin");
+      const remoteUrl = shouldPreferSshRemote(originRemoteUrl) ? cloneUrls.sshUrl : cloneUrls.url;
+      const preferredRemoteName =
+        pullRequest.headRepositoryOwnerLogin?.trim() ||
+        repositoryNameWithOwner.split("/")[0]?.trim() ||
+        "fork";
+      return yield* gitCore.ensureRemote({
+        cwd,
+        preferredName: preferredRemoteName,
+        url: remoteUrl,
+        ...(pullRequest.requiresPrivateHeadPush === true ? { pushOnlyToFetchUrl: true } : {}),
+      });
+    },
+  );
+
   const configurePullRequestHeadUpstreamBase = Effect.fn("configurePullRequestHeadUpstream")(
     function* (
       cwd: string,
@@ -1094,22 +1123,11 @@ export const make = Effect.gen(function* () {
         return;
       }
 
-      const cloneUrls = yield* (yield* sourceControlProvider(cwd)).getRepositoryCloneUrls({
+      const remoteName = yield* ensureNamedPullRequestHeadRemote(
         cwd,
-        repository: repositoryNameWithOwner,
-        ...pullRequestHostOptions(pullRequest.url),
-      });
-      const originRemoteUrl = yield* readRemoteUrl(cwd, "origin");
-      const remoteUrl = shouldPreferSshRemote(originRemoteUrl) ? cloneUrls.sshUrl : cloneUrls.url;
-      const preferredRemoteName =
-        pullRequest.headRepositoryOwnerLogin?.trim() ||
-        repositoryNameWithOwner.split("/")[0]?.trim() ||
-        "fork";
-      const remoteName = yield* gitCore.ensureRemote({
-        cwd,
-        preferredName: preferredRemoteName,
-        url: remoteUrl,
-      });
+        pullRequest,
+        repositoryNameWithOwner,
+      );
 
       yield* gitCore.fetchRemoteTrackingBranch({
         cwd,
@@ -1208,22 +1226,11 @@ export const make = Effect.gen(function* () {
         return;
       }
 
-      const cloneUrls = yield* (yield* sourceControlProvider(cwd)).getRepositoryCloneUrls({
+      const remoteName = yield* ensureNamedPullRequestHeadRemote(
         cwd,
-        repository: repositoryNameWithOwner,
-        ...pullRequestHostOptions(pullRequest.url),
-      });
-      const originRemoteUrl = yield* readRemoteUrl(cwd, "origin");
-      const remoteUrl = shouldPreferSshRemote(originRemoteUrl) ? cloneUrls.sshUrl : cloneUrls.url;
-      const preferredRemoteName =
-        pullRequest.headRepositoryOwnerLogin?.trim() ||
-        repositoryNameWithOwner.split("/")[0]?.trim() ||
-        "fork";
-      const remoteName = yield* gitCore.ensureRemote({
-        cwd,
-        preferredName: preferredRemoteName,
-        url: remoteUrl,
-      });
+        pullRequest,
+        repositoryNameWithOwner,
+      );
 
       yield* gitCore.fetchRemoteBranch({
         cwd,
@@ -3713,6 +3720,28 @@ export const make = Effect.gen(function* () {
         localBranches,
       );
 
+      const pinPrivateHeadPush = Effect.fn("GitManager.pinPrivateHeadPush")(function* () {
+        if (pullRequestWithRemoteInfo.requiresPrivateHeadPush !== true) return;
+        const repository = resolveHeadRepositoryNameWithOwner(pullRequestWithRemoteInfo);
+        if (repository === null) {
+          return yield* new GitManagerError({
+            operation: "preparePullRequestThread",
+            cwd: input.cwd,
+            detail: "The host did not identify the private repository for this pull request head.",
+          });
+        }
+        const remote = yield* ensureNamedPullRequestHeadRemote(
+          input.cwd,
+          pullRequestWithRemoteInfo,
+          repository,
+        );
+        yield* gitCore.writeConfigValue({
+          cwd: input.cwd,
+          key: `branch.${localPullRequestBranch}.pushRemote`,
+          value: remote,
+        });
+      });
+
       // Git refuses to move checked-out branches; advance reused checkouts from inside their worktree.
       const reuseExistingWorktree = Effect.fn("reuseExistingWorktree")(function* (
         worktreePath: string,
@@ -3727,6 +3756,8 @@ export const make = Effect.gen(function* () {
             isOnPullRequestHead: false,
           };
         }
+
+        yield* pinPrivateHeadPush();
 
         // Capture upstream before its forced fetch so rewritten heads remain distinguishable from local commits.
         const upstreamCommitBeforeFetch = yield* gitCore
@@ -3944,6 +3975,8 @@ export const make = Effect.gen(function* () {
             "This PR branch is already checked out in the main repo. Use Local, or switch the main repo off that branch before creating a worktree thread.",
         });
       }
+      yield* pinPrivateHeadPush();
+
       // Materializing would force this branch onto the head.
       if (existingBranchBeforeFetch !== null) {
         let isOnPullRequestHead = false;
