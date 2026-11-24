@@ -1176,6 +1176,7 @@ describe("CodexAdapterV2 session initialize", () => {
     transcript: CodexReplay.CodexAppServerReplayTranscript,
     beforeEmitInbound?: CodexReplay.CodexAppServerReplayDriver["beforeEmitInbound"],
     compatibility?: CodexAdapterV2.CodexAdapterV2Options["compatibility"],
+    awaitTermination?: CodexClient.CodexAppServerClient["Service"]["awaitTermination"],
   ) =>
     Effect.gen(function* () {
       const driver = yield* CodexReplay.makeReplayDriver(
@@ -1198,6 +1199,7 @@ describe("CodexAdapterV2 session initialize", () => {
                 (client) =>
                   ({
                     ...client,
+                    awaitTermination: awaitTermination ?? client.awaitTermination,
                     request: (method, params) =>
                       Effect.sync(() => {
                         if (method === "initialize") initializeRequests++;
@@ -1235,6 +1237,7 @@ describe("CodexAdapterV2 session initialize", () => {
             runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
           }),
         initializeRequests: () => initializeRequests,
+        runtime,
         events: runtime.events,
       };
     });
@@ -1519,6 +1522,306 @@ describe("CodexAdapterV2 session initialize", () => {
       const providerThread = yield* session.ensureThread("thread-initialize-interrupted");
       assert.equal(providerThread.nativeThreadRef?.nativeId, "initialize-interrupted");
       assert.equal(session.initializeRequests(), 2);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
+  // The no-op notification lands right after the request is written, so the
+  // test advances the clock only once the app-server is known to be silent.
+  const requestWritten: CodexReplay.CodexAppServerReplayEntry = {
+    type: "emit_inbound",
+    label: "request-written",
+    frame: { method: "t3/test/requestWritten", params: {} },
+  };
+  const awaitRequestWritten =
+    (written: Deferred.Deferred<void>) =>
+    (
+      entry: Parameters<
+        NonNullable<CodexReplay.CodexAppServerReplayDriver["beforeEmitInbound"]>
+      >[0],
+    ) =>
+      entry.label === "request-written" ? Deferred.succeed(written, undefined) : Effect.void;
+  const UNANSWERED_REQUEST_BUDGET = "5 minutes";
+  // ProviderTurnStartService skips retries and fresh-thread fallback on this tag.
+  const failedOnDeadline = (exit: Exit.Exit<unknown, unknown>): boolean => {
+    if (!Exit.isFailure(exit)) return false;
+    let error: unknown = Cause.squash(exit.cause);
+    while (Predicate.hasProperty(error, "cause")) {
+      if (Predicate.isTagged(error, "CodexAppServerUnresponsiveError")) return true;
+      error = error.cause;
+    }
+    return Predicate.isTagged(error, "CodexAppServerUnresponsiveError");
+  };
+
+  it.effect("gives config/read and thread/start their own deadlines", () =>
+    Effect.gen(function* () {
+      const configReady = yield* Deferred.make<void>();
+      const releaseConfig = yield* Deferred.make<void>();
+      const startReady = yield* Deferred.make<void>();
+      const releaseStart = yield* Deferred.make<void>();
+      const hold = (ready: Deferred.Deferred<void>, release: Deferred.Deferred<void>) =>
+        Deferred.succeed(ready, undefined).pipe(Effect.andThen(Deferred.await(release)));
+      const nativeThreadId = "separate-thread-deadlines";
+      const session = yield* openReplaySession(
+        makeCodexReplayTranscript({
+          scenario: nativeThreadId,
+          entries: replayPreamble(nativeThreadId).slice(0, 5),
+        }),
+        (entry) =>
+          entry.label === "config/read"
+            ? hold(configReady, releaseConfig)
+            : entry.label === "thread/start"
+              ? hold(startReady, releaseStart)
+              : Effect.void,
+      );
+      const ensured = yield* session
+        .ensureThread(nativeThreadId)
+        .pipe(Effect.forkChild({ startImmediately: true }));
+      yield* Deferred.await(configReady);
+      yield* TestClock.adjust("70 seconds");
+      yield* Deferred.succeed(releaseConfig, undefined);
+      yield* Deferred.await(startReady);
+      yield* TestClock.adjust("70 seconds");
+      yield* Deferred.succeed(releaseStart, undefined);
+      assert.equal((yield* Fiber.join(ensured)).nativeThreadRef?.nativeId, nativeThreadId);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
+  it.effect.each(["thread/start", "turn/start"] as const)(
+    "refuses %s when the app-server retires while config is pending",
+    (method) =>
+      Effect.gen(function* () {
+        const waitingForConfig = yield* Deferred.make<void>();
+        const releaseConfig = yield* Deferred.make<void>();
+        const retire = yield* Deferred.make<void>();
+        const nativeThreadId = "retired-during-config";
+        const preamble = codexReplayPreamble({
+          nativeThreadId,
+          nativeTurnId: "return-after-retirement",
+          prompt: "Hello",
+        });
+        let holdConfig = method === "thread/start";
+        const session = yield* openReplaySession(
+          makeCodexReplayTranscript({
+            scenario: method,
+            entries: preamble.slice(0, method === "thread/start" ? 5 : 7),
+          }),
+          (entry) =>
+            entry.label === "config/read" && holdConfig
+              ? Deferred.succeed(waitingForConfig, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseConfig)),
+                )
+              : Effect.void,
+          undefined,
+          Deferred.await(retire).pipe(
+            Effect.andThen(
+              Effect.fail(
+                new CodexError.CodexAppServerProcessExitedError({
+                  code: 17,
+                  pid: 52,
+                }),
+              ),
+            ),
+          ),
+        );
+        const eventsExit = yield* Stream.runDrain(session.events).pipe(
+          Effect.exit,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        const threadId = ThreadId.make("thread-retired-during-config");
+        const start = yield* Effect.gen(function* () {
+          if (method === "thread/start") return session.ensureThread(threadId).pipe(Effect.asVoid);
+          const providerThread = yield* session.ensureThread(threadId);
+          holdConfig = true;
+          return session.runtime.startTurn(
+            makeCodexTestTurnInput({
+              threadId,
+              providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("retired-during-config-attempt"),
+              text: "Hello",
+            }),
+          );
+        });
+        const pending = yield* Effect.exit(start).pipe(
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Deferred.await(waitingForConfig);
+        yield* Deferred.succeed(retire, undefined);
+        assert.isTrue(Exit.isFailure(yield* Fiber.join(eventsExit)));
+        yield* Deferred.succeed(releaseConfig, undefined);
+        const outcome = yield* Fiber.join(pending);
+        const error = Exit.isFailure(outcome) ? Cause.squash(outcome.cause) : undefined;
+        assert.isTrue(
+          Predicate.hasProperty(error, "cause") &&
+            Predicate.isTagged(error.cause, "CodexAppServerRetiredError"),
+          `retired app-server did not refuse ${method}`,
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+  );
+
+  // regression: #24300 a wedged shared app-server left thread/start pending and stayed ready
+  it.effect("fails and retires a shared app-server that never answers thread/start", () =>
+    Effect.gen(function* () {
+      const written = yield* Deferred.make<void>();
+      const session = yield* openReplaySession(
+        makeCodexReplayTranscript({
+          scenario: "thread-start-unanswered",
+          entries: [...replayPreamble("thread-start-unanswered").slice(0, 4), requestWritten],
+        }),
+        awaitRequestWritten(written),
+      );
+      const events = yield* session.runtime.events.pipe(
+        Stream.runDrain,
+        Effect.exit,
+        Effect.timeoutOption(UNANSWERED_REQUEST_BUDGET),
+        Effect.forkChild({ startImmediately: true }),
+      );
+      const ensured = yield* session
+        .ensureThread("thread-start-unanswered")
+        .pipe(
+          Effect.exit,
+          Effect.timeoutOption(UNANSWERED_REQUEST_BUDGET),
+          Effect.forkChild({ startImmediately: true }),
+        );
+      yield* Deferred.await(written);
+      yield* TestClock.adjust(UNANSWERED_REQUEST_BUDGET);
+
+      const settled = yield* Fiber.join(ensured);
+      assert.isTrue(
+        Option.isSome(settled) && failedOnDeadline(settled.value),
+        `ensureThread did not fail on the deadline within ${UNANSWERED_REQUEST_BUDGET} of an unanswered thread/start`,
+      );
+      const retired = yield* Fiber.join(events);
+      assert.isTrue(
+        Option.isSome(retired) && Exit.isFailure(retired.value),
+        "session events did not fail after thread/start passed its deadline",
+      );
+      const refused = yield* Effect.exit(session.ensureThread("thread-start-after-retire"));
+      const refusal = Exit.isFailure(refused) ? Cause.squash(refused.cause) : undefined;
+      assert.isTrue(
+        Predicate.hasProperty(refusal, "cause") &&
+          Predicate.isTagged(refusal.cause, "CodexAppServerRetiredError"),
+        "a retired app-server accepted a new thread",
+      );
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
+  const turnPreamble = codexReplayPreamble({
+    nativeThreadId: "turn-start-unanswered",
+    nativeTurnId: "turn-unanswered",
+    prompt: "Hello",
+  });
+  // regression: #24300 a stopped shared app-server left a loaded thread's next turn pending forever
+  it.effect.each([
+    {
+      method: "config/read",
+      entries: [
+        ...turnPreamble.slice(0, 5),
+        {
+          type: "expect_outbound",
+          label: "thread/name/set",
+          frame: {
+            id: 3,
+            method: "thread/name/set",
+            params: { threadId: "turn-start-unanswered", name: CODEX_TEST_THREAD_TITLE },
+          },
+        } satisfies CodexReplay.CodexAppServerReplayEntry,
+        {
+          type: "emit_inbound",
+          label: "thread/name/set",
+          frame: { id: 3, result: {} },
+        } satisfies CodexReplay.CodexAppServerReplayEntry,
+        {
+          type: "expect_outbound",
+          label: "config/read",
+          frame: {
+            id: 4,
+            method: "config/read",
+            params: { cwd: "/workspace", includeLayers: false },
+          },
+        } satisfies CodexReplay.CodexAppServerReplayEntry,
+      ],
+    },
+    { method: "turn/start", entries: turnPreamble.slice(0, 6) },
+  ])("fails a turn whose $method the shared app-server never answers", ({ entries }) =>
+    Effect.gen(function* () {
+      const written = yield* Deferred.make<void>();
+      const session = yield* openReplaySession(
+        makeCodexReplayTranscript({
+          scenario: "turn-start-unanswered",
+          entries: [...entries, requestWritten],
+        }),
+        awaitRequestWritten(written),
+      );
+      const threadId = ThreadId.make("thread-turn-start-unanswered");
+      const providerThread = yield* session.ensureThread(threadId);
+
+      const outcome = yield* session.runtime
+        .startTurn(
+          makeCodexTestTurnInput({
+            threadId,
+            providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("turn-start-unanswered-attempt"),
+            text: "Hello",
+          }),
+        )
+        .pipe(
+          Effect.exit,
+          Effect.timeoutOption(UNANSWERED_REQUEST_BUDGET),
+          Effect.forkChild({ startImmediately: true }),
+        );
+      yield* Deferred.await(written);
+      yield* TestClock.adjust(UNANSWERED_REQUEST_BUDGET);
+      const settled = yield* Fiber.join(outcome);
+
+      assert.isTrue(
+        Option.isSome(settled),
+        `startTurn was still waiting after ${UNANSWERED_REQUEST_BUDGET}`,
+      );
+      if (Option.isSome(settled)) {
+        assert.isTrue(failedOnDeadline(settled.value), "startTurn did not fail on the deadline");
+      }
     }).pipe(
       Effect.scoped,
       Effect.provide(
@@ -12635,6 +12938,28 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           { operation: "delete", path: "/w/e.ts" },
           { operation: "add", path: "/w/a.ts" },
         ]);
+        assert.equal(
+          fileChanges[0]?.diffStr,
+          [
+            'diff --git "a//w/c.ts" "b//w/d.ts"',
+            '--- "a//w/c.ts"',
+            '+++ "b//w/d.ts"',
+            "@@",
+            'diff --git "a//w/e.ts" "b//w/e.ts"',
+            '--- "a//w/e.ts"',
+            "+++ /dev/null",
+            "@@ -1,1 +0,0 @@",
+            "-gone",
+            "\\ No newline at end of file",
+            'diff --git "a//w/a.ts" "b//w/a.ts"',
+            "--- /dev/null",
+            '+++ "b//w/a.ts"',
+            "@@ -0,0 +1,1 @@",
+            "+export {};",
+            "\\ No newline at end of file",
+            "",
+          ].join("\n"),
+        );
       }).pipe(
         Effect.scoped,
         Effect.provide(

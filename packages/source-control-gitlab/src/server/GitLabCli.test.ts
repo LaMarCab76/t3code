@@ -35,73 +35,95 @@ afterEach(() => {
 });
 
 layer("GitLabCli.layer", (it) => {
-  it.effect("parses merge request view output", () =>
-    Effect.gen(function* () {
-      mockedRun.mockReturnValueOnce(
-        Effect.succeed(
-          processOutput(
-            JSON.stringify({
-              iid: 42,
-              title: "Add MR thread creation",
-              web_url: "https://gitlab.com/pingdotgg/t3code/-/merge_requests/42",
-              target_branch: "main",
-              source_branch: "feature/mr-threads",
-              sha: "a".repeat(40),
-              state: "closed",
-              closed_at: "2026-08-23T10:00:00Z",
-              source_project_id: 101,
-              target_project_id: 100,
-              source_project: {
-                path_with_namespace: "octocat/t3code",
-              },
-            }),
+  it.effect.each(["42", "https://other.gitlab.example/group/repo/-/merge_requests/42"])(
+    "parses merge request view output for %s",
+    (reference) =>
+      Effect.gen(function* () {
+        const byUrl = reference.startsWith("https://");
+        mockedRun.mockReturnValueOnce(
+          Effect.succeed(
+            processOutput(
+              JSON.stringify({
+                iid: 42,
+                title: "Add MR thread creation",
+                web_url: "https://gitlab.com/pingdotgg/t3code/-/merge_requests/42",
+                target_branch: "main",
+                source_branch: "feature/mr-threads",
+                sha: "a".repeat(40),
+                state: "closed",
+                closed_at: "2026-08-23T10:00:00Z",
+                source_project_id: 101,
+                target_project_id: 100,
+                ...(byUrl ? {} : { source_project: { path_with_namespace: "octocat/t3code" } }),
+              }),
+            ),
           ),
-        ),
-      );
+        );
 
-      const result = yield* Effect.gen(function* () {
-        const glab = yield* GitLabCli.GitLabCli;
-        return yield* glab.getMergeRequest({
-          cwd: "/repo",
-          reference: "42",
+        if (byUrl) {
+          mockedRun.mockReturnValueOnce(
+            Effect.succeed(
+              processOutput(JSON.stringify({ path_with_namespace: "octocat/t3code" })),
+            ),
+          );
+        }
+        const result = yield* Effect.gen(function* () {
+          const glab = yield* GitLabCli.GitLabCli;
+          return yield* glab.getMergeRequest({
+            cwd: "/repo",
+            reference,
+          });
         });
-      });
 
-      assert.deepStrictEqual(result, {
-        number: 42,
-        title: "Add MR thread creation",
-        url: "https://gitlab.com/pingdotgg/t3code/-/merge_requests/42",
-        baseRefName: "main",
-        headRefName: "feature/mr-threads",
-        headSha: "a".repeat(40),
-        state: "closed",
-        closedAt: "2026-08-23T10:00:00Z",
-        mergedAt: null,
-        isCrossRepository: true,
-        headRepositoryNameWithOwner: "octocat/t3code",
-        headRepositoryOwnerLogin: "octocat",
-      });
-      expect(mockedRun).toHaveBeenCalledWith(
-        expect.objectContaining({
-          command: "glab",
-          cwd: "/repo",
-          args: ["mr", "view", "--output", "json", "--", "42"],
-        }),
-      );
-      const classifyFailure = mockedRun.mock.calls.at(-1)?.[0].classifyFailure;
-      assert.strictEqual(
-        classifyFailure?.(
-          "x gitlab.example.test has not been authenticated with glab. Run `glab auth login`",
-        ),
-        "authentication",
-      );
-      assert.strictEqual(
-        classifyFailure?.(
-          'Failed to get merge request 42: oauth2: "invalid_grant" "The provided authorization grant is invalid, expired, revoked, does not match the redirection URI used in the authorization request, or was issued to another client."',
-        ),
-        "authentication",
-      );
-    }),
+        assert.deepStrictEqual(result, {
+          number: 42,
+          title: "Add MR thread creation",
+          url: "https://gitlab.com/pingdotgg/t3code/-/merge_requests/42",
+          baseRefName: "main",
+          headRefName: "feature/mr-threads",
+          headSha: "a".repeat(40),
+          state: "closed",
+          closedAt: "2026-08-23T10:00:00Z",
+          mergedAt: null,
+          isCrossRepository: true,
+          headRepositoryNameWithOwner: "octocat/t3code",
+          headRepositoryOwnerLogin: "octocat",
+        });
+        expect(mockedRun).toHaveBeenCalledWith(
+          expect.objectContaining({
+            command: "glab",
+            cwd: "/repo",
+            args: ["mr", "view", "--output", "json", "--", reference],
+          }),
+        );
+        if (byUrl) {
+          expect(mockedRun).toHaveBeenNthCalledWith(
+            2,
+            expect.objectContaining({
+              cwd: "/repo",
+              args: ["api", "--hostname", "other.gitlab.example", "projects/101"],
+              env: expect.objectContaining({
+                GITLAB_TOKEN: "",
+                GITLAB_ACCESS_TOKEN: "",
+                OAUTH_TOKEN: "",
+              }),
+            }),
+          );
+        }
+        const classifyFailure = mockedRun.mock.calls[0]?.[0].classifyFailure;
+        assert.strictEqual(
+          classifyFailure?.(
+            "x gitlab.example.test has not been authenticated with glab. Run `glab auth login`",
+          ),
+          "authentication",
+        );
+        assert.strictEqual(
+          classifyFailure?.(
+            'Failed to get merge request 42: oauth2: "invalid_grant" "The provided authorization grant is invalid, expired, revoked, does not match the redirection URI used in the authorization request, or was issued to another client."',
+          ),
+          "authentication",
+        );
+      }),
   );
 
   // A strictly confined glab (Snap) has a private /tmp, so it cannot open the server's body file.

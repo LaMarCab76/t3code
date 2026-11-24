@@ -1,12 +1,21 @@
 import {
   isDeliveredProviderTurn,
   type OrchestrationV2Run,
-  type OrchestrationV2ThreadProjection,
+  type OrchestrationV2ProviderTurn,
+  type OrchestrationV2RunAttempt,
 } from "@t3tools/contracts";
 
 export function unsentManualContinuationSource(
   run: Pick<OrchestrationV2Run, "manualContinuationOfRunId"> | undefined,
-  projection: Pick<OrchestrationV2ThreadProjection, "runs" | "attempts" | "providerTurns">,
+  projection: {
+    readonly runs: ReadonlyArray<OrchestrationV2Run>;
+    readonly attempts: ReadonlyArray<
+      Pick<OrchestrationV2RunAttempt, "id" | "runId" | "attemptOrdinal" | "reason">
+    >;
+    readonly providerTurns: ReadonlyArray<
+      Pick<OrchestrationV2ProviderTurn, "runAttemptId" | "promptDropped">
+    >;
+  },
 ) {
   let sourceId = run?.manualContinuationOfRunId;
   if (sourceId === undefined) return undefined;

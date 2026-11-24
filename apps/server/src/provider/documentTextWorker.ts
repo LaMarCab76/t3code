@@ -170,9 +170,11 @@ function* all(node: XmlNode, name: string | readonly string[]): Generator<XmlNod
     else yield* all(child, name);
   }
 }
-function* text(node: XmlNode): Generator<string, void> {
+function* text(node: XmlNode): Generator<TextPart, void> {
   if (HIDDEN.has(node.name)) return;
-  if (["tab", "ptab", "cell"].includes(node.name)) yield "\t";
+  // Word text boxes hold their own paragraphs inside the anchoring paragraph.
+  if (node.name === "txbxContent") yield* paragraphs(node);
+  else if (["tab", "ptab", "cell"].includes(node.name)) yield "\t";
   else if (["br", "line-break", "cr"].includes(node.name)) yield "\n";
   else if (node.name === "noBreakHyphen") yield "\u2011";
   else if (node.spaceCount !== undefined) {
@@ -614,8 +616,24 @@ async function* document(path: string, extension: string): AsyncGenerator<TextPa
           .filter((rel) => rel.attrs.TargetMode !== "External")
           .map((rel) => [rel.attrs.Id, rel.attrs.Target]),
       );
-    if (extension === ".docx") yield* paragraphs(read("word/document.xml"));
-    else if ([".odt", ".ods", ".odp"].includes(extension)) {
+    if (extension === ".docx") {
+      // The package relationship names the main part; Word for the web saves word/document2.xml.
+      const foldPartName = (name: string) => name.replace(/[A-Z]/g, (char) => char.toLowerCase());
+      const partNames = new Map(Array.from(files.keys(), (name) => [foldPartName(name), name]));
+      const findPart = (name: string) =>
+        files.has(name) ? name : partNames.get(foldPartName(name));
+      const relationships = findPart("_rels/.rels");
+      const target =
+        relationships !== undefined
+          ? [...all(read(relationships), "Relationship")].find(
+              (rel) =>
+                rel.attrs.Type?.endsWith("/officeDocument") && rel.attrs.TargetMode !== "External",
+            )?.attrs.Target
+          : undefined;
+      const main = target && NodePath.posix.normalize(target).replace(/^\//, "");
+      const documentPart = (main ? findPart(main) : undefined) ?? findPart("word/document.xml");
+      yield* paragraphs(read(documentPart ?? "word/document.xml"));
+    } else if ([".odt", ".ods", ".odp"].includes(extension)) {
       const content = read("content.xml");
       if (extension === ".odt") yield* paragraphs(content);
       else {

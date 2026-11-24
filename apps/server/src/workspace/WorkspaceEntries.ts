@@ -5,7 +5,9 @@ import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Semaphore from "effect/Semaphore";
 import * as Path from "effect/Path";
 import * as RcMap from "effect/RcMap";
 import * as Schema from "effect/Schema";
@@ -154,11 +156,31 @@ const resolveBrowseTarget = Effect.fn("WorkspaceEntries.resolveBrowseTarget")(fu
   );
 });
 
+// A link to an unresponsive network share must not hold up the local entries beside it.
+const SYMLINK_TARGET_STAT_TIMEOUT = Duration.seconds(1);
+// A timed-out stat cannot be cancelled and keeps a libuv worker (4 by default) busy,
+// so cap target stats in flight to leave most of the pool to other fs work.
+const MAX_PENDING_SYMLINK_TARGET_STATS = 2;
+
 /** @public */
 export const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
   const workspaceSearchIndexes = yield* WorkspaceSearchIndex.WorkspaceSearchIndexMap;
+  const symlinkStatSlots = yield* Semaphore.make(MAX_PENDING_SYMLINK_TARGET_STATS);
+  const statSymlinkTarget = (candidate: { readonly name: string; readonly fullPath: string }) =>
+    Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        yield* restore(symlinkStatSlots.take(1));
+        const stat = yield* Effect.promise(() =>
+          NodeFSP.stat(candidate.fullPath).then(
+            (stats) => (stats.isDirectory() ? candidate : null),
+            () => null,
+          ),
+        ).pipe(Effect.ensuring(symlinkStatSlots.release(1)), Effect.forkDetach);
+        return yield* restore(Fiber.join(stat));
+      }),
+    );
   const vcsProcess = yield* VcsProcess.VcsProcess;
 
   const normalizeWorkspaceRoot = Effect.fn("WorkspaceEntries.normalizeWorkspaceRoot")(function* (
@@ -252,17 +274,32 @@ export const make = Effect.gen(function* () {
       const showHidden = endsWithSeparator || prefix.startsWith(".");
       const lowerPrefix = prefix.toLowerCase();
       const entries: Array<{ readonly name: string; readonly fullPath: string }> = [];
+      const symlinkCandidates: Array<{ readonly name: string; readonly fullPath: string }> = [];
       for (const dirent of dirents) {
         if (
-          dirent.isDirectory() &&
-          dirent.name.toLowerCase().startsWith(lowerPrefix) &&
-          (showHidden || !dirent.name.startsWith("."))
+          !dirent.name.toLowerCase().startsWith(lowerPrefix) ||
+          (!showHidden && dirent.name.startsWith("."))
         ) {
-          entries.push({
-            name: dirent.name,
-            fullPath: path.join(parentPath, dirent.name),
-          });
+          continue;
         }
+        const fullPath = path.join(parentPath, dirent.name);
+        if (dirent.isDirectory()) {
+          entries.push({ name: dirent.name, fullPath });
+        } else if (dirent.isSymbolicLink()) {
+          symlinkCandidates.push({ name: dirent.name, fullPath });
+        }
+      }
+      if (symlinkCandidates.length > 0) {
+        yield* Effect.forEach(
+          symlinkCandidates,
+          (candidate) =>
+            statSymlinkTarget(candidate).pipe(
+              Effect.map((directory) => {
+                if (directory !== null) entries.push(directory);
+              }),
+            ),
+          { concurrency: MAX_PENDING_SYMLINK_TARGET_STATS, discard: true },
+        ).pipe(Effect.timeoutOption(SYMLINK_TARGET_STAT_TIMEOUT));
       }
 
       return {

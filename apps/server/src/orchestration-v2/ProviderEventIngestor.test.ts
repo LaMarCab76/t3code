@@ -669,7 +669,18 @@ layer("ProviderEventIngestorV2", (it) => {
       const now = yield* DateTime.now;
       const eventSink = yield* EventSink.EventSinkV2;
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
-      const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+      const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+      const rewindRequestedLock = yield* Deferred.make<void>();
+      const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2.pipe(
+        Effect.provide(Layer.fresh(ProviderEventIngestor.layer)),
+        Effect.provideService(ThreadCommandExecutor.ThreadCommandExecutor, {
+          ...executor,
+          withLock: (key, effect) =>
+            Deferred.succeed(rewindRequestedLock, undefined).pipe(
+              Effect.andThen(executor.withLock(key, effect)),
+            ),
+        }),
+      );
       const idAllocator = yield* IdAllocator.IdAllocatorV2;
       const threadEvent = yield* threadCreatedEvent(now);
       const threadId = threadEvent.threadId;
@@ -849,7 +860,7 @@ layer("ProviderEventIngestorV2", (it) => {
         nativeTurnId: null,
       });
 
-      yield* ingestor.ingestNormalized({
+      const rewind = ingestor.ingestNormalized({
         providerSessionId,
         providerInstanceId: modelSelection.instanceId,
         threadId,
@@ -885,6 +896,30 @@ layer("ProviderEventIngestorV2", (it) => {
           retainedNativeTurnIds: ["turn-started-outside-t3", "kept-turn"],
         },
       });
+
+      const rewindFiber = yield* executor.withLock(
+        threadId,
+        Effect.gen(function* () {
+          const current = yield* projectionStore.getThreadProjection(threadId);
+          const captured = current.runs.find((run) => run.id === unlocatedRun)!;
+          const fiber = yield* rewind.pipe(Effect.forkChild({ startImmediately: true }));
+          yield* Effect.raceFirst(Deferred.await(rewindRequestedLock), Fiber.await(fiber));
+          yield* eventSink.write({
+            events: [
+              {
+                id: yield* idAllocator.allocate.event({ threadId }),
+                type: "run.updated",
+                threadId,
+                runId: captured.id,
+                occurredAt: now,
+                payload: captured,
+              },
+            ],
+          });
+          return fiber;
+        }),
+      );
+      yield* Fiber.join(rewindFiber);
 
       const projection = yield* projectionStore.getThreadProjection(threadId);
       const runIds = [otherProviderRun, keptRun, abandonedRun, unlocatedRun, rewindingRun];
@@ -2260,6 +2295,60 @@ layer("ProviderEventIngestorV2", (it) => {
         }),
         [],
       );
+    }),
+  );
+
+  it.effect("applies an agent's mode change without undoing newer thread settings", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const rootEvent = yield* threadCreatedEvent(now);
+      if (rootEvent.type !== "thread.created") throw new Error("Expected thread fixture");
+      // Saved mid-turn: a newer model and effort the reporting turn never saw.
+      const saved = {
+        ...modelSelection,
+        model: "gpt-6.1-sol",
+        options: [
+          { id: "effort", value: "high" },
+          { id: "mode", value: "plan" },
+        ],
+      };
+      yield* eventSink.write({
+        events: [{ ...rootEvent, payload: { ...rootEvent.payload, modelSelection: saved } }],
+      });
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId: rootEvent.threadId,
+      });
+      const ingest = (instanceId: ProviderInstanceId, from: string) =>
+        ingestor.ingestNormalized({
+          providerSessionId,
+          providerInstanceId: modelSelection.instanceId,
+          threadId: rootEvent.threadId,
+          event: {
+            type: "thread_model_selection.updated",
+            driver: CODEX_DRIVER,
+            threadId: rootEvent.threadId,
+            instanceId,
+            changes: [{ id: "mode", from, to: "default" }],
+          },
+        });
+      assert.deepEqual(
+        (yield* ingest(modelSelection.instanceId, "plan")).map((stored) => stored.event.type),
+        ["thread.model-selection-updated"],
+      );
+      assert.deepEqual((yield* projectionStore.getThread(rootEvent.threadId)).modelSelection, {
+        ...saved,
+        options: [
+          { id: "effort", value: "high" },
+          { id: "mode", value: "default" },
+        ],
+      });
+      assert.deepEqual(yield* ingest(modelSelection.instanceId, "plan"), []);
+      assert.deepEqual(yield* ingest(ProviderInstanceId.make("other-instance"), "default"), []);
     }),
   );
 

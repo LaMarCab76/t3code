@@ -3,6 +3,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
+import * as TestClock from "effect/testing/TestClock";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -555,8 +557,46 @@ describe("parseResolvedPath", () => {
 
 // Path.layer joins with POSIX separators here, so the test windir is a POSIX path.
 const WSL_EXE = "/windows/System32/wsl.exe";
+const STORE_SERVICE = "HKLM\\SYSTEM\\CurrentControlSet\\Services\\WSLService";
+const INBOX_SERVICE = "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LxssManager";
 
-const isAvailable = (policy?: Parameters<typeof DesktopManagedPolicy.layerTest>[0]) =>
+const registrySpawner = (keys: ReadonlyArray<string>, pendingKey?: string) =>
+  ChildProcessSpawner.make((command) =>
+    Effect.succeed(
+      ChildProcessSpawner.makeHandle({
+        pid: ChildProcessSpawner.ProcessId(1),
+        stdout: Stream.empty,
+        stderr: Stream.empty,
+        all: Stream.empty,
+        exitCode:
+          pendingKey !== undefined &&
+          command._tag === "StandardCommand" &&
+          command.args.includes(pendingKey)
+            ? Effect.never
+            : Effect.succeed(
+                ChildProcessSpawner.ExitCode(
+                  command._tag === "StandardCommand" &&
+                    command.command === "reg.exe" &&
+                    keys.some((key) => command.args.includes(key))
+                    ? 0
+                    : 1,
+                ),
+              ),
+        isRunning: Effect.succeed(false),
+        kill: () => Effect.void,
+        stdin: Sink.drain,
+        getInputFd: () => Sink.drain,
+        getOutputFd: () => Stream.empty,
+        unref: Effect.succeed(Effect.void),
+      }),
+    ),
+  );
+
+const isAvailable = (
+  policy?: Parameters<typeof DesktopManagedPolicy.layerTest>[0],
+  serviceKeys: ReadonlyArray<string> = [STORE_SERVICE],
+  pendingKey?: string,
+) =>
   makeIsAvailable("win32", "/windows").pipe(
     Effect.provide(
       Layer.mergeAll(
@@ -565,9 +605,25 @@ const isAvailable = (policy?: Parameters<typeof DesktopManagedPolicy.layerTest>[
         DesktopManagedPolicy.layerTest(policy),
       ),
     ),
+    Effect.provideService(
+      ChildProcessSpawner.ChildProcessSpawner,
+      registrySpawner(serviceKeys, pendingKey),
+    ),
   );
 
 describe("makeIsAvailable", () => {
+  it.effect("needs a registered WSL service, not just the System32 install stub", () =>
+    Effect.gen(function* () {
+      assert.isFalse(yield* isAvailable(undefined, []));
+      assert.isTrue(yield* isAvailable(undefined, [INBOX_SERVICE]));
+      const withSlowProbe = yield* isAvailable(undefined, [STORE_SERVICE], INBOX_SERVICE).pipe(
+        Effect.forkScoped,
+      );
+      yield* TestClock.adjust("5 seconds");
+      assert.isTrue(yield* Fiber.join(withSlowProbe));
+    }),
+  );
+
   it.effect("turns WSL off on a machine with a managed policy, even an invalid one", () =>
     Effect.gen(function* () {
       assert.isTrue(yield* isAvailable());

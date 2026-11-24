@@ -44,6 +44,7 @@ function makeHarness(options?: {
   const layer = ProjectCloneTracker.layer.pipe(
     Layer.provide(
       Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
+        normalizeCloneDestination: Effect.succeed,
         prepareClone: (input) =>
           Effect.succeed({
             destinationPath: input.destinationPath,
@@ -228,6 +229,7 @@ describe("ProjectCloneTracker", () => {
     const layer = ProjectCloneTracker.layer.pipe(
       Layer.provide(
         Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
+          normalizeCloneDestination: Effect.succeed,
           prepareClone: (input) =>
             Effect.succeed({
               destinationPath: input.destinationPath,
@@ -312,11 +314,134 @@ describe("ProjectCloneTracker", () => {
     }).pipe(Effect.provide(harness.layer));
   });
 
+  it.effect("a fresh clone into a failed clone's destination supersedes it", () => {
+    let attempts = 0;
+    const harness = makeHarness({
+      clone: (input) =>
+        Effect.suspend(() =>
+          ++attempts === 1
+            ? Effect.fail(
+                new SourceControlRepositoryError({
+                  operation: "cloneRepository",
+                  provider: SourceControlProviderKind.make("unknown"),
+                  detail: "fatal: repository not found",
+                }),
+              )
+            : Effect.succeed({
+                cwd: input.destinationPath,
+                remoteUrl: input.remoteUrl ?? "",
+                repository: null,
+              }),
+        ),
+    });
+    // The failed clone's project still owns the destination.
+    const conflictingHooks: ProjectCloneTracker.ProjectCloneHooks = {
+      ...harness.hooks,
+      createProject: (input) =>
+        Effect.fail(
+          new ProjectConflictError({
+            projectId: input.projectId,
+            workspaceRoot: input.workspaceRoot,
+            conflictingProjectId: projectId,
+          }),
+        ),
+    };
+    return Effect.gen(function* () {
+      const tracker = yield* ProjectCloneTracker.ProjectCloneTracker;
+      const waitForPhase = (phase: "failed" | "done") =>
+        tracker.stream.pipe(
+          Stream.filter((snapshots) =>
+            snapshots.some(
+              (snapshot) => snapshot.projectId === projectId && snapshot.phase === phase,
+            ),
+          ),
+          Stream.runHead,
+        );
+      yield* tracker.start(startInput, harness.hooks);
+      yield* waitForPhase("failed");
+
+      const second = ProjectId.make("project-2");
+      const clonedProject = yield* Deferred.make<ProjectId>();
+      const result = yield* tracker.start(
+        { ...startInput, projectId: second },
+        {
+          ...conflictingHooks,
+          onCloned: ({ projectId }) =>
+            Deferred.succeed(clonedProject, projectId).pipe(Effect.asVoid),
+        },
+      );
+      expect(result.projectId).toBe(projectId);
+      yield* waitForPhase("done");
+      expect(yield* Deferred.await(clonedProject)).toBe(projectId);
+      expect(yield* tracker.get(second)).toBeNull();
+      expect(harness.discarded).toContain(startInput.destinationPath);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("refuses a second clone into a destination that is still cloning", () => {
+    const harness = makeHarness({ clone: () => Effect.never });
+    return Effect.gen(function* () {
+      const tracker = yield* ProjectCloneTracker.ProjectCloneTracker;
+      yield* tracker.start(startInput, harness.hooks);
+      const error = yield* Effect.flip(
+        tracker.start({ ...startInput, projectId: ProjectId.make("project-2") }, harness.hooks),
+      );
+      expect(error.message).toContain("already in progress");
+      expect((yield* tracker.get(projectId))?.phase).toBe("running");
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect.each([projectId, ProjectId.make("replacement")])(
+    "keeps the failed clone retryable when project creation fails for %s",
+    (replacement) => {
+      const harness = makeHarness({
+        clone: () =>
+          Effect.fail(
+            new SourceControlRepositoryError({
+              operation: "cloneRepository",
+              provider: SourceControlProviderKind.make("github"),
+              detail: "Network interrupted.",
+            }),
+          ),
+      });
+      return Effect.gen(function* () {
+        const tracker = yield* ProjectCloneTracker.ProjectCloneTracker;
+        yield* tracker.start(startInput, harness.hooks);
+        yield* tracker.stream.pipe(
+          Stream.filter((snapshots) =>
+            snapshots.some(
+              (snapshot) => snapshot.projectId === projectId && snapshot.phase === "failed",
+            ),
+          ),
+          Stream.runHead,
+        );
+        const error = yield* tracker
+          .start(
+            { ...startInput, projectId: replacement },
+            {
+              ...harness.hooks,
+              createProject: () =>
+                Effect.fail(
+                  new OrchestrationDispatchCommandError({
+                    message: "Could not create the replacement project.",
+                  }),
+                ),
+            },
+          )
+          .pipe(Effect.flip);
+        expect(error.message).toContain("Could not create the replacement project");
+        expect((yield* tracker.get(projectId))?.phase).toBe("failed");
+        expect(yield* tracker.retry(projectId)).toBe(true);
+      }).pipe(Effect.provide(harness.layer));
+    },
+  );
+
   it.effect("does not create a project when the clone cannot be prepared", () => {
     const harness = makeHarness();
     const layer = ProjectCloneTracker.layer.pipe(
       Layer.provide(
         Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({
+          normalizeCloneDestination: Effect.succeed,
           prepareClone: () =>
             Effect.fail(
               new SourceControlRepositoryError({

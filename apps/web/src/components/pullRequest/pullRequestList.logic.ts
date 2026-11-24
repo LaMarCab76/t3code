@@ -589,6 +589,20 @@ export function mergePullRequestLists(
   };
 }
 
+/** Project errors do not count: the priority reads cover the same projects and are skipped here. */
+export function pullRequestListAnsweredEmpty(view: {
+  readonly data: MergedPullRequestList | null;
+  readonly isPending: boolean;
+  readonly error: unknown;
+}): boolean {
+  return (
+    !view.isPending &&
+    view.error === null &&
+    view.data?.entries.length === 0 &&
+    view.data.providers.every((provider) => provider.configured)
+  );
+}
+
 export const pullRequestEnvironmentSetKey = (environmentIds: ReadonlyArray<string>): string =>
   [...environmentIds].sort((left, right) => left.localeCompare(right)).join(",");
 

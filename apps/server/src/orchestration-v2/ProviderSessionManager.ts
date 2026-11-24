@@ -549,6 +549,12 @@ export const layerWithOptions = (
       const sessions = yield* Ref.make(new Map<string, LiveSessionEntry>());
       // Retry per released entry; reusing ids must not lose cleanup for earlier threads.
       const releaseRecordRetries = yield* FiberSet.make();
+      const releasedWorkWriteLock = yield* KeyedLock.make<ThreadId>();
+      const releaseRetrySchedule = Schedule.exponential("1 second").pipe(
+        Schedule.modifyDelay(({ duration }) =>
+          Effect.succeed(Duration.min(duration, Duration.seconds(30))),
+        ),
+      );
       const nextSubscriberId = yield* Ref.make(0);
       const sessionOpen = yield* KeyedLock.make<ProviderSessionId>();
       const threadAttachment = yield* KeyedLock.make<string>();
@@ -1224,7 +1230,12 @@ export const layerWithOptions = (
       // Like restart recovery: an unexpected exit records the work it cancelled on the run that
       // started it and wakes that run, so the agent restarts awaited work instead of waiting on it.
       const writeReleasedWorkNote = Effect.fn("ProviderSessionManager.writeReleasedWorkNote")(
-        function* (released: ReleasedProviderThread) {
+        function* (
+          released: Pick<
+            ReleasedProviderThread,
+            "threadId" | "providerSessionId" | "providerThreadId" | "lostTasks" | "lostItems"
+          > & { readonly sourceRunId?: RunId },
+        ) {
           const { threadId, providerSessionId, lostTasks, lostItems } = released;
           if (lostTasks.length === 0 && lostItems.length === 0) return;
           const { runs, turnItems } = yield* projectionStore.getThreadRecords(
@@ -1249,7 +1260,15 @@ export const layerWithOptions = (
           ];
           const workByRun = new Map<RunId, { run: OrchestrationV2Run; work: Array<Work> }>();
           for (const { providerThreadId, work } of lost) {
-            const run = latestStartedRun(runs, providerThreadId);
+            const run =
+              released.sourceRunId === undefined
+                ? latestStartedRun(runs, providerThreadId)
+                : runs.find(
+                    (candidate) =>
+                      candidate.id === released.sourceRunId &&
+                      candidate.providerThreadId === providerThreadId &&
+                      candidate.status !== "rolled_back",
+                  );
             if (run === undefined) continue;
             const entry = workByRun.get(run.id) ?? { run, work: [] };
             entry.work.push(work);
@@ -1288,6 +1307,7 @@ export const layerWithOptions = (
           }
           yield* eventSink.writeWithEffects({ events, effects });
         },
+        (write, released) => releasedWorkWriteLock.withLock(released.threadId, write),
       );
 
       const writeReleasedBackgroundWorkEvents = (
@@ -1355,13 +1375,7 @@ export const layerWithOptions = (
           return yield* Effect.fail(exit.cause);
         });
         return attempt.pipe(
-          Effect.retry({
-            schedule: Schedule.exponential("1 second").pipe(
-              Schedule.modifyDelay(({ duration }) =>
-                Effect.succeed(Duration.min(duration, Duration.seconds(30))),
-              ),
-            ),
-          }),
+          Effect.retry({ schedule: releaseRetrySchedule }),
           Effect.delay("1 second"),
           FiberSet.run(releaseRecordRetries),
         );
@@ -2932,6 +2946,45 @@ export const layerWithOptions = (
             // Live output bypasses persistence and subscribers so floods cannot delay domain events.
             if (nativeEvent.type === "command_output.delta") {
               return commandOutput.append(nativeEvent);
+            }
+            // A query process can exit under a live session, after the run's last event.
+            if (nativeEvent.type === "background_work.lost") {
+              const persistLoss = writeReleasedWorkNote({
+                threadId: nativeEvent.threadId,
+                providerSessionId: entry.runtime.providerSessionId,
+                providerThreadId: nativeEvent.providerThreadId,
+                lostTasks: nativeEvent.tasks,
+                lostItems: [],
+                ...(nativeEvent.sourceRunId === undefined
+                  ? {}
+                  : { sourceRunId: nativeEvent.sourceRunId }),
+              });
+              return persistLoss.pipe(
+                Effect.catchCause((cause) =>
+                  Cause.hasInterruptsOnly(cause)
+                    ? Effect.failCause(cause).pipe(Effect.orDie)
+                    : Effect.logWarning(
+                        "orchestration-v2.provider-background-work-loss-write-failed",
+                        {
+                          providerSessionId: entry.runtime.providerSessionId,
+                          cause,
+                        },
+                      ).pipe(
+                        Effect.andThen(
+                          persistLoss.pipe(
+                            Effect.catchCauseIf(
+                              (retryCause) => !Cause.hasInterruptsOnly(retryCause),
+                              Effect.fail,
+                            ),
+                            Effect.retry({ schedule: releaseRetrySchedule }),
+                            Effect.delay("1 second"),
+                            FiberSet.run(releaseRecordRetries),
+                            Effect.asVoid,
+                          ),
+                        ),
+                      ),
+                ),
+              );
             }
             if (nativeEvent.type === "prompt_suggestion.updated") {
               return SubscriptionRef.update(promptSuggestionStore, (current) => {

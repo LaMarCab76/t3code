@@ -4726,7 +4726,8 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         if (commands.some((entry) => entry.name === command.name)) {
           // session.command neither accepts nor returns our ID; record the preceding history boundary.
           const newest = yield* client.message.list({ sessionID, order: "desc", limit: 1 });
-          yield* markBefore(sessionId, newest.data[0]?.id ?? null);
+          const before = newest.data[0]?.id ?? null;
+          yield* markBefore(sessionId, before);
           if (!sending()) return;
           if (goalCommand?.type === "pause" || goalCommand?.type === "clear") {
             // OpenCode rejects pausing or clearing a missing goal; Codex treats that as a no-op.
@@ -4739,7 +4740,49 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
             );
             return yield* finishControl;
           }
-          return yield* client.session.command({ sessionID, ...command }).pipe(Effect.asVoid);
+          yield* client.session.command({ sessionID, ...command });
+          // A command that never prompts the model starts no execution, so no event ends its turn.
+          const idle = () => state.active === turn && !busy.has(sessionId);
+          if (!idle()) return;
+          const hasExecution = yield* Effect.gen(function* () {
+            const active = yield* client.session
+              .active()
+              .pipe(Effect.timeout(ACTIVE_CHECK_TIMEOUT));
+            if (sessionId in active) return true;
+            // An ended execution left history behind, but its events may still trail this reply.
+            const ran = yield* OpenCode2Client.paginate(
+              { sessionID, order: "desc" as const, limit: 1 },
+              client.message.list,
+            ).pipe(
+              Stream.takeWhile((message) => message.id !== before),
+              Stream.filter(
+                (message) =>
+                  message.type === "user" ||
+                  message.type === "assistant" ||
+                  message.type === "idle",
+              ),
+              Stream.runHead,
+              Effect.timeout(ACTIVE_CHECK_TIMEOUT),
+            );
+            return Option.isSome(ran);
+          }).pipe(
+            // The command was accepted, even if the follow-up request returns a rejection.
+            Effect.tapError(() =>
+              Effect.sync(() => {
+                if (state.active === turn) markUnsettled(state);
+              }),
+            ),
+          );
+          if (hasExecution) return;
+          return yield* lock.withPermit(
+            Effect.suspend(() =>
+              idle()
+                ? endExecution(state, turn, {
+                    status: turn.interrupted ? "interrupted" : "completed",
+                  })
+                : Effect.void,
+            ),
+          );
         }
       }
       const mentions = skillMentions(text);

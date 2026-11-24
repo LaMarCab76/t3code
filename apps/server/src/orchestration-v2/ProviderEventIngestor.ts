@@ -497,6 +497,37 @@ export const layer: Layer.Layer<
                 }),
               ];
             }
+            case "thread_model_selection.updated": {
+              const { instanceId, changes } = input.event;
+              const thread = yield* projections.getThread(input.event.threadId).pipe(
+                Effect.catchTags({
+                  ProjectionStoreThreadNotFoundError: () => Effect.succeed(null),
+                }),
+              );
+              const current = thread?.modelSelection;
+              if (thread === null || current?.instanceId !== instanceId || !current.options) {
+                return [];
+              }
+              let changed = false;
+              const options = current.options.map((option) => {
+                const change = changes.find(
+                  (candidate) => candidate.id === option.id && candidate.from === option.value,
+                );
+                if (change === undefined) return option;
+                changed = true;
+                return { ...option, value: change.to };
+              });
+              if (!changed) return [];
+              const now = yield* DateTime.now;
+              return [
+                yield* makeDomainEvent(input, {
+                  type: "thread.model-selection-updated",
+                  threadId: thread.id,
+                  payload: { ...thread, modelSelection: { ...current, options }, updatedAt: now },
+                  occurredAt: now,
+                }),
+              ];
+            }
             case "provider_session.updated":
               return [
                 yield* makeDomainEvent(input, {
@@ -652,9 +683,10 @@ export const layer: Layer.Layer<
             }
             case "background_work.updated":
               return [];
+            case "background_work.lost":
             case "command_output.delta":
             case "prompt_suggestion.updated":
-              // The session manager serves these to clients before ingestion.
+              // The session manager handles these before ingestion.
               return [];
             case "turn.terminal":
               const dismissed = yield* dismissNativeUserInputs(
@@ -881,10 +913,23 @@ export const layer: Layer.Layer<
                   });
                 }),
               ),
-              (effect) =>
-                input.event.type === "app_thread.created"
-                  ? threadCommands.withLock(input.event.appThread.id, effect)
-                  : effect,
+              (effect) => {
+                const { event } = input;
+                if (event.type === "app_thread.created")
+                  return threadCommands.withLock(event.appThread.id, effect);
+                if (event.type === "thread_model_selection.updated")
+                  return threadCommands.withLock(event.threadId, effect);
+                // A native rewind updates run rows that checkpoint capture reads under this lock.
+                if (
+                  event.type === "provider_thread.updated" &&
+                  event.retainedNativeTurnIds !== undefined
+                )
+                  return threadCommands.withLock(
+                    event.providerThread.appThreadId ?? input.threadId,
+                    effect,
+                  );
+                return effect;
+              },
             ),
         ),
     });
