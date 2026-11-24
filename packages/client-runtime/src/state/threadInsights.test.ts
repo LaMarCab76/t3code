@@ -78,6 +78,29 @@ describe("mergeThreadInsights", () => {
     expect(mergeThreadInsights(root, answers).inputTokens).toBe(100);
   });
 
+  it("marks remote rows skipped by the query budget as truncated rather than pending", () => {
+    const root = ref("local", "root");
+    const remote = ref("remote", "child");
+    const answers = new Map([
+      [
+        scopedThreadKey(root),
+        answer(root, {
+          rows: Array.from({ length: 200 }, (_, i) => row(String(i), 1)),
+          remotes: [
+            { ...remote, parentThreadId: root.threadId, title: "Child", status: "completed" },
+          ],
+        }),
+      ],
+    ]);
+    const result = mergeThreadInsights(
+      root,
+      answers,
+      undefined,
+      new Set([scopedThreadKey(remote)]),
+    );
+    expect(result).toMatchObject({ pending: [], truncated: true, partial: true, inputTokens: 200 });
+  });
+
   it("preserves unreported counters and incomplete local coverage", () => {
     const root = ref("local", "root");
     const result = mergeThreadInsights(

@@ -196,8 +196,8 @@ it.effect("runs background Git in its own lane so user commands never queue behi
       concurrency: "unbounded",
     }).pipe(Effect.forkChild);
 
-    yield* TestClock.adjust("2 seconds");
-    const started = yield* Queue.takeAll(starts);
+    const started = yield* Queue.takeBetween(starts, 6, 6);
+    yield* Deferred.succeed(gate, undefined);
     assert.deepStrictEqual([...started].toSorted(), [
       "background",
       "background",
@@ -206,7 +206,6 @@ it.effect("runs background Git in its own lane so user commands never queue behi
       "foreground",
       "foreground",
     ]);
-    yield* Deferred.succeed(gate, undefined);
     assert.equal((yield* Fiber.join(background)).length, 12);
     assert.equal((yield* Fiber.join(foreground)).length, 4);
   }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),

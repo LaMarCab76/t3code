@@ -125,7 +125,10 @@ vi.mock(import("../hooks/useTheme"), async (original) => {
   };
 });
 
-const settingsOverrides = vi.hoisted(() => ({ mathRenderingEnabled: false }));
+const settingsOverrides = vi.hoisted(() => ({
+  mathRenderingEnabled: false,
+  assistantInsightsCollapsed: true,
+}));
 vi.mock(import("../hooks/useSettings"), async (original) => {
   const actual = await original();
   type Settings = ReturnType<typeof actual.getClientSettings>;
@@ -169,6 +172,7 @@ function setup() {
   appearance.value = "light";
   parsedSources.length = 0;
   settingsOverrides.mathRenderingEnabled = false;
+  settingsOverrides.assistantInsightsCollapsed = true;
   renderDiagram.mockReset();
   workspaceSearch.mockReset().mockResolvedValue(AsyncResult.success({ entries: [] }));
   filesystemMetadata.mockReset().mockResolvedValue(AsyncResult.success({ entries: [null] }));
@@ -177,6 +181,42 @@ function setup() {
 function renderText(text: string, props: Partial<Parameters<typeof ChatMarkdown>[0]> = {}) {
   return render(<ChatMarkdown cwd="/tmp/project" text={text} {...props} />);
 }
+
+it.each([true, false])(
+  "toggles Claude insights independently with collapse default %s",
+  async (collapsed) => {
+    setup();
+    settingsOverrides.assistantInsightsCollapsed = collapsed;
+    const text = [
+      "★ Insight ─────",
+      "- First preview",
+      "- First detail",
+      "─────",
+      "",
+      "★ Insight ─────",
+      "- Second preview",
+      "- Second detail",
+      "─────",
+      "",
+      "★ Insight ─────",
+      "Unfinished insight stays readable.",
+    ].join("\n");
+    await using screen = await renderText(text, { renderInsights: true });
+    const insights = screen.getByRole("button", { name: /^Insight/ });
+    const first = insights.nth(0);
+    const second = insights.nth(1);
+    await expect.element(first).toHaveAttribute("aria-expanded", String(!collapsed));
+    await expect.element(second).toHaveAttribute("aria-expanded", String(!collapsed));
+    if (collapsed)
+      await expect.element(first.getByText("First preview", { exact: true })).toBeVisible();
+    await expect.element(screen.getByText("Unfinished insight stays readable.")).toBeVisible();
+    await first.click();
+    await expect.element(first).toHaveAttribute("aria-expanded", String(collapsed));
+    await expect.element(second).toHaveAttribute("aria-expanded", String(!collapsed));
+    await first.click();
+    await expect.element(first).toHaveAttribute("aria-expanded", String(!collapsed));
+  },
+);
 
 function buttonsLabelled(container: HTMLElement, label: string) {
   return [...container.querySelectorAll<HTMLButtonElement>("button")].filter(
@@ -707,7 +747,8 @@ describe("ChatMarkdown headings", () => {
         false,
       ),
     );
-    await expect.element(screen.getByRole("note")).toHaveTextContent("Insight A streaming note.");
+    await screen.getByRole("button", { name: /^Insight/ }).click();
+    await expect.element(screen.getByRole("note").getByText("A streaming note.")).toBeVisible();
     expect([...screen.container.querySelectorAll("h2")].map((heading) => heading.id)).toEqual([
       "user-content-setup",
       "user-content-setup-1",

@@ -488,7 +488,9 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly backgroundTasksEndWithProcess?: boolean;
     readonly hangSessionScopeClose?: boolean;
     readonly startTurn?: Effect.Effect<void, ProviderAdapter.ProviderAdapterProtocolError>;
+    readonly resumeTurn?: ProviderAdapter.ProviderAdapterV2SessionRuntime["resumeTurn"];
     readonly interruptTurn?: Effect.Effect<void>;
+    readonly beforeResume?: (nativeId: string | null | undefined) => Effect.Effect<void>;
     readonly beforeUnload?: Effect.Effect<void>;
     readonly unloads?: Queue.Queue<string>;
     readonly archive?: Effect.Effect<void, ProviderAdapter.ProviderAdapterProtocolError>;
@@ -606,11 +608,20 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
               }),
           ensureThread: () => unimplemented("ensureThread unused in test"),
           resumeThread: (threadInput) =>
-            Ref.update(state, (current) => ({
-              ...current,
-              resumeCount: current.resumeCount + 1,
-            })).pipe(Effect.as(threadInput.providerThread)),
+            (
+              options.beforeResume?.(threadInput.providerThread.nativeThreadRef?.nativeId) ??
+              Effect.void
+            ).pipe(
+              Effect.andThen(
+                Ref.update(state, (current) => ({
+                  ...current,
+                  resumeCount: current.resumeCount + 1,
+                })),
+              ),
+              Effect.as(threadInput.providerThread),
+            ),
           startTurn: () => options.startTurn ?? Effect.void,
+          ...(options.resumeTurn === undefined ? {} : { resumeTurn: options.resumeTurn }),
           steerTurn: () => Effect.void,
           interruptTurn: () =>
             Ref.update(state, (current) => ({
@@ -676,7 +687,9 @@ function layerTest(input: {
   readonly backgroundTasksEndWithProcess?: boolean;
   readonly hangSessionScopeClose?: boolean;
   readonly startTurn?: Effect.Effect<void, ProviderAdapter.ProviderAdapterProtocolError>;
+  readonly resumeTurn?: ProviderAdapter.ProviderAdapterV2SessionRuntime["resumeTurn"];
   readonly interruptTurn?: Effect.Effect<void>;
+  readonly beforeResume?: (nativeId: string | null | undefined) => Effect.Effect<void>;
   readonly beforeUnload?: Effect.Effect<void>;
   readonly unloads?: Queue.Queue<string>;
   readonly archive?: Effect.Effect<void, ProviderAdapter.ProviderAdapterProtocolError>;
@@ -728,7 +741,9 @@ function layerTest(input: {
         ? {}
         : { hangSessionScopeClose: input.hangSessionScopeClose }),
       ...(input.startTurn === undefined ? {} : { startTurn: input.startTurn }),
+      ...(input.resumeTurn === undefined ? {} : { resumeTurn: input.resumeTurn }),
       ...(input.interruptTurn === undefined ? {} : { interruptTurn: input.interruptTurn }),
+      ...(input.beforeResume === undefined ? {} : { beforeResume: input.beforeResume }),
       ...(input.beforeUnload === undefined ? {} : { beforeUnload: input.beforeUnload }),
       ...(input.unloads === undefined ? {} : { unloads: input.unloads }),
       ...(input.archive === undefined ? {} : { archive: input.archive }),
@@ -1755,6 +1770,65 @@ it.effect("ProviderSessionManagerV2 resumes a thread natively again after its st
               detail: "query ended before the turn could start",
             }),
           ),
+        }),
+      ),
+    );
+  }),
+);
+
+it.effect("ProviderSessionManagerV2 forwards feedback mode to a native turn resume", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const resumed =
+      yield* Ref.make<ProviderAdapter.ProviderAdapterV2ResumeTurnInput["agentFeedback"]>(undefined);
+    yield* Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread-provider-session-manager-resume-feedback");
+      const providerSessionId = idAllocator.derive.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+      });
+      yield* eventSink.write({
+        events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+      });
+      const runtime = yield* manager.open({
+        threadId,
+        providerSessionId,
+        modelSelection,
+        runtimePolicy,
+      });
+      const providerThread = makeProviderThread({
+        idAllocator,
+        threadId,
+        providerSessionId,
+        now,
+        nativeThreadId: "native-feedback",
+      });
+      const runId = idAllocator.derive.run({ threadId, ordinal: 1 });
+      yield* runtime.resumeTurn!({
+        appThread: (yield* projectionStore.getThreadProjection(threadId)).thread,
+        threadId,
+        runId,
+        runOrdinal: 1,
+        providerTurnOrdinal: 1,
+        attemptId: idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 }),
+        rootNodeId: idAllocator.derive.rootNode({ runId }),
+        providerThread,
+        messageId: yield* idAllocator.allocate.message({ threadId, ordinal: 1 }),
+        modelSelection,
+        runtimePolicy,
+      });
+      assert.equal(yield* Ref.get(resumed), "auto");
+    }).pipe(
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 60_000,
+          serverSettingsLayer: ServerSettings.layerTest({ agentFeedback: { mode: "auto" } }),
+          resumeTurn: (input) => Ref.set(resumed, input.agentFeedback),
         }),
       ),
     );
@@ -5570,6 +5644,208 @@ it.effect.each([
         ),
       );
     }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 unloads each idle native thread a fresh session replaced in the same app thread",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const effect = Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-provider-session-manager-fresh-rounds");
+        const providerSessionId = idAllocator.derive.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        const runtime = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        // Each scheduled "fresh session" round opens a new native thread in the same app thread.
+        for (const round of [1, 2]) {
+          const runId = idAllocator.derive.run({ threadId, ordinal: round });
+          const providerThread = makeProviderThread({
+            idAllocator,
+            threadId,
+            providerSessionId,
+            now,
+            nativeThreadId: `native-round-${round}`,
+          });
+          yield* runtime.startTurn({
+            appThread: (yield* projectionStore.getThreadProjection(threadId)).thread,
+            threadId,
+            runId,
+            runOrdinal: round,
+            providerTurnOrdinal: 1,
+            attemptId: idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 }),
+            rootNodeId: idAllocator.derive.rootNode({ runId }),
+            providerThread,
+            message: {
+              createdBy: "user",
+              creationSource: "server",
+              messageId: yield* idAllocator.allocate.message({ threadId, ordinal: round }),
+              text: "Reply with OK.",
+              attachments: [],
+            },
+            modelSelection,
+            runtimePolicy,
+          });
+          const subscription = yield* runtime.subscribeEvents!;
+          yield* Queue.offer((yield* Ref.get(state)).eventQueues.get(String(providerSessionId))!, {
+            type: "turn.terminal",
+            driver: CODEX_DRIVER,
+            providerThreadId: providerThread.id,
+            providerTurnId: idAllocator.derive.providerTurn({
+              driver: CODEX_DRIVER,
+              nativeTurnId: `native-turn-${round}`,
+            }),
+            runOrdinal: round,
+            status: "completed",
+            failure: null,
+            threadDisposition: "reusable",
+          });
+          yield* subscription.events.pipe(Stream.runHead);
+        }
+
+        yield* TestClock.adjust("1 second");
+        assert.sameMembers(
+          [...(yield* Ref.get(state)).unloadedNativeThreadIds],
+          ["native-round-1", "native-round-2"],
+        );
+      });
+
+      yield* effect.pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 1000,
+            // Keep the shared app-server open, as other conversations do.
+            hasPendingBackgroundWork: Effect.succeed(true),
+          }),
+        ),
+      );
+    }),
+);
+it.effect("keeps the replacement native thread's linked settings after an idle unload", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const resumeStarted = yield* Deferred.make<void>();
+    const releaseResume = yield* Deferred.make<void>();
+    const unloadStarted = yield* Deferred.make<void>();
+    const releaseUnload = yield* Deferred.make<void>();
+    const settings = yield* ServerSettings.ServerSettingsService.pipe(
+      Effect.provide(ServerSettings.layerTest()),
+    );
+    yield* settings.updateSettings({ linkedEnvironmentsEnabled: false });
+    yield* Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread:replacement-native-load");
+      const providerSessionId = idAllocator.derive.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+      });
+      const first = makeProviderThread({ idAllocator, threadId, providerSessionId, now });
+      const replacement = makeProviderThread({
+        idAllocator,
+        threadId,
+        providerSessionId,
+        now,
+        nativeThreadId: "native-replacement",
+      });
+      yield* eventSink.write({
+        events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+      });
+      const runtime = yield* manager.open({
+        threadId,
+        providerSessionId,
+        modelSelection,
+        runtimePolicy,
+      });
+      const resume = (providerThread: OrchestrationV2ProviderThread) =>
+        runtime.resumeThread({ providerThread, threadId, modelSelection, runtimePolicy });
+      yield* resume(first);
+      const runId = idAllocator.derive.run({ threadId, ordinal: 1 });
+      yield* runtime.startTurn({
+        appThread: (yield* projections.getThreadProjection(threadId)).thread,
+        threadId,
+        runId,
+        runOrdinal: 1,
+        providerTurnOrdinal: 1,
+        attemptId: idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 }),
+        rootNodeId: idAllocator.derive.rootNode({ runId }),
+        providerThread: first,
+        message: {
+          createdBy: "user",
+          creationSource: "server",
+          messageId: yield* idAllocator.allocate.message({ threadId, ordinal: 1 }),
+          text: "Reply with OK.",
+          attachments: [],
+        },
+        modelSelection,
+        runtimePolicy,
+      });
+      const subscription = yield* runtime.subscribeEvents!;
+      yield* Queue.offer((yield* Ref.get(state)).eventQueues.get(String(providerSessionId))!, {
+        type: "turn.terminal",
+        driver: CODEX_DRIVER,
+        providerThreadId: first.id,
+        providerTurnId: idAllocator.derive.providerTurn({
+          driver: CODEX_DRIVER,
+          nativeTurnId: "native-turn",
+        }),
+        runOrdinal: 1,
+        status: "completed",
+        failure: null,
+        threadDisposition: "reusable",
+      });
+      yield* subscription.events.pipe(Stream.runHead);
+
+      const loading = yield* resume(replacement).pipe(Effect.forkScoped);
+      yield* Deferred.await(resumeStarted);
+      yield* TestClock.adjust("1 second");
+      yield* Deferred.await(unloadStarted);
+      yield* Deferred.succeed(releaseResume, undefined);
+      yield* Fiber.join(loading);
+      yield* settings.updateSettings({ linkedEnvironmentsEnabled: true });
+      yield* Deferred.succeed(releaseUnload, undefined);
+      yield* resume(replacement);
+
+      const observed = yield* Ref.get(state);
+      assert.deepEqual(observed.unloadedNativeThreadIds, ["native-thread", "native-replacement"]);
+      assert.equal(observed.resumeCount, 3);
+    }).pipe(
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 1000,
+          hasPendingBackgroundWork: Effect.succeed(true),
+          serverSettingsLayer: Layer.succeed(ServerSettings.ServerSettingsService, settings),
+          beforeResume: (nativeId) =>
+            nativeId === "native-replacement"
+              ? Deferred.succeed(resumeStarted, undefined).pipe(
+                  Effect.andThen(Deferred.await(releaseResume)),
+                )
+              : Effect.void,
+          beforeUnload: Deferred.succeed(unloadStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseUnload)),
+          ),
+        }),
+      ),
+      Effect.scoped,
+    );
+  }),
 );
 
 it.effect(

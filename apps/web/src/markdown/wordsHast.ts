@@ -386,8 +386,7 @@ interface Walk {
   readonly math: Map<string, Element>;
   /** A per-render id prefix for math placeholders, which authored ids cannot share. */
   readonly mathKey: string;
-  /** What insightSource opened each insight block with, when it opened any. */
-  readonly insightMarker: RegExp | null;
+  readonly insights: Pick<InsightSource, "marker" | "completed"> | null;
 }
 
 /** UTF-16 offsets for the UTF-8 byte offsets in Words' `data-sourcepos`. */
@@ -722,7 +721,7 @@ function transform(node: Root | Element, walk: Walk, inLink: boolean, inCode: bo
       const paragraph = child.children.find((item) => item.type === "element");
       const first = isElement(paragraph, "p") ? paragraph.children[0] : undefined;
       const text = first?.type === "text" ? first.value : "";
-      const insight = walk.insightMarker?.exec(text);
+      const insight = walk.insights?.marker.exec(text);
       const alert = GITHUB_ALERT_MARKER.exec(text);
       // An alert marker followed by more inline content on its line is text, as remarkGithubAlerts reads it.
       const match = insight
@@ -741,6 +740,9 @@ function transform(node: Root | Element, walk: Walk, inLink: boolean, inCode: bo
           child.children.splice(at, blank);
         }
         props.dataAlert = match[1]!.toLowerCase();
+        if (insight && walk.insights?.completed.has(Number(insight[1]))) {
+          props.dataInsightComplete = "";
+        }
       }
     }
     transform(
@@ -891,6 +893,7 @@ interface InsightSource {
   readonly source: string;
   readonly tree: Root;
   readonly marker: RegExp;
+  readonly completed: ReadonlySet<number>;
   /** The offset in the message for an offset in `source`. */
   readonly toOriginal: (offset: number) => number;
 }
@@ -924,24 +927,26 @@ function insightSource(text: string, options: RenderOptions): InsightSource | nu
     let original = 0;
     let rewritten = 0;
     const unmatchedOpenings = new Set<number>();
-    let indent: string | undefined;
+    let open: { line: number; indent: string } | undefined;
+    const completed = new Set<number>();
     const source = lines
       .map((line, lineIndex) => {
         const value = line.replace(/[\r\n]+$/u, "");
         const ending = line.slice(value.length);
         const inCode = code.some(([start, end]) => original >= start && original < end);
         let output = line;
-        if (indent === undefined) {
+        if (open === undefined) {
           const opening = inCode ? null : ASSISTANT_INSIGHT_OPENING.exec(value);
           if (opening && !skipped.has(lineIndex)) {
-            indent = opening[1] ?? "";
+            open = { line: lineIndex, indent: opening[1] ?? "" };
             unmatchedOpenings.add(lineIndex);
             output = `> [!T3-INSIGHT-${nonce}-${lineIndex}]${ending}`;
           }
         } else {
           const closing = inCode ? null : INSIGHT_CLOSING.exec(value);
-          if (closing && closing[1] === indent) {
-            indent = undefined;
+          if (closing && closing[1] === open.indent) {
+            completed.add(open.line);
+            open = undefined;
             output = ending;
           } else output = `> ${line}`;
         }
@@ -985,6 +990,7 @@ function insightSource(text: string, options: RenderOptions): InsightSource | nu
       source,
       tree,
       marker,
+      completed,
       toOriginal: (offset) => {
         let low = 0;
         let high = offsets.length;
@@ -1178,7 +1184,7 @@ export function wordsHast(text: string, options: WordsHastOptions): Root {
     options,
     math: new Map(),
     mathKey: `t3-math-${Math.random().toString(36).slice(2)}`,
-    insightMarker: insights?.marker ?? null,
+    insights,
   };
   preserveImageSourceMeta(tree as never);
   transform(tree, walk, false, false);

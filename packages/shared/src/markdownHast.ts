@@ -144,7 +144,11 @@ export const CHAT_MARKDOWN_SANITIZE_SCHEMA = {
       "dataCodeMeta",
       "dataInlineCode",
     ],
-    blockquote: [...(defaultSchema.attributes?.blockquote ?? []), "dataAlert"],
+    blockquote: [
+      ...(defaultSchema.attributes?.blockquote ?? []),
+      "dataAlert",
+      "dataInsightComplete",
+    ],
     // Spaces typed at the start of a user's line (keepLeadingWhitespace).
     span: [...(defaultSchema.attributes?.span ?? []), "dataLeadingWhitespace"],
     div: [...(defaultSchema.attributes?.div ?? []), ...CODEX_ARTIFACT_TEMPLATE_HAST_PROPERTIES],

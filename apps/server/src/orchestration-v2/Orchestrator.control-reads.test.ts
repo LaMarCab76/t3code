@@ -7,6 +7,9 @@ import {
   EventId,
   NodeId,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2ProviderTurn,
+  type OrchestrationV2Run,
+  type OrchestrationV2RunAttempt,
   PlanId,
   ProjectId,
   ProviderDriverKind,
@@ -2297,6 +2300,57 @@ it.effect("records a secret and a link card without reading the thread's history
       ],
     );
 
+    const feedbackItem = TurnItemId.make("item:long-cards:feedback");
+    const preview = {
+      kind: "bug" as const,
+      subject: "general",
+      expected: "a",
+      actual: "b",
+      workaround: "",
+      trace: null,
+    };
+    const conversationTrace = {
+      turns: 1,
+      textTurns: 1,
+      truncated: false,
+      entries: [{ turn: 1, type: "user" as const, length: 1, text: "x" }],
+    };
+    const recordFeedback = (id: string, feedbackStatus: "pending" | "sent", withText = false) =>
+      orchestrator.dispatch({
+        threadId,
+        runId: run.id,
+        nodeId: run.rootNodeId!,
+        type: "feedback_request.record",
+        commandId: CommandId.make(id),
+        turnItemId: feedbackItem,
+        feedbackStatus,
+        preview,
+        ...(withText ? { conversationTrace } : {}),
+      });
+    yield* recordFeedback("record-feedback", "pending", true);
+    yield* recordFeedback("repeat-feedback", "pending");
+    const rehydrated = yield* projections.getThreadRecords(threadId, ["turnItems"], {
+      turnItemTypes: ["feedback_request"],
+    });
+    assert.deepInclude(rehydrated.turnItems[0], {
+      id: feedbackItem,
+      feedbackStatus: "pending",
+      conversationTrace,
+    });
+    yield* recordFeedback("send-feedback", "sent");
+    yield* recordFeedback("late-feedback", "pending", true);
+    const decided = yield* projections.getThreadRecords(threadId, ["turnItems"], {
+      turnItemTypes: ["feedback_request"],
+    });
+    const decidedFeedback = decided.turnItems[0];
+    assert.equal(
+      decidedFeedback?.type === "feedback_request" && decidedFeedback.feedbackStatus,
+      "sent",
+    );
+    assert.isUndefined(
+      decidedFeedback?.type === "feedback_request" && decidedFeedback.conversationTrace,
+    );
+
     // A card reads its own run, so the rows and VM steps of its reads, which are deterministic,
     // must stay flat on a copy where the thread has thousands of older runs.
     const copyPath = "file:/card-reads?vfs=memdb";
@@ -3183,4 +3237,101 @@ it.effect(
       }
       assert.equal(yield* captureReads, quietParent);
     }).pipe(Effect.provide(layerTest)),
+);
+
+/** A copy of `value` whose `id` getter counts its reads. */
+const countingIdReads = <T extends { readonly id: string }>(
+  value: T,
+  reads: { count: number },
+): T =>
+  Object.defineProperty({ ...value }, "id", {
+    enumerable: true,
+    get: () => {
+      reads.count += 1;
+      return value.id;
+    },
+  });
+
+// The owner's active attempt is the newest and no provider turn is tagged with it, so the lookup
+// falls back to the turn the attempt names. The last two turns are untagged and share one id.
+it.each([
+  { ownerAttempt: "names no provider turn", providerTurnId: null, findsFirstLegacy: false },
+  {
+    ownerAttempt: "names a provider turn listed twice",
+    providerTurnId: "legacy",
+    findsFirstLegacy: true,
+  },
+  { ownerAttempt: "is missing", providerTurnId: null, findsFirstLegacy: false },
+] as const)(
+  "finds a run's provider turn in at most 2·(T + A) id reads when its attempt $ownerAttempt",
+  ({ ownerAttempt, providerTurnId, findsFirstLegacy }) => {
+    const size = 2_000;
+    const reads = { count: 0 };
+    const providerThreadId = ProviderThreadId.make("provider-thread:lookup");
+    const attempts = Array.from({ length: size }, (_, index) =>
+      countingIdReads<OrchestrationV2RunAttempt>(
+        {
+          id: RunAttemptId.make(`attempt:lookup:${index}`),
+          runId: RunId.make(`run:lookup:${index}`),
+          attemptOrdinal: 1,
+          rootNodeId: NodeId.make(`node:lookup:${index}`),
+          providerInstanceId: instanceId,
+          providerThreadId,
+          providerTurnId:
+            index < size - 1
+              ? ProviderTurnId.make(`provider-turn:lookup:${index}`)
+              : providerTurnId === null
+                ? null
+                : ProviderTurnId.make(`provider-turn:lookup:${providerTurnId}`),
+          reason: "initial",
+          status: index < size - 1 ? "completed" : "pending",
+          startedAt: null,
+          completedAt: null,
+        },
+        reads,
+      ),
+    );
+    const providerTurns = Array.from({ length: size }, (_, index) => {
+      const untagged = index >= size - 2;
+      return countingIdReads<OrchestrationV2ProviderTurn>(
+        {
+          id: ProviderTurnId.make(`provider-turn:lookup:${untagged ? "legacy" : index}`),
+          providerThreadId,
+          nodeId: NodeId.make(`node:lookup:${index}`),
+          runAttemptId: untagged ? null : RunAttemptId.make(`attempt:lookup:${index}`),
+          nativeTurnRef: null,
+          ordinal: index + 1,
+          status: "completed",
+          startedAt: null,
+          completedAt: null,
+        },
+        reads,
+      );
+    });
+    const owner: OrchestrationV2Run = {
+      id: RunId.make(`run:lookup:${size - 1}`),
+      threadId: ThreadId.make("thread:lookup"),
+      ordinal: size,
+      providerInstanceId: instanceId,
+      modelSelection,
+      providerThreadId,
+      userMessageId: MessageId.make("message:lookup"),
+      rootNodeId: NodeId.make(`node:lookup:${size - 1}`),
+      activeAttemptId:
+        ownerAttempt === "is missing"
+          ? RunAttemptId.make("attempt:lookup:missing")
+          : RunAttemptId.make(`attempt:lookup:${size - 1}`),
+      status: "starting",
+      requestedAt: DateTime.makeUnsafe(0),
+      startedAt: null,
+      completedAt: null,
+      checkpointId: null,
+      contextHandoffId: null,
+    };
+
+    const turn = Orchestrator.providerTurnForRun({ attempts, providerTurns }, owner);
+
+    assert.strictEqual(turn, findsFirstLegacy ? providerTurns[size - 2] : undefined);
+    assert.isAtMost(reads.count, 2 * (size + size));
+  },
 );

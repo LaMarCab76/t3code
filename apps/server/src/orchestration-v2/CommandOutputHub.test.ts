@@ -2,11 +2,16 @@ import { assert, it } from "@effect/vitest";
 import {
   type ModelSelection,
   type OrchestrationV2AppThread,
+  type OrchestrationV2Run,
   type OrchestrationV2CommandOutputFrame,
   type OrchestrationV2CommandProgressFrame,
   type OrchestrationV2TurnItem,
+  MessageId,
+  NodeId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderThreadId,
+  RunId,
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
@@ -20,6 +25,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -114,6 +120,7 @@ const writeCommandItem = (
   > & {
     readonly driver?: ProviderDriverKind;
     readonly startedAt?: DateTime.Utc;
+    readonly runId?: RunId;
   },
 ) =>
   Effect.gen(function* () {
@@ -124,7 +131,7 @@ const writeCommandItem = (
     const item: OrchestrationV2TurnItem = {
       id: ITEM_ID,
       threadId,
-      runId: null,
+      runId: fields.runId ?? null,
       nodeId: null,
       providerThreadId: null,
       providerTurnId: null,
@@ -307,6 +314,100 @@ layer("CommandOutputHub", (it) => {
         });
       }
       assert.deepStrictEqual(yield* Queue.take(frames), { items: [] });
+    }),
+  );
+
+  it.effect("command progress follows persisted snapshots through settlement", () =>
+    Effect.gen(function* () {
+      const hub = yield* CommandOutputHub.CommandOutputHub;
+      const threadId = yield* seedThread;
+      yield* writeCommandItem(threadId, { status: "running", output: "snapshot 12/20" });
+      const frames = yield* Queue.unbounded<OrchestrationV2CommandProgressFrame>();
+      yield* hub.subscribeProgress(threadId).pipe(
+        Stream.runForEach((frame) => Queue.offer(frames, frame)),
+        Effect.forkScoped,
+      );
+      assert.deepStrictEqual(yield* Queue.take(frames), {
+        items: [{ itemId: ITEM_ID, completed: 12, total: 20 }],
+      });
+      yield* TestClock.adjust("1 second");
+      yield* writeCommandItem(threadId, { status: "running", output: "snapshot 15/20" });
+      assert.deepStrictEqual(yield* Queue.take(frames), {
+        items: [{ itemId: ITEM_ID, completed: 15, total: 20 }],
+      });
+      yield* TestClock.adjust("1 second");
+      yield* writeCommandItem(threadId, {
+        status: "completed",
+        output: "snapshot 20/20",
+        exitCode: 0,
+      });
+      assert.deepStrictEqual(yield* Queue.take(frames), { items: [] });
+    }),
+  );
+
+  it.effect("hides the command progress of rolled-back runs for live and new subscribers", () =>
+    Effect.gen(function* () {
+      const hub = yield* CommandOutputHub.CommandOutputHub;
+      const threadId = yield* seedThread;
+      const sink = yield* EventSink.EventSinkV2;
+      const ids = yield* IdAllocator.IdAllocatorV2;
+      const now = yield* DateTime.now;
+      const run = {
+        id: RunId.make("run:command"),
+        threadId,
+        ordinal: 1,
+        providerInstanceId: modelSelection.instanceId,
+        modelSelection,
+        providerThreadId: ProviderThreadId.make("provider-thread:command"),
+        userMessageId: MessageId.make("message:command"),
+        rootNodeId: NodeId.make("node:command"),
+        activeAttemptId: null,
+        status: "completed",
+        requestedAt: now,
+        startedAt: now,
+        completedAt: now,
+        checkpointId: null,
+        contextHandoffId: null,
+      } satisfies OrchestrationV2Run;
+      const writeRun = (status: OrchestrationV2Run["status"]) =>
+        ids.allocate.event({ threadId }).pipe(
+          Effect.flatMap((id) =>
+            sink.write({
+              events: [
+                {
+                  id,
+                  type: "run.updated",
+                  threadId,
+                  runId: run.id,
+                  nodeId: run.rootNodeId,
+                  providerInstanceId: run.providerInstanceId,
+                  occurredAt: now,
+                  payload: { ...run, status },
+                },
+              ],
+            }),
+          ),
+        );
+      yield* writeRun("completed");
+      yield* writeCommandItem(threadId, {
+        runId: run.id,
+        status: "running",
+        output: "snapshot 12/20",
+      });
+      yield* hub.append({ threadId, itemId: ITEM_ID, chunk: "snapshot 13/20" });
+      const frames = yield* Queue.unbounded<OrchestrationV2CommandProgressFrame>();
+      yield* hub.subscribeProgress(threadId).pipe(
+        Stream.runForEach((frame) => Queue.offer(frames, frame)),
+        Effect.forkScoped,
+      );
+      assert.deepEqual(yield* Queue.take(frames), {
+        items: [{ itemId: ITEM_ID, completed: 13, total: 20 }],
+      });
+      yield* writeRun("rolled_back");
+      yield* TestClock.adjust("1 second");
+      assert.deepEqual(yield* Queue.take(frames), { items: [] });
+      const initial = yield* hub.subscribeProgress(threadId).pipe(Stream.runHead);
+      assert.deepEqual(Option.getOrUndefined(initial), { items: [] });
     }),
   );
 

@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import {
   type ComposerContextRecord,
   ComposerContextId,
+  ChatAttachmentId,
   EnvironmentId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -11,6 +12,7 @@ import { expect, it, vi } from "vite-plus/test";
 import { act, render, stubGlobal } from "../../../test/render";
 import { DraftId, useComposerDraftStore } from "../../composerDraftStore";
 import { formatInlineContextReference } from "../../lib/composerContextReferences";
+import { previewAnnotationFromRecord } from "../../lib/composerContextRecords";
 import { rememberCopiedComposerAttachments } from "../../lib/copiedComposerAttachments";
 import { pendingDraftWork } from "./pendingDraftWork";
 import { useComposerContextImport } from "./useComposerContextImport";
@@ -56,6 +58,7 @@ it.each([
   { kind: "file", edit: "question" },
   { kind: "image", edit: "question" },
   { kind: "image", edit: "annotation" },
+  { kind: "image", edit: "annotation-collision" },
   { kind: "image", edit: "delete-annotation" },
 ] as const)("settles a delayed $kind import after $edit", async ({ kind, edit }) => {
   const target = DraftId.make(`clipboard-${kind}-${edit}`);
@@ -75,43 +78,6 @@ it.each([
   const downloaded = deferred<Response>();
   const requested = deferred<void>();
   const settled = deferred<void>();
-  const input = {
-    environmentId: EnvironmentId.make("clipboard-target"),
-    linkedEnvironments: new Map(),
-    activeThread: undefined,
-    activeThreadId: null,
-    composerDraftTarget: target,
-    attachmentDraftTarget: target,
-    attachmentTargetKey: target,
-    attachmentTargetKeyRef: { current: target },
-    questionAttachmentTarget: edit === "question" ? target : null,
-    pendingUserInputs: [],
-    composerContextRecords: new Map(),
-    composerImages: [],
-    composerFilesRef: { current: [] },
-    pendingThreadImportsRef: { current: new Map() },
-    promptRef,
-    addComposerFilesToDraft: (files: Parameters<typeof store.addFiles>[1]) =>
-      store.addFiles(target, files, { appendReference: edit !== "question" }),
-  } satisfies ImportInput & { promptRef: { current: string } };
-  let importer!: Importer;
-  await using _screen = await render(
-    <Harness
-      input={input}
-      ready={(value) => {
-        importer = value;
-      }}
-    />,
-  );
-  const end = pendingDraftWork.end.bind(pendingDraftWork);
-  using _settled = vi.spyOn(pendingDraftWork, "end").mockImplementation((key) => {
-    end(key);
-    settled.resolve();
-  });
-  using _fetch = stubGlobal("fetch", () => {
-    requested.resolve();
-    return downloaded.promise;
-  });
   const contextId = ComposerContextId.make(`${kind}_source`);
   const attachmentFields = {
     version: 1 as const,
@@ -150,13 +116,90 @@ it.each([
     styleChanges: [],
     screenshotContextId: contextId,
   } satisfies ComposerContextRecord;
-  const annotated = edit === "annotation" || edit === "delete-annotation";
+  const collision = edit === "annotation-collision";
+  const annotated = edit === "annotation" || edit === "delete-annotation" || collision;
+  const restoreQueued = vi.fn();
+  const input = {
+    environmentId: collision ? sourceEnvironmentId : EnvironmentId.make("clipboard-target"),
+    linkedEnvironments: new Map(),
+    activeThread: undefined,
+    activeThreadId: null,
+    composerDraftTarget: target,
+    attachmentDraftTarget: target,
+    attachmentTargetKey: target,
+    attachmentTargetKeyRef: { current: target },
+    questionAttachmentTarget: edit === "question" ? target : null,
+    pendingUserInputs: [],
+    composerContextRecords: collision
+      ? new Map([
+          [
+            annotation.contextId,
+            {
+              kind: "preview-annotation",
+              record: previewAnnotationFromRecord({
+                ...annotation,
+                comment: "Existing annotation",
+              }),
+            },
+          ],
+        ])
+      : new Map(),
+    ...(collision && attachment.kind === "image"
+      ? {
+          removedQueuedAttachments: [
+            {
+              attachment: {
+                type: "image" as const,
+                id: ChatAttachmentId.make(attachment.attachmentId),
+                name: attachment.name,
+                mimeType: attachment.mimeType,
+                sizeBytes: attachment.sizeBytes,
+                source: attachment.source,
+              },
+              contextIds: [contextId],
+            },
+          ],
+          onRestoreQueuedAttachment: restoreQueued,
+        }
+      : {}),
+    composerImages: [],
+    composerFilesRef: { current: [] },
+    pendingThreadImportsRef: { current: new Map() },
+    promptRef,
+    addComposerFilesToDraft: (files: Parameters<typeof store.addFiles>[1]) =>
+      store.addFiles(target, files, { appendReference: edit !== "question" }),
+  } satisfies ImportInput & { promptRef: { current: string } };
+  let importer!: Importer;
+  await using _screen = await render(
+    <Harness
+      input={input}
+      ready={(value) => {
+        importer = value;
+      }}
+    />,
+  );
+  const end = pendingDraftWork.end.bind(pendingDraftWork);
+  using _settled = vi.spyOn(pendingDraftWork, "end").mockImplementation((key) => {
+    end(key);
+    settled.resolve();
+  });
+  using _fetch = stubGlobal("fetch", () => {
+    requested.resolve();
+    return downloaded.promise;
+  });
   let pastedPrompt = "";
+  let screenshotId: string | undefined;
   await act(async () => {
     const remapped = importer.importContextRecords(
       annotated ? [attachment, annotation] : [attachment],
       sourceEnvironmentId,
     );
+    if (collision) {
+      expect(restoreQueued).not.toHaveBeenCalled();
+      screenshotId = remapped.get(annotation.contextId)?.replace("preview-annotation_", "");
+      expect(screenshotId).toBeDefined();
+      expect(screenshotId).not.toBe(annotation.annotationId);
+    }
     pastedPrompt = formatInlineContextReference({
       kind: annotated ? "preview-annotation" : kind,
       contextId: remapped.get(annotated ? annotation.contextId : contextId)!,
@@ -170,6 +213,7 @@ it.each([
   if (edit !== "cached") expect(pendingDraftWork.has(target)).toBe(true);
   await act(() => {
     if (
+      !collision &&
       edit !== "annotation" &&
       edit !== "retain" &&
       edit !== "cached" &&
@@ -193,12 +237,14 @@ it.each([
   const draft = store.getComposerDraft(target)!;
   expect(draft.prompt).toBe(promptRef.current);
   const attachments = kind === "file" ? draft.files : draft.images;
+  if (collision) expect(draft.images.map(({ id }) => id)).toEqual([screenshotId]);
   if (kind === "image" && edit === "retain")
     expect(draft.images[0]?.source).toEqual(
       attachment.kind === "image" ? attachment.source : undefined,
     );
   expect(attachments.map((file) => file.name)).toEqual(
-    edit === "undo" ||
+    collision ||
+      edit === "undo" ||
       edit === "retain" ||
       edit === "annotation" ||
       edit === "cached" ||

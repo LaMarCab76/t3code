@@ -140,6 +140,13 @@ that use an API key or a `claude setup-token` token don't get it, even with
 `--chrome`, and neither do third-party providers such as Amazon Bedrock. Claude Code
 doesn't support it in WSL.
 
+## Insights
+
+Claude's Explanatory and Learning output styles add insight blocks to replies.
+Each completed block starts collapsed with a preview. Select its heading to open
+or close that block. To start with all blocks open, turn off **Collapse Claude
+insights** in **Settings > Appearance**. On mobile, the setting is under **Text**.
+
 ## OpenRouter
 
 Create a Claude instance with its own config directory, such as

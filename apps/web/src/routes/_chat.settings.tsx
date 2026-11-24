@@ -52,6 +52,23 @@ function SettingsScopeBoundary({ pathname, children }: { pathname: string; child
   const m = useMessages();
   const hash = useLocation({ select: (location) => location.hash });
   const searchTarget = getSettingsSearchTargetScope(hash);
+  const agentFeedbackAvailability = searchTarget?.agentFeedbackOnly
+    ? {
+        eligibleEnvironmentIds: environments
+          .filter(
+            (environment) =>
+              environment.connection.phase === "connected" &&
+              environment.serverConfig?.environment.capabilities.agentFeedback === true,
+          )
+          .map((environment) => environment.environmentId),
+        isTargetAvailable:
+          connectedEnvironments.length > 0 &&
+          connectedEnvironments.every(
+            (environment) =>
+              environment.serverConfig?.environment.capabilities.agentFeedback === true,
+          ),
+      }
+    : null;
   const capabilityAvailability =
     searchTarget?.requiresThreadAutoSettlement || searchTarget?.requiresScheduledTaskSnooze
       ? getThreadSettingsSearchAvailability(
@@ -60,19 +77,20 @@ function SettingsScopeBoundary({ pathname, children }: { pathname: string; child
           searchTarget.requiresScheduledTaskSnooze ? "scheduledTaskSnooze" : undefined,
         )
       : null;
+  const targetAvailability = agentFeedbackAvailability ?? capabilityAvailability;
   if (
     scope.kind !== "unavailable" &&
     searchTarget &&
-    capabilityAvailability &&
-    !capabilityAvailability.isTargetAvailable
+    targetAvailability &&
+    !targetAvailability.isTargetAvailable
   ) {
     return (
       <SettingsScopeNotice
         target="environment"
         targetId={hash}
-        eligibleEnvironmentIds={capabilityAvailability.eligibleEnvironmentIds}
+        eligibleEnvironmentIds={targetAvailability.eligibleEnvironmentIds}
       >
-        {capabilityAvailability.eligibleEnvironmentIds.length > 0
+        {targetAvailability.eligibleEnvironmentIds.length > 0
           ? gt("{title} requires a supporting environment. Choose one to continue.", {
               title: m(searchTarget.title),
             })
