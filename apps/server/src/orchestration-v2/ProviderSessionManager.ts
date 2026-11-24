@@ -2614,14 +2614,6 @@ export const layerWithOptions = (
           );
         return {
           ...runtime,
-          ...(resumeTurn === undefined
-            ? {}
-            : {
-                resumeTurn: (input: ProviderAdapter.ProviderAdapterV2ResumeTurnInput) =>
-                  agentFeedbackMode.pipe(
-                    Effect.flatMap((agentFeedback) => resumeTurn({ ...input, agentFeedback })),
-                  ),
-              }),
           // Pi replaces its session snapshot as metadata changes.
           get providerSession() {
             return runtime.providerSession;
@@ -2757,12 +2749,13 @@ export const layerWithOptions = (
                 turnMetrics("send", input.modelSelection.model),
               ),
             ),
-          ...(runtime.resumeTurn === undefined
+          ...(resumeTurn === undefined
             ? {}
             : {
                 resumeTurn: (input: ProviderAdapter.ProviderAdapterV2ResumeTurnInput) =>
                   busyTurn(input, () =>
-                    runtime.resumeTurn!(input).pipe(
+                    agentFeedbackMode.pipe(
+                      Effect.flatMap((agentFeedback) => resumeTurn({ ...input, agentFeedback })),
                       turnMetrics("resume", input.modelSelection.model),
                     ),
                   ),

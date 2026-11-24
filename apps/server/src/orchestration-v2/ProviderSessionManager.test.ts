@@ -2298,7 +2298,9 @@ const idleReleaseAroundRun = (start: "compactThread" | "resumeTurn") =>
       yield* Fiber.join(terminal);
       yield* TestClock.adjust("2 seconds");
       assert.isFalse(yield* manager.isLive(providerSessionId));
-    }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 1_000 })));
+    }).pipe(
+      Effect.provide(layerTest({ state, idleTimeoutMs: 1_000, resumeTurn: () => Effect.void })),
+    );
   });
 
 it.effect.each([
