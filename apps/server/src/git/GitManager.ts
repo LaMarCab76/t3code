@@ -218,6 +218,7 @@ const PR_LOOKUP_FAILURE_BASE_TTL = Duration.seconds(20);
 const PR_LOOKUP_FAILURE_MAX_TTL = Duration.minutes(15);
 const PR_LOOKUP_CACHE_CAPACITY = 2_048;
 const PR_LOOKUP_GIT_STATE_TTL = Duration.minutes(5);
+// Turn end looks up the PR ~0.5 s after local status; older reads are read again.
 const SETTLED_PR_LOOKUP_RECHECK_INTERVAL = Duration.minutes(15);
 // Shared by every background caller (backfill, settlement, cleanup), so startup discovery
 // cannot fill the git and forge process slots that foreground work also needs.
@@ -1287,7 +1288,7 @@ export const make = Effect.gen(function* () {
         Effect.catchIf(isNotGitRepositoryError, () => Effect.succeed(nonRepositoryStatusDetails)),
       );
     const hostingProvider = details.hasOriginRemote
-      ? yield* resolveHostingProvider(cwd, details.branch)
+      ? yield* withPrLookupGitReads(resolveHostingProvider(cwd, details.branch), cwd)
       : null;
 
     return {
@@ -1777,7 +1778,6 @@ export const make = Effect.gen(function* () {
       .pipe(Effect.orElseSucceed(() => null));
     return handle?.context?.provider ?? provider;
   });
-
   const resolveRemoteRepositoryContext = Effect.fn("resolveRemoteRepositoryContext")(function* (
     cwd: string,
     remoteName: string | null,
@@ -2256,7 +2256,9 @@ export const make = Effect.gen(function* () {
     const finalStatus =
       result.action === "commit"
         ? null
-        : yield* gitCore.statusDetails(cwd).pipe(Effect.orElseSucceed(() => null));
+        : yield* gitCore
+            .statusDetailsRemote(cwd, { refreshUpstream: false, includeAheadOfDefault: false })
+            .pipe(Effect.orElseSucceed(() => null));
     if (finalStatus?.branch) {
       finalBranchContext = {
         branch: finalStatus.branch,
@@ -2494,7 +2496,13 @@ export const make = Effect.gen(function* () {
           } as GitActionProgressEvent)
         : Effect.void;
 
-    let suggestion: CommitAndBranchSuggestion | null | undefined = preResolvedSuggestion;
+    const customCommit = parseCustomCommitMessage(commitMessage ?? "");
+    let suggestion: CommitAndBranchSuggestion | null | undefined =
+      preResolvedSuggestion ??
+      (customCommit && {
+        ...customCommit,
+        commitMessage: formatCommitMessage(customCommit.subject, customCommit.body),
+      });
     if (!suggestion) {
       const needsGeneration = !commitMessage?.trim();
       if (needsGeneration) {
@@ -2566,11 +2574,20 @@ export const make = Effect.gen(function* () {
             },
           }
         : null;
-    const { commitSha } = yield* gitCore.commit(cwd, suggestion.subject, suggestion.body, {
-      timeoutMs: COMMIT_TIMEOUT_MS,
-      stage: filePaths ? { filePaths } : {},
-      ...(commitProgress ? { progress: commitProgress } : {}),
-    });
+    const committed = yield* gitCore
+      .commit(cwd, suggestion.subject, suggestion.body, {
+        timeoutMs: COMMIT_TIMEOUT_MS,
+        stage: {
+          ...(filePaths ? { filePaths } : {}),
+          ...(!preResolvedSuggestion && customCommit ? { unverified: true } : {}),
+        },
+        ...(commitProgress ? { progress: commitProgress } : {}),
+      })
+      .pipe(Effect.catchTags({ GitNothingToCommitError: () => Effect.succeed(null) }));
+    if (!committed) {
+      return { status: "skipped_no_changes" as const };
+    }
+    const { commitSha } = committed;
     if (currentHookName !== null) {
       yield* emit({
         kind: "hook_finished",

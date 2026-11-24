@@ -10,11 +10,12 @@ import { useEnvironmentScope, usePreparedConnection } from "../../state/session"
 import { VoiceSettingsPanel } from "./VoiceSettingsPanel";
 import { SettingsScopeProvider } from "./SettingsScopeContext";
 
-vi.mock(import("../../state/session"), { spy: true });
-vi.mock("../../env", async (original) => ({
-  ...(await original<typeof import("../../env")>()),
-  isSecretsFeatureEnabled: true,
+const legacy = vi.hoisted(() => ({ active: false, enabled: false }));
+vi.mock(import("../../env"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  legacySecretsFeatureEnabled: () => legacy.enabled,
 }));
+vi.mock(import("../../state/session"), { spy: true });
 vi.mock("../../state/environments", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../state/environments")>()),
   useEnvironments: () => ({
@@ -24,6 +25,7 @@ vi.mock("../../state/environments", async (importOriginal) => ({
         label: "Laptop",
         connection: { phase: "available" },
         serverConfig: {
+          ...(legacy.active ? {} : { featureFlags: { secretProviders: true } }),
           secretReferences: true,
           settings: {
             secretProviders: {
@@ -109,6 +111,34 @@ it("cancelling a provider's setup keeps the current destination and writes nothi
       expect(writes).toEqual([]);
     },
   );
+});
+
+it.each([true, false])("respects the client flag on legacy voice servers (%s)", async (enabled) => {
+  legacy.active = true;
+  legacy.enabled = enabled;
+  try {
+    await withVoicePanel(
+      (url) =>
+        url.pathname === "/api/voice/cloud/keys"
+          ? Promise.resolve(Response.json({ openai: false, xai: true }))
+          : null,
+      async (screen) => {
+        await screen.getByRole("combobox", { name: "Transcribe with" }).click();
+        await page.getByRole("option", { name: "OpenAI via Laptop" }).click();
+        const dialog = page.getByRole("dialog");
+        const source = dialog.getByRole("combobox", { name: "OpenAI API key source" });
+        if (enabled) {
+          await source.click();
+          await expect.element(page.getByRole("option", { name: "Work vault" })).toBeVisible();
+        } else {
+          await expect.element(source).not.toBeInTheDocument();
+        }
+      },
+    );
+  } finally {
+    legacy.active = false;
+    legacy.enabled = false;
+  }
 });
 
 it("enables the chosen provider only after a successful setup", async () => {

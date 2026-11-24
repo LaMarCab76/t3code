@@ -242,7 +242,19 @@ const make = Effect.gen(function* () {
 
   const exists = (target: string) =>
     fileSystem.exists(target).pipe(Effect.orElseSucceed(() => false));
+  const realPath = (target: string) =>
+    fileSystem.realPath(target).pipe(Effect.orElseSucceed(() => target));
   const isRepository = (folder: string) => exists(path.join(folder, ".git"));
+  const occupied = Effect.fnUntraced(function* (target: string) {
+    if (!(yield* exists(target))) return false;
+    const isDirectory = (yield* fileSystem.stat(target).pipe(Effect.option)).pipe(
+      Option.exists((info) => info.type === "Directory"),
+    );
+    if (!isDirectory) return true;
+    return (
+      (yield* fileSystem.readDirectory(target).pipe(Effect.orElseSucceed(() => [""]))).length > 0
+    );
+  });
   const trackedFolders = (project: {
     readonly workspaceRoot: string;
     readonly trackedFolders: ReadonlyArray<ProjectTrackedFolder>;
@@ -336,15 +348,13 @@ const make = Effect.gen(function* () {
   // rename: a worktree linked to the repository, on the thread's branch. Null when it is.
   /** The checkout's own Git directory when it is a worktree linked to its repository. */
   const linkedGitDir = Effect.fnUntraced(function* (checkout: TaskFolderCheckout) {
-    const real = (target: string) =>
-      fileSystem.realPath(target).pipe(Effect.orElseSucceed(() => target));
     const resolved = yield* gitDirPointer(checkout.worktreePath);
     if (
       resolved === null ||
       !isWithinRoot(
         path,
-        yield* real(resolved),
-        path.join(yield* real(yield* commonGitDir(checkout.repositoryPath)), "worktrees"),
+        yield* realPath(resolved),
+        path.join(yield* realPath(yield* commonGitDir(checkout.repositoryPath)), "worktrees"),
       )
     )
       return null;
@@ -352,8 +362,9 @@ const make = Effect.gen(function* () {
     const registered = (yield* fileSystem
       .readFileString(path.join(resolved, "gitdir"))
       .pipe(Effect.orElseSucceed(() => ""))).trim();
-    return registered !== "" &&
-      (yield* real(path.dirname(registered))) === (yield* real(checkout.worktreePath))
+    if (registered === "") return null;
+    const registeredDirectory = path.dirname(path.resolve(resolved, registered));
+    return (yield* realPath(registeredDirectory)) === (yield* realPath(checkout.worktreePath))
       ? resolved
       : null;
   });
@@ -847,6 +858,23 @@ const make = Effect.gen(function* () {
   const locked = <A, E>(taskFolder: Pick<TaskFolder, "projectPath">, effect: Effect.Effect<A, E>) =>
     withWorkspaceLease(path.resolve(taskFolder.projectPath), effect);
 
+  const blockedWorktreePath = Effect.fnUntraced(function* (root: string, worktreePath: string) {
+    let target = root;
+    for (const segment of path.relative(root, worktreePath).split(path.sep)) {
+      target = path.join(target, segment);
+      if (Option.isSome(yield* fileSystem.readLink(target).pipe(Effect.option))) return target;
+      const info = yield* fileSystem.stat(target).pipe(
+        Effect.catchIf(
+          (error) => error.reason._tag === "NotFound",
+          () => Effect.succeed(null),
+        ),
+      );
+      if (info === null) break;
+      if (info.type !== "Directory") return target;
+    }
+    return null;
+  });
+
   const createRepositoryWorktree = Effect.fnUntraced(function* (
     taskFolder: TaskFolder,
     repository: ProjectTrackedFolder,
@@ -855,6 +883,28 @@ const make = Effect.gen(function* () {
     baseBranch: string | undefined,
   ) {
     const worktreePath = mapped(taskFolder, repository.path);
+    // A hook may place a link anywhere along the path to a tracked repository.
+    if ((yield* blockedWorktreePath(taskFolder.root, worktreePath)) !== null)
+      return "blocked" as const;
+    const checkout = {
+      repositoryPath: repository.path,
+      worktreePath,
+      name: repository.name,
+    } satisfies TaskFolderRepository;
+    if (yield* occupied(worktreePath)) {
+      if ((yield* unadoptable(checkout, branch)) === null)
+        return { repository: checkout, fromOrigin: false };
+      const existingRoot = yield* git.repositoryRoot(worktreePath);
+      if (
+        existingRoot !== null &&
+        path.relative(yield* realPath(existingRoot), yield* realPath(worktreePath)) === ""
+      )
+        return null;
+      return yield* new TaskFolderError({
+        operation: "create",
+        detail: `${worktreePath} already holds files. Move the existing files or choose a different repository folder.`,
+      });
+    }
     yield* fileSystem.makeDirectory(path.dirname(worktreePath), { recursive: true });
     const start = yield* repositoryStart(repository.path, startFromOrigin, baseBranch);
     yield* git.createWorktree({
@@ -865,11 +915,7 @@ const make = Effect.gen(function* () {
       path: worktreePath,
     });
     return {
-      repository: {
-        repositoryPath: repository.path,
-        worktreePath,
-        name: repository.name,
-      } satisfies TaskFolderRepository,
+      repository: checkout,
       fromOrigin: start.refName !== start.baseRefName,
     };
   });
@@ -1006,6 +1052,8 @@ const make = Effect.gen(function* () {
         } else {
           yield* linkFolder(taskPlan.projectRoot, empty.projectPath, taskPlan.trackedRepositories);
         }
+        let finished = 0;
+        const skipped: string[] = [];
         // A repository inside another waits for the one that holds it.
         const levels = Map.groupBy(
           taskPlan.repositories,
@@ -1021,21 +1069,28 @@ const make = Effect.gen(function* () {
           const exits = yield* Effect.forEach(
             levels.get(level)!,
             (repository) =>
-              createRepositoryWorktree(
-                empty,
-                repository,
-                branch,
-                input.startFromOrigin,
-                input.baseBranch,
+              (skipped.some((outer) => isWithinRoot(path, repository.path, outer))
+                ? Effect.succeed(null)
+                : createRepositoryWorktree(
+                    empty,
+                    repository,
+                    branch,
+                    input.startFromOrigin,
+                    input.baseBranch,
+                  )
               ).pipe(
                 Effect.tap((worktree) =>
                   Effect.suspend(() => {
-                    created.push(worktree.repository);
-                    repositoriesStartedFromOrigin ||= worktree.fromOrigin;
+                    finished += 1;
+                    if (worktree === "blocked") skipped.push(repository.path);
+                    else if (worktree !== null) {
+                      created.push(worktree.repository);
+                      repositoriesStartedFromOrigin ||= worktree.fromOrigin;
+                    }
                     return (
                       input.onRepository?.({
                         name: repository.name,
-                        done: created.length,
+                        done: finished,
                         total: taskPlan.repositories.length,
                       }) ?? Effect.void
                     );
@@ -1189,15 +1244,16 @@ const make = Effect.gen(function* () {
               path.relative(taskFolder.projectRoot, repositoryPath),
             ).pipe(Effect.mapError(fail("add-repository", "Could not prepare the folder")))
           : true;
-        const occupied =
-          !opened ||
-          ((yield* exists(worktreePath)) &&
-            ((yield* fileSystem.stat(worktreePath).pipe(Effect.option)).pipe(
-              Option.exists((info) => info.type !== "Directory"),
-            ) ||
-              (yield* fileSystem.readDirectory(worktreePath).pipe(Effect.orElseSucceed(() => [""])))
-                .length > 0));
-        if (occupied)
+        const blocked = opened
+          ? yield* blockedWorktreePath(taskFolder.root, worktreePath).pipe(
+              Effect.mapError(fail("add-repository", "Could not inspect the worktree path")),
+            )
+          : worktreePath;
+        if (blocked !== null)
+          return yield* refuse(
+            `${blocked} is blocked by a link or file, so no worktree can go there.`,
+          );
+        if (yield* occupied(worktreePath))
           return yield* refuse(`${worktreePath} already holds files, so no worktree can go there.`);
         // The link the worktree took the place of comes back when the worktree does not stay.
         const relink = wasLinked

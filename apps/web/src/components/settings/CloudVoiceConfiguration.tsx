@@ -1,6 +1,7 @@
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { cloudSpeechDisclosure } from "@t3tools/shared/speechCopy";
 import type { PreparedConnection } from "@t3tools/client-runtime/connection";
+import { hasFeatureFlag } from "@t3tools/client-runtime/state/server";
 import {
   configuredSecretSources,
   secretRequestReference,
@@ -31,7 +32,7 @@ import type { HttpClient } from "effect/http";
 import { Atom, AsyncResult } from "effect/reactivity";
 import { useId, useState } from "react";
 import { T, useGT, useMessages, Var } from "gt-react";
-import { isSecretsFeatureEnabled } from "../../env";
+import { legacySecretsFeatureEnabled } from "../../env";
 import {
   inEnvironmentSpeechRuntime,
   runEnvironmentSpeech,
@@ -193,8 +194,12 @@ export function CloudVoiceConfiguration({
   const [model, setModel] = useState(currentModel ?? "");
   const saved = AsyncResult.isSuccess(presence) ? presence.value?.[provider] : undefined;
   const existing = environment.serverConfig?.settings?.cloudSpeechCredentials?.[provider];
+  const secretsEnabled =
+    environment.serverConfig?.featureFlags === undefined
+      ? legacySecretsFeatureEnabled()
+      : hasFeatureFlag(environment.serverConfig, "secretProviders");
   const sources =
-    isSecretsFeatureEnabled && environment.serverConfig?.secretReferences
+    secretsEnabled && environment.serverConfig?.secretReferences
       ? configuredSecretSources(environment.serverConfig.settings?.secretProviders ?? {}, messages)
       : [];
   const reference =

@@ -19,8 +19,9 @@ import type {
   SpeechStreamText,
   SpeechTranscriptionOptions,
 } from "@t3tools/contracts";
-import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts";
+import { DEFAULT_CLIENT_SETTINGS, EnvironmentInternalError } from "@t3tools/contracts";
 import { resolveSpeechVocabulary } from "@t3tools/shared/speech";
+import * as Schema from "effect/Schema";
 import { useEffect, useSyncExternalStore } from "react";
 
 import { toastManager } from "../components/ui/toast";
@@ -33,6 +34,8 @@ import { runEnvironmentSpeech } from "./runEnvironmentSpeech";
 import { bindAudioGrant, readCleanupGrant } from "./voiceConsent";
 import { msg } from "gt-react";
 import { m } from "../i18n/messages";
+
+const isEnvironmentInternalError = Schema.is(EnvironmentInternalError);
 
 export const IDLE_VOICE_STATE: VoiceInputState = { phase: "idle", error: null, errorAction: null };
 
@@ -59,7 +62,8 @@ export type VoiceInputTarget = {
   readonly persistent: boolean;
   readonly open: (() => void) | null;
   readonly readDraft: () => DraftInput | null;
-  readonly commitDraft: (text: string, selection: DraftInput["selection"]) => void;
+  readonly commitDraft: (text: string, selection: DraftInput["selection"]) => boolean;
+  readonly canSubmit: () => boolean;
   readonly readContext: () => VoiceRecordingContext;
 };
 
@@ -105,6 +109,11 @@ export class VoiceInputSession {
   readonly key: SessionKey;
   private readonly controller: VoiceInputController;
   private target: VoiceInputTarget | null = null;
+  private pendingSubmission: {
+    readonly ownerKey: string;
+    readonly submit: (text: string) => void;
+    text?: string;
+  } | null = null;
   private snapshot: VoiceInputSessionSnapshot = {
     state: IDLE_VOICE_STATE,
     target: null,
@@ -220,18 +229,29 @@ export class VoiceInputSession {
       releaseRecording: async () => platform.cancelRecording(),
       deleteRecording: platform.deleteRecording,
       postProcess,
-      onPostProcessingError: () =>
+      onPostProcessingError: (error) => {
+        const added = m(msg("The original transcript was added."));
+        const detail = isEnvironmentInternalError(error) ? error.detail : undefined;
         toastManager.add({
           type: "warning",
           title: m(msg("Transcript cleanup failed")),
-          description: m(msg("The original transcript was added.")),
-        }),
+          description: detail ? `${detail} ${added}` : added,
+        });
+      },
       readDraft: (): VoiceDraftSnapshot | null => {
         const target = this.target;
         const draft = target?.readDraft();
         return target && draft ? { ownerKey: target.ownerKey, ...draft } : null;
       },
-      commitDraft: (text, selection) => this.target?.commitDraft(text, selection),
+      commitDraft: (text, selection) => {
+        const target = this.target;
+        if (
+          target?.commitDraft(text, selection) &&
+          this.pendingSubmission?.ownerKey === target.ownerKey
+        ) {
+          this.pendingSubmission.text = text;
+        }
+      },
       onStateChange: (state) => {
         if (this.disposed) return;
         const recordingStartedAt =
@@ -239,6 +259,20 @@ export class VoiceInputSession {
         this.publish({ ...this.snapshot, state, recordingStartedAt });
         if (state.phase !== "recording" && state.phase !== "transcribing")
           this.publishActivity(SILENT_ACTIVITY);
+        if (state.phase === "error") {
+          this.pendingSubmission = null;
+          return;
+        }
+        if (state.phase === "idle" && this.pendingSubmission !== null) {
+          const pending = this.pendingSubmission;
+          this.pendingSubmission = null;
+          if (
+            pending.text !== undefined &&
+            this.target?.ownerKey === pending.ownerKey &&
+            this.target.canSubmit()
+          )
+            pending.submit(pending.text);
+        }
       },
     });
   }
@@ -275,6 +309,7 @@ export class VoiceInputSession {
       voiceInputBlocksSubmission(this.controller.currentState) &&
       this.target?.ownerKey !== target.ownerKey;
     if (busyElsewhere) return Promise.resolve();
+    this.pendingSubmission = null;
     this.target = target;
     this.onSpeechStatus = onSpeechStatus;
     this.publishActivity(SILENT_ACTIVITY);
@@ -289,11 +324,29 @@ export class VoiceInputSession {
     this.publish({ ...this.snapshot, target });
   }
 
+  /** Queues a submission to run once the active dictation commits its transcript. */
+  queueSubmission(ownerKey: string, submit: (text: string) => void): boolean {
+    if (
+      this.disposed ||
+      this.target?.ownerKey !== ownerKey ||
+      !voiceInputBlocksSubmission(this.controller.currentState) ||
+      this.pendingSubmission !== null
+    ) {
+      return false;
+    }
+    this.pendingSubmission = { ownerKey, submit };
+    if (this.controller.currentState.phase === "recording") {
+      void this.controller.stop();
+    }
+    return true;
+  }
+
   stop(): Promise<void> {
     return this.controller.stop();
   }
 
   cancel(): void {
+    this.pendingSubmission = null;
     this.controller.cancel();
   }
 
@@ -304,11 +357,13 @@ export class VoiceInputSession {
   /** The editor for `ownerKey` now shows another draft; only a persistent target keeps going. */
   ownerChanged(ownerKey: string): void {
     if (this.target?.ownerKey !== ownerKey || this.target.persistent) return;
+    this.pendingSubmission = null;
     this.controller.ownerChanged();
   }
 
   dispose(): void {
     this.disposed = true;
+    this.pendingSubmission = null;
     this.controller.dispose();
     this.listeners.clear();
     this.activityListeners.clear();

@@ -54,6 +54,18 @@ describe("Azure DevOps change request URLs", () => {
     }
   });
 
+  it("takes a pull request URL that leaves the project out as a checkout reference", () => {
+    for (const url of [
+      "https://dev.azure.com/acme/_git/web/pullrequest/17",
+      "https://acme.visualstudio.com/_git/web/pullrequest/17",
+    ]) {
+      expect(definition.isChangeRequestReference(url), url).toBe(true);
+    }
+    expect(
+      definition.isChangeRequestReference("https://dev.azure.com/_git/web/pullrequest/17"),
+    ).toBe(false);
+  });
+
   it.each([
     ["ssh.dev.azure.com", "v3/org/project/web"],
     ["org.visualstudio.com", "defaultcollection/project/_git/web"],
@@ -155,6 +167,18 @@ describe("Azure DevOps repository keys", () => {
         repository: "acme/platform/_git/tool",
       }),
     ).toBe(false);
+  });
+
+  it.each([
+    "https://dev.azure.com/acme/_git/web/pullrequest/7",
+    "https://acme.visualstudio.com/_git/web/pullrequest/7",
+  ])("matches project-less links to a project named after the repository (%s)", (url) => {
+    const remoteUrl = "https://dev.azure.com/acme/web/_git/web";
+    const identity: ChangeRequestProjectIdentity = {
+      canonicalKey: registry.repositoryKeyFromRemote(remoteUrl),
+      locator: { source: "git-remote", remoteName: "origin", remoteUrl },
+    };
+    expect(definition.isChangeRequestInRepository(identity, parse(url)!)).toBe(true);
   });
 
   it("matches a repository however its name is percent-encoded", () => {

@@ -2464,133 +2464,156 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
       }),
     );
 
-    it.effect("checkpoint retry releases a pending sibling after its wake offer failed", () =>
-      Effect.gen(function* () {
-        const orchestrator = yield* Orchestrator.OrchestratorV2;
-        const sink = yield* EventSink.EventSinkV2;
-        const outbox = yield* EffectOutbox.EffectOutboxV2;
-        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-        const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
-        const now = yield* DateTime.now;
-        const threadId = ThreadId.make("thread:checkpoint-own-delivery");
-        const originRunId = RunId.make("run:checkpoint-own-delivery:origin");
-        const firstId = NodeId.make("node:checkpoint-own-delivery:first");
-        const siblingId = NodeId.make("node:checkpoint-own-delivery:sibling");
-        yield* seedParentWithTerminalTask({
-          threadId,
-          projectId: ProjectId.make("project:checkpoint-own-delivery"),
-          runId: originRunId,
-          rootNodeId: NodeId.make("node:checkpoint-own-delivery:root"),
-          taskId: firstId,
-          deliveryState: "claimed",
-          deliveryTaskIds: [firstId],
-          parentRunStatus: "completed",
-          now,
-        });
-        const original = yield* orchestrator.getThreadProjection(threadId);
-        const first = original.subagents.find((task) => task.id === firstId)!;
-        const delivery = original.runs.find((run) => run.id === originRunId)!.delegatedCompletion!
-          .delivery!;
-        yield* orchestrator.dispatch({
-          type: "message.dispatch",
-          createdBy: "agent",
-          creationSource: "server",
-          commandId: reconcileCommandId("checkpoint-own-delivery-wake"),
-          threadId,
-          messageId: delivery.messageId,
-          text: "First result",
-          attachments: [],
-          dispatchMode: { type: "queue_after_active" },
-          delegatedCompletion: {
-            parentRunId: originRunId,
-            generation: delivery.generation,
-            taskIds: delivery.taskIds,
-          },
-        });
-        const started = yield* orchestrator.getThreadProjection(threadId);
-        const run = started.runs.find(
-          (candidate) => candidate.userMessageId === delivery.messageId,
-        )!;
-        const scopeId = started.nodes.find(
-          (node) => node.id === run.rootNodeId,
-        )!.checkpointScopeId!;
-        yield* outbox.cancelUnsettled({
-          threadId,
-          effectTypes: ["provider-turn.start"],
-          reason: "The delivery turn already completed.",
-        });
-        const commandId = reconcileCommandId("checkpoint-own-delivery-finished");
-        yield* sink.writeWithEffects({
-          commandId,
-          events: [
-            {
-              id: EventId.make("event:checkpoint-own-delivery:sibling"),
-              type: "subagent.updated",
-              threadId,
-              runId: originRunId,
-              nodeId: siblingId,
-              occurredAt: now,
-              payload: {
-                ...first,
-                id: siblingId,
-                completionDelivery: { state: "pending", observedByRunId: null },
+    it.effect.each(["checkpoint", "failed run"] as const)(
+      "%s retry releases a pending sibling after its wake offer failed",
+      (retry) =>
+        Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const sink = yield* EventSink.EventSinkV2;
+          const outbox = yield* EffectOutbox.EffectOutboxV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+          const now = yield* DateTime.now;
+          const threadId = ThreadId.make(`thread:checkpoint-own-delivery:${retry}`);
+          const originRunId = RunId.make(`run:checkpoint-own-delivery:origin:${retry}`);
+          const firstId = NodeId.make(`node:checkpoint-own-delivery:first:${retry}`);
+          const siblingId = NodeId.make(`node:checkpoint-own-delivery:sibling:${retry}`);
+          yield* seedParentWithTerminalTask({
+            threadId,
+            projectId: ProjectId.make(`project:checkpoint-own-delivery:${retry}`),
+            runId: originRunId,
+            rootNodeId: NodeId.make(`node:checkpoint-own-delivery:root:${retry}`),
+            taskId: firstId,
+            deliveryState: "claimed",
+            deliveryTaskIds: [firstId],
+            parentRunStatus: "completed",
+            now,
+          });
+          const original = yield* orchestrator.getThreadProjection(threadId);
+          const first = original.subagents.find((task) => task.id === firstId)!;
+          const delivery = original.runs.find((run) => run.id === originRunId)!.delegatedCompletion!
+            .delivery!;
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            createdBy: "agent",
+            creationSource: "server",
+            commandId: reconcileCommandId(`checkpoint-own-delivery-wake:${retry}`),
+            threadId,
+            messageId: delivery.messageId,
+            text: "First result",
+            attachments: [],
+            dispatchMode: { type: "queue_after_active" },
+            delegatedCompletion: {
+              parentRunId: originRunId,
+              generation: delivery.generation,
+              taskIds: delivery.taskIds,
+            },
+          });
+          const started = yield* orchestrator.getThreadProjection(threadId);
+          const run = started.runs.find(
+            (candidate) => candidate.userMessageId === delivery.messageId,
+          )!;
+          const scopeId = started.nodes.find(
+            (node) => node.id === run.rootNodeId,
+          )!.checkpointScopeId!;
+          yield* outbox.cancelUnsettled({
+            threadId,
+            effectTypes: ["provider-turn.start"],
+            reason: "The delivery turn already completed.",
+          });
+          const firstOffer = yield* Deferred.make<void>();
+          using offer = vi
+            .spyOn(requests, "offer")
+            .mockImplementationOnce(() =>
+              Deferred.succeed(firstOffer, undefined).pipe(
+                Effect.andThen(Effect.die("successor wake offer failed")),
+              ),
+            );
+          const commandId =
+            retry === "checkpoint"
+              ? reconcileCommandId(`checkpoint-own-delivery-finished:${retry}`)
+              : CommandId.make("command:failed-own-delivery-finished");
+          yield* sink.writeWithEffects({
+            commandId,
+            events: [
+              {
+                id: EventId.make(`event:checkpoint-own-delivery:sibling:${retry}`),
+                type: "subagent.updated",
+                threadId,
+                runId: originRunId,
+                nodeId: siblingId,
+                occurredAt: now,
+                payload: {
+                  ...first,
+                  id: siblingId,
+                  completionDelivery: { state: "pending", observedByRunId: null },
+                },
               },
-            },
-            {
-              id: EventId.make("event:checkpoint-own-delivery:finished"),
-              type: "run.updated",
-              threadId,
-              runId: run.id,
-              occurredAt: now,
-              payload: {
-                ...run,
-                status: "completed",
-                startedAt: now,
-                completedAt: now,
-                checkpointId: CheckpointId.make("checkpoint:own-delivery"),
+              {
+                id: EventId.make(`event:checkpoint-own-delivery:finished:${retry}`),
+                type: "run.updated",
+                threadId,
+                runId: run.id,
+                occurredAt: now,
+                payload: {
+                  ...run,
+                  status: retry === "checkpoint" ? "completed" : "failed",
+                  startedAt: now,
+                  completedAt: now,
+                  ...(retry === "checkpoint"
+                    ? { checkpointId: CheckpointId.make("checkpoint:own-delivery") }
+                    : {}),
+                },
               },
-            },
-          ],
-          effects: [
-            {
-              id: "effect:checkpoint-own-delivery",
-              commandId,
-              threadId,
-              request: { type: "checkpoint.capture", runId: run.id, scopeId },
-            },
-          ],
-        });
-        using offer = vi
-          .spyOn(requests, "offer")
-          .mockImplementationOnce(() => Effect.die("successor wake offer failed"));
-        const firstAttempt = yield* Effect.exit(
-          orchestrator.recoverDelegatedTask(threadId, { completedRunId: run.id }),
-        );
-        assert.isTrue(Exit.isFailure(firstAttempt));
-        const reserved = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
-          (candidate) => candidate.id === originRunId,
-        )!.delegatedCompletion!.delivery!;
-        assert.deepEqual(reserved.taskIds, [siblingId]);
-        yield* worker.drain();
-        assert.lengthOf(offer.mock.calls, 2);
-        const completed = yield* orchestrator.getThreadProjection(threadId);
-        assert.equal(
-          completed.subagents.find((task) => task.id === firstId)?.completionDelivery?.state,
-          "delivered",
-        );
-        assert.equal(
-          completed.subagents.find((task) => task.id === siblingId)?.completionDelivery?.state,
-          "claimed",
-        );
-        assert.deepEqual(
-          completed.runs.find((candidate) => candidate.id === originRunId)?.delegatedCompletion
-            ?.delivery?.taskIds,
-          [siblingId],
-        );
-        let wake = yield* requests.take;
-        while (wake.threadId !== threadId) wake = yield* requests.take;
-        assert.equal(wake.delegatedCompletion?.generation, delivery.generation + 1);
-      }),
+            ],
+            effects:
+              retry === "failed run"
+                ? []
+                : [
+                    {
+                      id: `effect:checkpoint-own-delivery:${retry}`,
+                      commandId,
+                      threadId,
+                      request: { type: "checkpoint.capture", runId: run.id, scopeId },
+                    },
+                  ],
+          });
+          if (retry === "checkpoint") {
+            const firstAttempt = yield* Effect.exit(
+              orchestrator.recoverDelegatedTask(threadId, { completedRunId: run.id }),
+            );
+            assert.isTrue(Exit.isFailure(firstAttempt));
+          } else {
+            yield* Deferred.await(firstOffer);
+          }
+          const reserved = (yield* orchestrator.getThreadProjection(threadId)).runs.find(
+            (candidate) => candidate.id === originRunId,
+          )!.delegatedCompletion!.delivery!;
+          assert.deepEqual(reserved.taskIds, [siblingId]);
+          if (retry === "checkpoint") {
+            yield* worker.drain();
+          } else {
+            yield* TestClock.adjust("1 second");
+          }
+          assert.lengthOf(offer.mock.calls, 2);
+          const completed = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(
+            completed.subagents.find((task) => task.id === firstId)?.completionDelivery?.state,
+            "delivered",
+          );
+          assert.equal(
+            completed.subagents.find((task) => task.id === siblingId)?.completionDelivery?.state,
+            "claimed",
+          );
+          assert.deepEqual(
+            completed.runs.find((candidate) => candidate.id === originRunId)?.delegatedCompletion
+              ?.delivery?.taskIds,
+            [siblingId],
+          );
+          let wake = yield* requests.take;
+          while (wake.threadId !== threadId) wake = yield* requests.take;
+          assert.equal(wake.delegatedCompletion?.generation, delivery.generation + 1);
+        }),
     );
 
     it.effect.each(["live", "checkpoint-retry", "checkpoint-offer-retry"] as const)(

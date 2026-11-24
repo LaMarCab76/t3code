@@ -144,9 +144,11 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
         { text: messageText, attachments: attachmentsSnapshot },
         m,
       );
-      promptRef.current = "";
       clearComposerDraftContent(composerDraftTarget);
-      composerRef.current?.resetCursorState();
+      if (currentRouteThreadKeyRef.current === routeThreadKey) {
+        promptRef.current = "";
+        composerRef.current?.resetCursorState();
+      }
       clearedDraft = true;
       const clearedDraftSnapshot = useComposerDraftStore
         .getState()
@@ -222,7 +224,8 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
         }),
       );
       sendInFlightRef.current = false;
-      resetLocalDispatch();
+      if (currentRouteThreadKeyRef.current === routeThreadKey && isCurrentSend())
+        resetLocalDispatch();
       releasedComposer = true;
       await starts;
       if (startedCount > 0) {
@@ -309,7 +312,8 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
     }
     if (!releasedComposer) {
       sendInFlightRef.current = false;
-      resetLocalDispatch();
+      if (currentRouteThreadKeyRef.current === routeThreadKey && isCurrentSend())
+        resetLocalDispatch();
     }
   };
 }

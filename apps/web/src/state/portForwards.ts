@@ -128,6 +128,13 @@ export const findPortForward = (
     (forward) => forward.environmentId === environmentId && forward.remotePort === remotePort,
   );
 
+export function isSameMachinePortForwardError(error: unknown): boolean {
+  const original = error instanceof Error ? (error.cause ?? error) : error;
+  return (original instanceof Error ? original.message : String(original)).includes(
+    "LoopbackTunnelSameMachineError",
+  );
+}
+
 export function forwardPort(environmentId: EnvironmentId, remotePort: number) {
   const bridge = previewBridge();
   if (!bridge) return Promise.reject(new Error(m(msg("Port forwarding needs the desktop app."))));
@@ -135,7 +142,7 @@ export function forwardPort(environmentId: EnvironmentId, remotePort: number) {
     // Electron flattens main-process errors into "Error invoking remote method '…': Tag: text".
     const raw = error instanceof Error ? error.message : String(error);
     throw new Error(
-      raw.includes("LoopbackTunnelSameMachineError")
+      isSameMachinePortForwardError(error)
         ? m(
             msg("This environment runs on this computer, so localhost:{port} already reaches it.", {
               port: remotePort,
