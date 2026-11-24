@@ -1482,7 +1482,7 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       cwd,
       ["rev-parse", "--verify", "--quiet", "--symbolic-full-name", "--end-of-options", revision],
       true,
-    );
+    ).pipe(Effect.map(trimAsciiWhitespace));
     return fullRef === "" || fullRef === revision ? null : fullRef;
   });
 
