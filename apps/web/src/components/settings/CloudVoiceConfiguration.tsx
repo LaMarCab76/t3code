@@ -13,6 +13,7 @@ import {
 } from "@t3tools/client-runtime/voice-input";
 import {
   AuthOrchestrationOperateScope,
+  AuthProvidersManageScope,
   AuthSettingsWriteScope,
   CloudSpeechApiKey,
   CloudSpeechModelId,
@@ -177,6 +178,7 @@ export function CloudVoiceConfiguration({
   const prepared = Option.getOrNull(usePreparedConnection(id));
   const canUse = useEnvironmentScope(id, AuthOrchestrationOperateScope);
   const canManage = useEnvironmentScope(id, AuthSettingsWriteScope);
+  const canUseReferences = useEnvironmentScope(id, AuthProvidersManageScope);
   const [presence, refresh] = useCloudRead(canUse ? prepared : null, getCloudSpeechKeys);
   const [models, refreshModels] = useCloudRead(
     routed && canUse ? prepared : null,
@@ -199,7 +201,7 @@ export function CloudVoiceConfiguration({
       ? legacySecretsFeatureEnabled()
       : hasFeatureFlag(environment.serverConfig, "secretProviders");
   const sources =
-    secretsEnabled && environment.serverConfig?.secretReferences
+    canUseReferences && secretsEnabled && environment.serverConfig?.secretReferences
       ? configuredSecretSources(environment.serverConfig.settings?.secretProviders ?? {}, messages)
       : [];
   const reference =
