@@ -8783,7 +8783,6 @@
   "a9cdd8c7073be920": "Paleta de comandos: alternar",
   "4e0943e8c7a465d1": "Selector de archivos: alternar",
   "df5fdcdf26a6b52a": "Búsqueda en el proyecto: alternar",
-  "a8ff6d33b060736f": "Uso: abrir",
   "a513d51b71b95674": "Tema: seleccionar",
   "1ffd8427452372e1": "Apariencia: alternar",
   "3a3bb4a7551a87cc": "Editor de temas: alternar",
@@ -11502,10 +11501,7 @@
       "v": "v"
     }
   ],
-  "f54364b854a07918": "No hay hubs configurados.",
   "4cf6a373a7535324": "{name} · Deshabilitado",
-  "1d1e9cda847bd398": "La clave de gestión del hub se elimina de este servidor. Sus cuentas salen de la vista Límites; el hub en sí no se toca. Vuelve a añadirlo con la URL y la clave para recuperarlas.",
-  "c9bee4f93481b77a": "Quitar hub",
   "0424112d5a0ecd71": "Automático",
   "3f0e1b77e45d53a9": "Toca para alternar, mantén para hablar",
   "45928549c050a1b4": "Mantener",
@@ -12884,5 +12880,119 @@
     " de salida"
   ],
   "1e84707a889198a0": "Completo",
-  "89fea43c0935af88": "Parcial"
+  "89fea43c0935af88": "Parcial",
+  "796b81c4875c4feb": [
+    "La app ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " necesita un servidor de ",
+    {
+      "i": 2,
+      "k": "_gt_value_2",
+      "v": "v"
+    },
+    " más reciente en este entorno. Actualiza el servidor para usarla."
+  ],
+  "a0c772d32a233da6": "No se pudo revocar la aprobación",
+  "4a18481bea4b4ad5": "Nuevo dispositivo conectado a {environmentLabel}",
+  "46807acd02a4ff72": "Aprobar y continuar",
+  "933dabf0700708af": "Cuántas ejecuciones omitidas conserva cada flujo de trabajo en su historial. Las ejecuciones omitidas más antiguas se eliminan; las que hicieron algo se conservan siempre.",
+  "c92657bb7f2293ff": "Necesita aprobación",
+  "e4d1316c85ed7066": "No hay preguntas de este tipo esperándote.",
+  "78e308ada516928b": "No se pudo aprobar el comando",
+  "a9cb97fca6a6576b": "Comando de creación",
+  "ba94015389f327bc": "Ejecuciones omitidas conservadas",
+  "c17b25519e2b194e": "No se pudieron cargar los comandos de diseño de worktrees",
+  "fcb5f3c4d4753326": "Esta conexión no puede aprobar comandos. Usa un cliente que pueda usar el terminal.",
+  "76cf478e5674fd12": "{count, plural, one {{count} coincidencia} other {{count} coincidencias}}",
+  "7e8476e7306acabe": "¿Permitir que este proyecto ejecute sus comandos de worktree?",
+  "39f64d971ba424b5": "No hay fuentes de uso configuradas.",
+  "0e34c3076c08feb2": [
+    {
+      "t": "span",
+      "i": 1,
+      "c": [
+        "↻ +",
+        {
+          "i": 2,
+          "k": "_gt_value_2",
+          "v": "v"
+        },
+        "%"
+      ]
+    },
+    " ",
+    "en ",
+    {
+      "i": 3,
+      "k": "_gt_value_3",
+      "v": "v"
+    }
+  ],
+  "e4e5b75bba51396c": "Token de portador (opcional)",
+  "dbd877abdc2c7c81": "Fuente de cuotas HTTP",
+  "0c026221dcd2820b": "Añadir una fuente de cuotas HTTP",
+  "c792e744936dbe1b": "Añadir fuente HTTP",
+  "374dac09151d4578": "Pendiente",
+  "353b08f4363dbb2c": "Pendiente",
+  "8e11914556fd8b13": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " prepara los hilos en worktrees con sus propios comandos de ",
+    {
+      "t": "code",
+      "i": 2,
+      "c": "t3.json"
+    },
+    ". Se ejecutan en la máquina de este entorno con tus permisos, fuera de cualquier sandbox de agente. Se te volverá a preguntar cada vez que cambie su texto."
+  ],
+  "f206891e124c77b0": [
+    "El ",
+    {
+      "t": "code",
+      "i": 1,
+      "c": "t3.json"
+    },
+    " de este proyecto prepara los hilos en worktrees con sus propios comandos. Se ejecutan en la máquina de este entorno con tus permisos y solo tal como se aprobaron aquí: un comando cuyo texto cambia necesita aprobación de nuevo."
+  ],
+  "8eeb9cb07d7c59e1": "Tipo de pregunta",
+  "2324770ba91371ac": "URL del punto de conexión",
+  "5ccd5614c65f8d1f": "Revocar la aprobación del comando {kind}",
+  "d185c750156b2121": [
+    "Consulta las cuotas desde un punto de conexión en ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    "."
+  ],
+  "80c3794a5fa12f3a": "Aprobar el comando {kind}",
+  "90f45a354884ccdd": "Comando de eliminación",
+  "e2131cbec8accfe3": "Todos los tipos",
+  "a8f30f631e2b010e": "Esperando para sincronizar con su entorno",
+  "0ca6fd2b8fcab2c3": "Uso: Mostrar u ocultar",
+  "f6a91589456cca50": "Aprobado",
+  "a4579e548b768663": "Mostrar barra lateral",
+  "49eda70cfd56e621": "Se ejecuta cuando empieza un hilo en un worktree y cuando se restaura su carpeta",
+  "b8087c9a70c26da9": "No se pudo aprobar el comando de diseño de worktrees.",
+  "a10cfdb27152c757": "{count, plural, one {{count} dispositivo se conectó} other {{count} dispositivos se conectaron}} a través de {product}. ¿No fuiste tú? Revísalos.",
+  "206811f6f441bfc7": "Este proyecto prepara los worktrees con su propio comando, que nadie ha aprobado tal como está escrito ahora. Esta conexión no puede aprobarlo: apruébalo desde un cliente que pueda usar el terminal.",
+  "65300794c1edb929": "Token de portador (opcional)",
+  "e0856d6a402ad821": "La política de {organization} no permite comandos de diseño de worktrees de proyectos.",
+  "0cdc8cdbed3e5eae": "Diseño de worktrees",
+  "4b2669dcdb7d3776": "workflow flujo historial retención eliminar antiguas ejecuciones omitidas webhook history retention skipped runs",
+  "45a94c724845ec1d": "Otras",
+  "188ccaa1199f5611": "Se ejecuta cuando se elimina el worktree de un hilo",
+  "3b0f1659172107e4": "Todos los tipos",
+  "4144ab6aa487528a": "{device} se conectó a través de {product}. ¿No fuiste tú? Revísalo.",
+  "f1e5c1be1ac92361": "Aprobar",
+  "4032a03ee5301037": "La conexión guardada y sus credenciales se eliminan de este entorno.",
+  "f172d7e5deb24f75": "Restablecer las ejecuciones omitidas conservadas al valor predeterminado"
 }
