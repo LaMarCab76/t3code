@@ -124,6 +124,11 @@ function xml(source: string, extension: string): XmlNode {
             (prop) => prop.name === "vanish" && ["true", "1", "on"].includes(prop.attrs.val ?? "1"),
           )) ||
       (odf && node.name === "annotation" && parent.name !== "semantics") ||
+      (extension === ".pptx" &&
+        node.name === "timing" &&
+        stack.every((ancestor) =>
+          ["root", "sld", "AlternateContent", "Choice", "Fallback"].includes(ancestor.name),
+        )) ||
       (extension === ".odp" &&
         node.name === "page-thumbnail" &&
         stack.some((ancestor) => ancestor.name === "notes"))
@@ -732,7 +737,10 @@ async function* document(path: string, extension: string): AsyncGenerator<TextPa
       yield* paragraphs(read(mainPart("word/document.xml")));
     } else if ([".odt", ".ods", ".odp"].includes(extension)) {
       const content = read("content.xml");
-      if (extension === ".odt") yield* paragraphs(content);
+      if (extension === ".odt")
+        yield* paragraphs(
+          children(children(content)[0]).find((child) => child.name === "body") ?? content,
+        );
       else {
         let index = 0;
         for (const part of all(content, extension === ".ods" ? "table" : "page")) {

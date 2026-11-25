@@ -12999,5 +12999,77 @@
   "4144ab6aa487528a": "{device} s’est connecté via {product}. Ce n’était pas vous ? Vérifiez-le.",
   "f1e5c1be1ac92361": "Approuver",
   "4032a03ee5301037": "La connexion enregistrée et ses identifiants sont supprimés de cet environnement.",
-  "f172d7e5deb24f75": "Rétablir la valeur par défaut des exécutions ignorées conservées"
+  "f172d7e5deb24f75": "Rétablir la valeur par défaut des exécutions ignorées conservées",
+  "90dfebe26eb86b2d": "Options de sélection de la page",
+  "7150557773b3818b": "En file d’attente",
+  "efbeb3993ee2c3f5": "En attente de {pool}",
+  "0398ca6c1d24b92d": "en attente, le prochain",
+  "0af6d5ffd5166214": "{count, plural, one {en attente, {count} devant} other {en attente, {count} devant}}",
+  "49be26a27dcb30e5": "en attente",
+  "4e96712d839ccbff": "{who} a répondu {choice}",
+  "19097cfb8f5a79cf": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " a répondu",
+    " ",
+    {
+      "t": "span",
+      "i": 2,
+      "c": {
+        "i": 3,
+        "k": "_gt_value_3",
+        "v": "v"
+      }
+    },
+    "."
+  ],
+  "e7bbf693910057bf": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " a répondu",
+    " ",
+    {
+      "t": "span",
+      "i": 2,
+      "c": {
+        "i": 3,
+        "k": "_gt_value_3",
+        "v": "v"
+      }
+    },
+    ": ",
+    {
+      "i": 4,
+      "k": "_gt_value_4",
+      "v": "v"
+    }
+  ],
+  "3759768c5d342c22": [
+    "répondue",
+    " ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    }
+  ],
+  "e114d37b32ab0dc7": [
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    " nécessite une raison."
+  ],
+  "91aadfc843c600de": "Vérifier le compte Google",
+  "201490988858b511": "retirée par {by}",
+  "99451a5d2d40440f": "Retirée par {by}.",
+  "3ee30a50b70fffab": "Retirée par {by} : {reason}",
+  "92e129bf413a1220": "retirée"
 }
