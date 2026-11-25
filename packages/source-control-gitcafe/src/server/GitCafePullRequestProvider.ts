@@ -1032,9 +1032,8 @@ export const make = Effect.gen(function* () {
         autoMergeEnabled: merging,
         headSha: pull.headOid,
         body: pull.description ?? "",
-        ...(pull.sourceRepo === null
-          ? {}
-          : { headRepositoryNameWithOwner: `${pull.sourceRepo.owner}/${pull.sourceRepo.name}` }),
+        headRepositoryNameWithOwner:
+          pull.sourceRepo === null ? null : `${pull.sourceRepo.owner}/${pull.sourceRepo.name}`,
         additions: changes?.additions ?? 0,
         deletions: changes?.deletions ?? 0,
         changedFiles: changes?.changedFiles ?? 0,

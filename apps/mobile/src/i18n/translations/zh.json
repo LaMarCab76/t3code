@@ -5683,5 +5683,8 @@
   "1a1beecff68a6e61": "验证 Google 账户",
   "99451a5d2d40440f": "已由 {by} 撤回。",
   "3ee30a50b70fffab": "已由 {by} 撤回：{reason}",
-  "201490988858b511": "已由 {by} 撤回"
+  "201490988858b511": "已由 {by} 撤回",
+  "9ba1231a060b65d8": "Branch cleanup incomplete",
+  "a38ef558d90eebd0": "Merge and delete branch",
+  "d5ae55bd8630fd5d": "Merge and delete the source branch {branch} from the remote and this project? Its clean T3 Code worktree will also be removed."
 }

@@ -2349,7 +2349,15 @@ export const make = Effect.gen(function* () {
           [mergeRequestDetail(input), labelPermission(input)],
           { concurrency: 2 },
         );
-        const labeled = { ...read, labels: colourLabels(read.labels, extras.labels) };
+        const source =
+          read.maintainerCanModify === undefined || input.maintainerEdits === false
+            ? null
+            : yield* orWhenUnanswered(sourceBranch(input), null);
+        const labeled = {
+          ...read,
+          ...(source?.sourceProject ? { headRepositoryNameWithOwner: source.sourceProject } : {}),
+          labels: colourLabels(read.labels, extras.labels),
+        };
         const viewerCanEditLabels = extras.viewerCanEditLabels;
         // Only a closed or merged merge request offers its branch for deletion, and only an open
         // fork's has maintainer edits to change, so each extra read is skipped elsewhere.

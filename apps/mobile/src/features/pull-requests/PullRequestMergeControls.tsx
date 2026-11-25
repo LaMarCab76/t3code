@@ -165,9 +165,13 @@ export function PullRequestMergeControls(props: {
     permissions.canWrite &&
     canPerformPullRequestAction(pr, autoAction);
 
+  const canMergeAndDelete =
+    canMergeSingle && !stack.stack && pr.capabilities.mergeAndDeleteBranch === true && !!pr.headSha;
+
   const perform = async (
     action: "merge" | "enable-auto-merge" | "disable-auto-merge",
     shownHeadSha: string | undefined,
+    deleteBranchAfterMerge?: true,
   ) => {
     if (
       pending.current ||
@@ -182,6 +186,7 @@ export function PullRequestMergeControls(props: {
       input: {
         ...target.input,
         action,
+        ...(deleteBranchAfterMerge ? { deleteBranchAfterMerge } : {}),
         // A merge lands the head on screen and refuses one that moved; a stack pins its other layers.
         ...(action !== "disable-auto-merge" && shownHeadSha
           ? { expectedHeadSha: shownHeadSha }
@@ -231,6 +236,9 @@ export function PullRequestMergeControls(props: {
     stack.refresh();
     pending.current = false;
     setBusy(false);
+    if (AsyncResult.isSuccess(response) && response.value?.branchCleanupNotice) {
+      Dialog.alert(gt("Branch cleanup incomplete"), response.value.branchCleanupNotice);
+    }
     if (AsyncResult.isFailure(response)) {
       const cause = squashAtomCommandFailure(response);
       Dialog.alert(
@@ -355,6 +363,9 @@ export function PullRequestMergeControls(props: {
                   state: id === method ? ("on" as const) : ("off" as const),
                   attributes: { disabled: !canMerge && !canAutoMerge },
                 })),
+                ...(canMergeAndDelete
+                  ? [{ id: "merge-and-delete", title: gt("Merge and delete branch") }]
+                  : []),
                 ...(canAutoMerge
                   ? [
                       {
@@ -373,7 +384,27 @@ export function PullRequestMergeControls(props: {
           if (selected) {
             setSelectedMethod(selected);
             void savePreferences({ pullRequestMergeMethod: selected });
-          } else if (id === autoAction && canAutoMerge) confirm(autoAction);
+          } else if (id === autoAction && canAutoMerge) {
+            confirm(autoAction);
+          } else if (id === "merge-and-delete" && canMergeAndDelete) {
+            Dialog.alert(
+              gt("Merge and delete branch"),
+              gt(
+                "Merge and delete the source branch {branch} from the remote and this project? Its clean T3 Code worktree will also be removed.",
+                {
+                  branch: pr.headBranch,
+                },
+              ),
+              [
+                { text: gt("Cancel"), style: "cancel" },
+                {
+                  text: gt("Merge and delete branch"),
+                  style: "destructive",
+                  onPress: () => void perform("merge", pr.headSha, true),
+                },
+              ],
+            );
+          }
         }}
       />
       {permissions.connected && !status && reason ? (

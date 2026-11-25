@@ -5673,5 +5673,8 @@
   "1a1beecff68a6e61": "Google アカウントを確認",
   "99451a5d2d40440f": "{by} が取り下げました。",
   "3ee30a50b70fffab": "{by} が取り下げました: {reason}",
-  "201490988858b511": "{by} が取り下げ"
+  "201490988858b511": "{by} が取り下げ",
+  "9ba1231a060b65d8": "Branch cleanup incomplete",
+  "a38ef558d90eebd0": "Merge and delete branch",
+  "d5ae55bd8630fd5d": "Merge and delete the source branch {branch} from the remote and this project? Its clean T3 Code worktree will also be removed."
 }

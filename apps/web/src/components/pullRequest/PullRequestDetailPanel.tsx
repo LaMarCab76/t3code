@@ -904,6 +904,7 @@ export function PullRequestDetailPanel({
     action: PullRequestAction,
     method?: PullRequestMergeMethod,
     updateMethod?: PullRequestUpdateMethod,
+    deleteBranchAfterMerge?: true,
   ) => {
     onActed?.(action, "sent");
     const result = await runAction({
@@ -912,6 +913,7 @@ export function PullRequestDetailPanel({
         ...reference,
         action,
         ...mergeHeadPin(action, shownHeadSha),
+        ...(deleteBranchAfterMerge ? { deleteBranchAfterMerge } : {}),
         ...(method ? { mergeMethod: method } : {}),
         ...(updateMethod ? { updateMethod } : {}),
       },
@@ -945,6 +947,13 @@ export function PullRequestDetailPanel({
         ),
       });
     }
+    if (deleteBranchAfterMerge && result.value?.branchCleanupNotice) {
+      toastManager.add({
+        type: "warning",
+        title: gt("Branch cleanup incomplete"),
+        description: result.value.branchCleanupNotice,
+      });
+    }
     if (action === "delete-branch") {
       toastManager.add({ type: "success", title: m(msg("Branch deleted")) });
     }
@@ -967,6 +976,25 @@ export function PullRequestDetailPanel({
     if (!canWriteSourceControl || pendingAction !== null) return false;
     setPendingAction(action);
     return finishAction(action, method, updateMethod);
+  };
+
+  const mergeAndDeleteBranch = async (method: PullRequestMergeMethod) => {
+    if (!canWriteSourceControl || pendingAction !== null || detail === null) return;
+    setPendingAction("merge");
+    const confirmed = await readLocalApi()?.dialogs.confirm(
+      gt(
+        "Merge and delete the source branch {branch} from the remote and this project? Its clean T3 Code worktree will also be removed.",
+        {
+          branch: detail.headBranch,
+        },
+      ),
+      { variant: "destructive" },
+    );
+    if (confirmed) {
+      await finishAction("merge", method, undefined, true);
+    } else {
+      setPendingAction(null);
+    }
   };
 
   const performCommentAction = async (body: string, action: "close" | "reopen") => {
@@ -1693,6 +1721,11 @@ export function PullRequestDetailPanel({
                   statePresentation={statePresentation}
                   pendingAction={pendingAction}
                   perform={perform}
+                  onMergeAndDelete={
+                    detail.capabilities.mergeAndDeleteBranch && shownHeadSha && !stackOwnsMerge
+                      ? mergeAndDeleteBranch
+                      : undefined
+                  }
                   resolveConflicts={resolveConflictsControl}
                 />
                 {checkoutControl}

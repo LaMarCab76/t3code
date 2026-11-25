@@ -13,6 +13,7 @@ import { cn } from "~/lib/utils";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
+import { ButtonGroup } from "../ui/group";
 import {
   Menu,
   MenuItem,
@@ -213,6 +214,7 @@ export function PullRequestPrimaryAction({
   statePresentation,
   pendingAction,
   perform,
+  onMergeAndDelete,
   resolveConflicts,
 }: {
   pullRequestKey: string;
@@ -226,6 +228,7 @@ export function PullRequestPrimaryAction({
   statePresentation: ReturnType<typeof resolvePullRequestState> | null;
   pendingAction: PullRequestAction | null;
   perform: PerformPullRequestAction;
+  onMergeAndDelete?: ((method: PullRequestMergeMethod) => void) | undefined;
   resolveConflicts: ReactNode;
 }) {
   const gt = useGT();
@@ -340,9 +343,9 @@ export function PullRequestPrimaryAction({
           })}
         />
       ) : primaryAction === "merge" ? (
-        <SharedTooltipTrigger
-          render={
-            <span className="inline-flex shrink-0">
+        <ButtonGroup>
+          <SharedTooltipTrigger
+            render={
               <Button
                 size="xs"
                 variant="default"
@@ -380,17 +383,34 @@ export function PullRequestPrimaryAction({
                   </span>
                 </AnimatedWidth>
               </Button>
-            </span>
-          }
-          label={
-            mergeBlockedReason ??
-            (pendingAction === "merge"
-              ? gt("Merging...")
-              : inlineConfirm.isArmed("merge")
-                ? gt("Confirm merge?")
-                : selectedMergeMethodLabel)
-          }
-        />
+            }
+            label={
+              mergeBlockedReason ??
+              (pendingAction === "merge"
+                ? gt("Merging...")
+                : inlineConfirm.isArmed("merge")
+                  ? gt("Confirm merge?")
+                  : selectedMergeMethodLabel)
+            }
+          />
+          {onMergeAndDelete ? (
+            <Menu>
+              <MenuTrigger
+                disabled={actionPending || mergeBlockedReason !== null}
+                render={
+                  <Button size="icon-xs" variant="default" aria-label={gt("Merge options")} />
+                }
+              >
+                <ChevronDownIcon aria-hidden className="size-3.5" />
+              </MenuTrigger>
+              <MenuPopup align="end" side="bottom">
+                <MenuItem onClick={() => onMergeAndDelete(selectedMergeMethod)}>
+                  <T>Merge and delete branch</T>
+                </MenuItem>
+              </MenuPopup>
+            </Menu>
+          ) : null}
+        </ButtonGroup>
       ) : (primaryAction === "merged" || primaryAction === "closed") &&
         statePresentation !== null ? (
         <Badge size="control" variant="outline">

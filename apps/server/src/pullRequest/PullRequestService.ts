@@ -99,6 +99,7 @@ import {
   type PullRequestProviderApi,
   PullRequestProviderError,
 } from "@t3tools/source-control-core/server/PullRequestProvider";
+import * as PostMergeBranchCleanup from "./PostMergeBranchCleanup.ts";
 import * as PullRequestReadCache from "./PullRequestReadCache.ts";
 import * as PullRequestProviderRegistry from "./PullRequestProviderRegistry.ts";
 import * as ViewedFiles from "./pullRequestViewedFiles.ts";
@@ -789,6 +790,9 @@ export const make = Effect.gen(function* () {
   const filesViewedStore = yield* PullRequestFilesViewed.PullRequestFilesViewedRepository;
   const readCache = yield* PullRequestReadCache.PullRequestReadCache;
   const clock = yield* Clock.Clock;
+  const branchCleanup = Option.getOrUndefined(
+    yield* Effect.serviceOption(PostMergeBranchCleanup.PostMergeBranchCleanup),
+  );
 
   /**
    * Where each project's remote is served from, by the remote's recognised base URL: a remote no
@@ -1956,7 +1960,12 @@ export const make = Effect.gen(function* () {
         ).pipe(
           Effect.map(([{ value: changeRequest, observedAt }, viewer]): PullRequestDetail => ({
             provider: project.api.kind,
-            capabilities: project.api.capabilities,
+            capabilities: {
+              ...project.api.capabilities,
+              ...(branchCleanup?.canPrepare(project, changeRequest)
+                ? { mergeAndDeleteBranch: true }
+                : {}),
+            },
             projectId: project.project.id,
             projectTitle: project.project.title,
             workspaceRoot: project.project.workspaceRoot,
@@ -2207,6 +2216,10 @@ export const make = Effect.gen(function* () {
   type ActionOutcome = {
     readonly repository: string;
     readonly summary: PullRequestSummary | undefined;
+    readonly cleanup?: {
+      readonly project: SupportedProject;
+      readonly target: PostMergeBranchCleanup.Target;
+    };
   };
   const runAction = (
     input: PullRequestActionInput,
@@ -2320,14 +2333,44 @@ export const make = Effect.gen(function* () {
                     ),
                   )
                 : Effect.succeed(false);
-            return pinnedHead(project, input, "runAction").pipe(
-              Effect.flatMap((expectedHeadSha) =>
-                Effect.map(mergeSettings, (removeAgentCreditsOnMerge) => ({
-                  expectedHeadSha,
-                  removeAgentCreditsOnMerge,
-                })),
-              ),
-              Effect.flatMap(({ expectedHeadSha, removeAgentCreditsOnMerge }) =>
+            const head = input.deleteBranchAfterMerge
+              ? Effect.gen(function* () {
+                  if (
+                    branchCleanup === undefined ||
+                    input.action !== "merge" ||
+                    input.stackNumber !== undefined ||
+                    input.expectedHeadSha === undefined ||
+                    input.replyWithSummary !== true ||
+                    input.projectId !== project.project.id
+                  ) {
+                    return yield* new PullRequestOperationError({
+                      operation: "runAction",
+                      detail:
+                        "Branch cleanup requires a single change request and its reviewed head on this project.",
+                    });
+                  }
+                  const detail = yield* project.api
+                    .getChangeRequest({
+                      cwd: project.project.workspaceRoot,
+                      repository: project.repository,
+                      host: project.host,
+                      number: input.number,
+                    })
+                    .pipe(Effect.mapError(toPullRequestError("runAction")));
+                  if (!detail.headSha || !isHeadSha(detail.headSha, input.expectedHeadSha)) {
+                    return yield* new PullRequestOperationError({
+                      operation: "runAction",
+                      detail: "The source branch changed. Review its latest commits first.",
+                    });
+                  }
+                  const target = yield* branchCleanup.prepare(project, detail);
+                  return { expectedHeadSha: target.sha, cleanup: { project, target } };
+                })
+              : pinnedHead(project, input, "runAction").pipe(
+                  Effect.map((expectedHeadSha) => ({ expectedHeadSha, cleanup: undefined })),
+                );
+            return Effect.all([head, mergeSettings]).pipe(
+              Effect.flatMap(([{ expectedHeadSha, cleanup }, removeAgentCreditsOnMerge]) =>
                 project.api
                   .runAction({
                     cwd: project.project.workspaceRoot,
@@ -2355,6 +2398,7 @@ export const make = Effect.gen(function* () {
                     Effect.mapError(toPullRequestError("runAction")),
                     observeRead,
                     Effect.map(({ value, observedAt }) => ({
+                      ...(cleanup === undefined ? {} : { cleanup }),
                       repository:
                         project.repositoryKey !== null
                           ? input.repository.trim()
@@ -4038,7 +4082,7 @@ export const make = Effect.gen(function* () {
     const ref = yield* canonicalRef(input);
     yield* readCache.invalidate(refScope(ref));
     // A refusal (e.g. a merge conflict) means readers hold stale state, so refresh them too.
-    const { repository, summary } = yield* runAction(input).pipe(
+    const { repository, summary, cleanup } = yield* runAction(input).pipe(
       Effect.ensuring(readCache.invalidate(refScope(ref))),
       Effect.tapError(() =>
         Effect.suspend(() => {
@@ -4051,13 +4095,31 @@ export const make = Effect.gen(function* () {
     bumpRefEpoch({ ...ref, repository });
     listingsEpoch = ++epochCounter;
     yield* SubscriptionRef.set(pullRequestRefreshes, listingsEpoch);
+    let reply = summary;
     if (input.action === "merge") {
       // A successful merge action can merely enqueue the PR or enable auto-merge.
       const merged = summary?.state === "merged" ? summary : null;
       const confirmed =
-        merged?.mergedAt != null
+        merged?.mergedAt != null && (cleanup === undefined || merged.headSha !== undefined)
           ? merged
-          : yield* summaryUncached({ ...input, repository }).pipe(
+          : yield* (
+              cleanup === undefined
+                ? summaryUncached({ ...input, repository })
+                : cleanup.project.api
+                    .getChangeRequest({
+                      cwd: cleanup.project.project.workspaceRoot,
+                      host: cleanup.project.host,
+                      repository: cleanup.project.repository,
+                      number: input.number,
+                    })
+                    .pipe(
+                      Effect.mapError(toPullRequestError("mergeAndDeleteBranch")),
+                      observeRead,
+                      Effect.map(({ value, observedAt }) =>
+                        toSummary(cleanup.project, value, observedAt),
+                      ),
+                    )
+            ).pipe(
               Effect.map((reread) => (reread.state === "merged" ? reread : merged)),
               Effect.catch((error) =>
                 Effect.logWarning("failed to confirm pull request merge", { error }).pipe(
@@ -4073,8 +4135,42 @@ export const make = Effect.gen(function* () {
           mergedAt: confirmed.mergedAt ?? DateTime.formatIso(yield* DateTime.now),
         });
       }
+      if (cleanup !== undefined && branchCleanup !== undefined) {
+        const { project, target } = cleanup;
+        const current =
+          confirmed ??
+          summary ??
+          (yield* summaryUncached({ ...input, repository }).pipe(
+            Effect.mapError(
+              () =>
+                new PullRequestOperationError({
+                  operation: "mergeAndDeleteBranch",
+                  detail:
+                    "The merge request was sent, but the host did not confirm the outcome. The branches were kept.",
+                }),
+            ),
+          ));
+        let branchCleanupNotice: string | undefined;
+        if (current.state !== "merged") {
+          branchCleanupNotice = "The host has not confirmed the merge. The branch was kept.";
+        } else if (
+          current.headBranch !== target.branch ||
+          current.headSha?.toLowerCase() !== target.sha
+        ) {
+          branchCleanupNotice =
+            "The host did not confirm the reviewed commit as merged. The branch was kept.";
+        } else {
+          branchCleanupNotice = yield* branchCleanup
+            .remove(project.project.workspaceRoot, target)
+            .pipe(
+              Effect.as(undefined),
+              Effect.catch((error) => Effect.succeed(error.detail)),
+            );
+        }
+        reply = branchCleanupNotice === undefined ? current : { ...current, branchCleanupNotice };
+      }
     }
-    return input.replyWithSummary === true ? summary : undefined;
+    return input.replyWithSummary === true ? reply : undefined;
   });
 
   const credentialCached =

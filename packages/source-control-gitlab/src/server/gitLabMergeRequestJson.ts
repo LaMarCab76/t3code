@@ -229,6 +229,7 @@ export interface GitLabMergeRequestListItem {
 }
 
 export interface GitLabMergeRequestDetail extends GitLabMergeRequestListItem {
+  readonly headRepositoryNameWithOwner?: string | null;
   readonly body: string;
   readonly changedFiles: number;
   readonly mergedAt: string | null;
@@ -547,6 +548,9 @@ function toDetail(raw: Schema.Schema.Type<typeof RawMergeRequestSchema>): GitLab
       : raw.merge_when_pipeline_succeeds === true || raw.auto_merge_enabled === true;
   return {
     ...listItem,
+    ...(raw.source_project_id != null && raw.source_project_id === raw.target_project_id
+      ? {}
+      : { headRepositoryNameWithOwner: null }),
     body: raw.description ?? "",
     changedFiles: toChangedFiles(raw.changes_count),
     mergedAt: trimmed(raw.merged_at),

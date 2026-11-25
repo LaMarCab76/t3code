@@ -5696,5 +5696,8 @@
   "1a1beecff68a6e61": "Verificar cuenta de Google",
   "99451a5d2d40440f": "Retirada por {by}.",
   "3ee30a50b70fffab": "Retirada por {by}: {reason}",
-  "201490988858b511": "retirada por {by}"
+  "201490988858b511": "retirada por {by}",
+  "9ba1231a060b65d8": "Limpieza de la rama incompleta",
+  "a38ef558d90eebd0": "Fusionar y eliminar la rama",
+  "d5ae55bd8630fd5d": "¿Fusionar y eliminar la rama de origen {branch} del repositorio remoto y de este proyecto? Si su worktree de T3 Code está limpio, también se eliminará."
 }

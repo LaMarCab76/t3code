@@ -61,6 +61,7 @@ import * as CloudSpeech from "./speech/CloudSpeech.ts";
 import { speechHttpApiLayer } from "./speech/http.ts";
 import { speechStreamRouteLayer } from "./speech/stream.ts";
 import * as PullRequestProviderRegistry from "./pullRequest/PullRequestProviderRegistry.ts";
+import * as PostMergeBranchCleanup from "./pullRequest/PostMergeBranchCleanup.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
 import * as IssueService from "./issue/IssueService.ts";
 import * as IssueTrackerConnections from "./issue/IssueTrackerConnections.ts";
@@ -460,6 +461,13 @@ const layerRepositoryIdentityResolver = Layer.effect(
 ).pipe(Layer.provide(layerSourceControlProviderRegistry), Layer.provide(ProcessRunner.layer));
 
 const layerPullRequestService = PullRequestService.layer.pipe(
+  Layer.provide(
+    PostMergeBranchCleanup.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(GitVcsDriver.layer, TaskFolderStore.layer, ProjectionStoreV2.layer),
+      ),
+    ),
+  ),
   Layer.provide(PullRequestProviderRegistry.layer),
   Layer.provide(PullRequestFilesViewed.layer),
   Layer.provide(PullRequestReadCache.layer),

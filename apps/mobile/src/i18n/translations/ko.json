@@ -5680,5 +5680,8 @@
   "1a1beecff68a6e61": "Google 계정 확인",
   "99451a5d2d40440f": "{by}에서 철회했습니다.",
   "3ee30a50b70fffab": "{by}에서 철회했습니다: {reason}",
-  "201490988858b511": "{by}에서 철회함"
+  "201490988858b511": "{by}에서 철회함",
+  "9ba1231a060b65d8": "Branch cleanup incomplete",
+  "a38ef558d90eebd0": "Merge and delete branch",
+  "d5ae55bd8630fd5d": "Merge and delete the source branch {branch} from the remote and this project? Its clean T3 Code worktree will also be removed."
 }

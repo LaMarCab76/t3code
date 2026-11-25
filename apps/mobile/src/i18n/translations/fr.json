@@ -5696,5 +5696,8 @@
   "1a1beecff68a6e61": "Vérifier le compte Google",
   "99451a5d2d40440f": "Retirée par {by}.",
   "3ee30a50b70fffab": "Retirée par {by} : {reason}",
-  "201490988858b511": "retirée par {by}"
+  "201490988858b511": "retirée par {by}",
+  "9ba1231a060b65d8": "Branch cleanup incomplete",
+  "a38ef558d90eebd0": "Merge and delete branch",
+  "d5ae55bd8630fd5d": "Merge and delete the source branch {branch} from the remote and this project? Its clean T3 Code worktree will also be removed."
 }

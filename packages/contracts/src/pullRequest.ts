@@ -297,6 +297,7 @@ export const PullRequestCapabilities = Schema.Struct({
   actions: ForwardCompatibleArray(PullRequestAction),
   mergeMethods: ForwardCompatibleArray(PullRequestMergeMethod),
   deleteBranch: Schema.optional(Schema.Boolean),
+  mergeAndDeleteBranch: Schema.optional(Schema.Literal(true)),
   /**
    * Absent where it cannot at all, which is every host that has not said otherwise — so a
    * provider that says nothing offers nothing.
@@ -519,6 +520,8 @@ export const PullRequestPreview = Schema.Struct({
 export type PullRequestPreview = typeof PullRequestPreview.Type;
 
 export const PullRequestSummary = Schema.Struct({
+  /** Returned by merge actions when Git cleanup could not complete. */
+  branchCleanupNotice: Schema.optional(TrimmedNonEmptyString),
   provider: SourceControlProviderKind,
   projectId: ProjectId,
   repository: TrimmedNonEmptyString,
@@ -856,6 +859,7 @@ export const PullRequestActionInput = Schema.Struct({
   updateMethod: Schema.optional(PullRequestUpdateMethod),
   /** Opt-in, because older clients decode the action's success as void and reject a summary. */
   replyWithSummary: Schema.optional(Schema.Literal(true)),
+  deleteBranchAfterMerge: Schema.optional(Schema.Literal(true)),
 });
 export type PullRequestActionInput = typeof PullRequestActionInput.Type;
 

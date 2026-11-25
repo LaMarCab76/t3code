@@ -74,6 +74,7 @@ vi.mock(import("~/state/use-atom-command"), async (original) => ({
   useAtomCommand: (() => command) as never,
 }));
 
+import { ConfirmDialogHost } from "~/components/ConfirmDialogHost";
 import { createWorkspaceFocusController, workspaceAreaProps } from "~/lib/workspaceFocus";
 import { PullRequestDetailPanel } from "./PullRequestDetailPanel";
 
@@ -296,4 +297,53 @@ it("keeps a screen reader's place when scrolling the description condenses the h
   await act(() => vi.advanceTimersToNextFrame());
   // A programmatic focus() pulls the screen reader's browse cursor back to the header.
   expect(moves).not.toHaveBeenCalled();
+});
+
+it("asks before sending the pinned merge-and-delete action", async () => {
+  setup();
+  shown.detail = {
+    ...detail,
+    headSha: "a".repeat(40),
+    mergeability: "mergeable",
+    mergeCapabilities: { merge: false, squash: true, rebase: false },
+    capabilities: {
+      ...detail.capabilities,
+      actions: ["merge"],
+      mergeMethods: ["squash"],
+      mergeAndDeleteBranch: true,
+    },
+    viewerPermissions: { ...detail.viewerPermissions, actions: ["merge"] },
+  };
+  command.mockResolvedValue({ _tag: "Success", value: undefined });
+  const style = document.createElement("style");
+  style.textContent = appCss;
+  document.head.append(style);
+  using _style = { [Symbol.dispose]: () => style.remove() };
+  await using screen = await render(
+    <>
+      <ConfirmDialogHost />
+      {panel()}
+    </>,
+  );
+  const choose = async () => {
+    await screen.getByRole("button", { name: "Merge options" }).click();
+    await page.getByRole("menuitem", { name: "Merge and delete branch" }).click();
+  };
+  await choose();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect(command).not.toHaveBeenCalled();
+  await choose();
+  await page.getByRole("button", { name: "Confirm", exact: true }).click();
+  await vi.waitFor(() =>
+    expect(command).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          action: "merge",
+          mergeMethod: "squash",
+          deleteBranchAfterMerge: true,
+          expectedHeadSha: shown.detail?.headSha,
+        }),
+      }),
+    ),
+  );
 });

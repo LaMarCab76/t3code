@@ -51,6 +51,7 @@ const RawPullRequestSchema = Schema.Struct({
   /** `az repos pr list` fills this; `az repos pr show` returns null. */
   labels: Schema.optional(Schema.NullOr(Schema.Array(RawLabelSchema))),
   sourceRefName: TrimmedNonEmptyString,
+  forkSource: Schema.optional(Schema.NullOr(Schema.Unknown)),
   targetRefName: TrimmedNonEmptyString,
   creationDate: TrimmedNonEmptyString,
   closedDate: Schema.optional(Schema.NullOr(Schema.String)),
@@ -153,6 +154,7 @@ export interface AzureDevOpsPullRequest {
   readonly url: string;
   readonly author: PullRequestActor | null;
   readonly headBranch: string;
+  readonly fromFork?: true;
   readonly baseBranch: string;
   readonly state: PullRequestState;
   readonly isDraft: boolean;
@@ -264,6 +266,7 @@ function toPullRequest(
     url,
     author: toActor(raw.createdBy),
     headBranch,
+    ...(raw.forkSource == null ? {} : { fromFork: true }),
     baseBranch,
     state: toState(raw),
     isDraft: raw.isDraft ?? false,

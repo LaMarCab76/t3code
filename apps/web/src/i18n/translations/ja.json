@@ -13007,5 +13007,9 @@
   "201490988858b511": "{by} が取り下げ",
   "99451a5d2d40440f": "{by} が取り下げました。",
   "3ee30a50b70fffab": "{by} が取り下げました: {reason}",
-  "92e129bf413a1220": "取り下げ済み"
+  "92e129bf413a1220": "取り下げ済み",
+  "824af344a2f36c1b": "Merge options",
+  "435c2a50997dea7b": "Merge and delete branch",
+  "9ba1231a060b65d8": "Branch cleanup incomplete",
+  "d5ae55bd8630fd5d": "Merge and delete the source branch {branch} from the remote and this project? Its clean T3 Code worktree will also be removed."
 }
