@@ -2,7 +2,7 @@ import {
   isOrchestrationV2WorkActive,
   OrchestrationV2CommandOutputError,
   type OrchestrationV2CommandOutputFrame,
-  type OrchestrationV2CommandProgress,
+  OrchestrationV2CommandProgress,
   type OrchestrationV2CommandProgressFrame,
   type OrchestrationV2SubscribeCommandOutputInput,
   type OrchestrationV2TurnItem,
@@ -75,6 +75,7 @@ export class CommandOutputHub extends Context.Service<CommandOutputHub, CommandO
   "t3/orchestration-v2/CommandOutputHub",
 ) {}
 
+const sameProgress = Schema.toEquivalence(Schema.Array(OrchestrationV2CommandProgress));
 const isCommandOutputError = Schema.is(OrchestrationV2CommandOutputError);
 
 function threadKeyPrefix(threadId: ThreadId): string {
@@ -230,11 +231,22 @@ export const make = Effect.gen(function* () {
           }),
         );
         const snapshots = new Map<string, OrchestrationV2CommandProgress>();
+        const commandLabels = new Map<string, string>();
         const rolledBackRuns = new Set<RunId>();
         const rolledBackItems = new Set<string>();
         const itemRuns = new Map<string, RunId>();
         const observe = (item: OrchestrationV2TurnItem) => {
           if (item.type !== "command_execution") return;
+          if (item.status === "running") {
+            setBounded(
+              commandLabels,
+              item.id,
+              item.input.trim().replace(/\s+/g, " ").slice(0, 120),
+              MAX_LIVE_COMMANDS,
+            );
+          } else {
+            commandLabels.delete(item.id);
+          }
           if (item.runId !== null && rolledBackRuns.has(item.runId)) {
             rolledBackItems.add(item.id);
             snapshots.delete(item.id);
@@ -297,7 +309,7 @@ export const make = Effect.gen(function* () {
           Effect.forkScoped,
         );
         yield* Queue.offer(wake, undefined);
-        let sent: string | undefined;
+        let sent: ReadonlyArray<OrchestrationV2CommandProgress> | undefined;
         let lastReadAt: number | undefined;
         const nextFrame = Effect.gen(function* () {
           while (true) {
@@ -307,12 +319,12 @@ export const make = Effect.gen(function* () {
               yield* Effect.sleep(COMMAND_PROGRESS_FRAME_INTERVAL_MS - (now - lastReadAt));
             }
             lastReadAt = yield* Clock.currentTimeMillis;
-            const items = threadProgress(threadId, snapshots, rolledBackItems);
-            const signature = items
-              .map((item) => `${item.itemId}:${item.completed}/${item.total}`)
-              .join("\n");
-            if (signature !== sent) {
-              sent = signature;
+            const items = threadProgress(threadId, snapshots, rolledBackItems).map((item) => {
+              const commandLabel = commandLabels.get(item.itemId);
+              return commandLabel ? { ...item, commandLabel } : item;
+            });
+            if (sent === undefined || !sameProgress(sent, items)) {
+              sent = items;
               return { items } satisfies OrchestrationV2CommandProgressFrame;
             }
           }

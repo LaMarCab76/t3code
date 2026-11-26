@@ -299,10 +299,17 @@ it.layer(layer)("ThreadInsightsQuery", (it) => {
       expect(yield* store.getLatestTodoList(root)).toBeUndefined();
       const initial = yield* run(root, 1);
       yield* plan(initial, "z-first", false);
+      expect((yield* store.getThreadShell(root))?.taskProgress).toEqual({ completed: 0, total: 1 });
       yield* plan(initial, "a-second", true);
       yield* plan(initial, "superseded", false, "superseded");
       const rolledBack = yield* run(root, 2, "rolled_back");
       yield* plan(rolledBack, "rolled-back", false);
+      expect((yield* store.getThreadShell(root))?.taskProgress).toEqual({ completed: 1, total: 1 });
+      const projection = yield* store.getThreadProjection(root);
+      expect(ProjectionStore.threadShellFromProjection(projection).taskProgress).toEqual({
+        completed: 1,
+        total: 1,
+      });
       const result = yield* (yield* ThreadInsightsQuery.ThreadInsightsQuery).read({
         threadId: root,
       });
@@ -319,6 +326,11 @@ it.layer(layer)("ThreadInsightsQuery", (it) => {
       yield* plan(owner, "z-first", false, "active", 1);
       yield* plan(owner, "a-latest", true, "active", 2);
       yield* plan(owner, "superseded-native", false, "superseded", 3);
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      expect((yield* store.getThreadShell(child))?.taskProgress).toEqual({
+        completed: 1,
+        total: 1,
+      });
       const query = yield* ThreadInsightsQuery.ThreadInsightsQuery;
       for (const threadId of [root, child]) {
         const result = yield* query.read({ threadId });

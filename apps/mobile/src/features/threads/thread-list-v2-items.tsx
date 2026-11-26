@@ -13,6 +13,9 @@ import { RowPressable } from "../../components/ui/RowPressable";
 import { CustomSnoozeSheet } from "./CustomSnoozeSheet";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { threadArrangementOpenAtom } from "../../state/thread-order";
+import { Progress } from "../../components/ui/Progress";
+import { orchestrationEnvironment } from "../../state/orchestration";
+import { useEnvironmentQuery } from "../../state/query";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useVisibleSecondClock } from "./use-visible-second-clock";
@@ -28,6 +31,7 @@ import {
 } from "@t3tools/client-runtime/state/models";
 import {
   AuthOrchestrationOperateScope,
+  formatCommandProgress,
   type EnvironmentId,
   type EnvironmentMachineKind,
 } from "@t3tools/contracts";
@@ -896,7 +900,24 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const timeLabel = pendingSync ? gt("Waiting to sync") : props.timeLabel && m(props.timeLabel);
   const snoozeWakeLabelText =
     props.snoozeWakeLabelText === undefined ? undefined : m(props.snoozeWakeLabelText);
-  const rowAccessibilityLabel = threadListV2RowAccessibilityLabel(
+  const commandProgress = useEnvironmentQuery(
+    thread.hasRunningCommand
+      ? orchestrationEnvironment.v2.commandProgress({
+          environmentId: thread.environmentId,
+          input: { threadId: thread.id },
+        })
+      : null,
+  );
+  const command = commandProgress.data?.items.find((item) => item.commandLabel);
+  const tasks = thread.taskProgress;
+  const taskLabel = tasks
+    ? gt("{total, plural, one {{done}/{total} task} other {{done}/{total} tasks}}", {
+        done: tasks.completed,
+        total: tasks.total,
+      })
+    : null;
+  const commandCount = command ? formatCommandProgress(command) : null;
+  const baseAccessibilityLabel = threadListV2RowAccessibilityLabel(
     {
       title: thread.title,
       variant,
@@ -917,6 +938,14 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     m,
   );
 
+  const rowAccessibilityLabel = [
+    baseAccessibilityLabel,
+    command?.commandLabel,
+    commandCount,
+    taskLabel,
+  ]
+    .filter(Boolean)
+    .join(", ");
   const visitThread = useAtomCommand(threadEnvironment.visit, { reportFailure: false });
   const markThreadUnread = useAtomCommand(threadEnvironment.markUnread, { reportFailure: false });
   const handleAcknowledgeWoke = useCallback(() => {
@@ -1379,6 +1408,39 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       ? primaryAction.swipeHint
       : primaryAction.swipeSnoozeHint;
 
+  const progressTint = selected
+    ? selectedThreadRowColors.mutedForegroundClassName
+    : rowAppearance.mutedForegroundClassName;
+  const progressLines = (command || tasks) && (
+    <View className="mt-1 gap-0.5">
+      {command ? (
+        <View className="flex-row items-center gap-1.5">
+          <SymbolView name="terminal" size={12} />
+          <Text
+            numberOfLines={1}
+            style={{ fontFamily: MONO_FONT }}
+            className={cn("min-w-0 flex-1 text-xs", progressTint)}
+          >
+            {command.commandLabel}
+          </Text>
+          <Progress className="w-10" value={command.completed / command.total} />
+          <Text className={cn("text-xs tabular-nums", progressTint)}>{commandCount}</Text>
+        </View>
+      ) : null}
+      {tasks ? (
+        <Text
+          className={cn(
+            "text-xs tabular-nums",
+            !selected && tasks.completed === tasks.total
+              ? "text-adaptive-emerald-700-300"
+              : progressTint,
+          )}
+        >
+          {taskLabel}
+        </Text>
+      ) : null}
+    </View>
+  );
   const titleTextInset = props.project ? projectIconSize + 8 : 0;
   const cardContent = (
     <>
@@ -1506,6 +1568,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           )}
         </View>
       </View>
+      {progressLines ? <View style={{ paddingLeft: titleTextInset }}>{progressLines}</View> : null}
       {props.searchMatch ? (
         <View className="mt-1" style={{ paddingLeft: titleTextInset }}>
           <ThreadSearchMatchExcerpt
@@ -1742,6 +1805,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
                 {providerNameLabel}
               </Text>
             ) : null}
+            {progressLines}
             {props.searchMatch ? (
               <ThreadSearchMatchExcerpt
                 sidebar={sidebarPane}

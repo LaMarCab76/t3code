@@ -10,6 +10,7 @@ import {
   type LocalApi,
   ProjectId,
   ThreadId,
+  TurnItemId,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import { isMacPlatform } from "@t3tools/shared/keybindings";
@@ -33,6 +34,7 @@ import { readLocalApi } from "../localApi";
 import type { Project } from "../types";
 import Sidebar from "./Sidebar";
 import { THREAD_JUMP_HINT_SHOW_DELAY_MS } from "./Sidebar.logic";
+import * as commandProgress from "./chat/useCommandProgress";
 import { SortableThreadRow } from "./sidebar/SidebarThreadRow";
 import { SidebarProvider } from "./ui/sidebar";
 
@@ -40,6 +42,7 @@ vi.mock(import("../state/olderSettledShelf"), async (original) => {
   const actual = await original();
   return { ...actual, useOlderSettledShelf: vi.fn(actual.useOlderSettledShelf) };
 });
+vi.mock("./chat/useCommandProgress", { spy: true });
 vi.mock("../state/entities", { spy: true });
 vi.mock("../state/environments", { spy: true });
 vi.mock("../hooks/useHandleNewThread", { spy: true });
@@ -263,6 +266,99 @@ function threadShell(projectId: ProjectId, index: number): EnvironmentThreadShel
     title: `Thread ${index}`,
   });
 }
+
+describe("sidebar progress", () => {
+  it.each([false, true])("updates a background chat in project mode %s", async (byProject) => {
+    using stack = new DisposableStack();
+    const settings = getClientSettings();
+    stack.defer(() => __setClientSettingsForTests(settings));
+    __setClientSettingsForTests({
+      ...DEFAULT_CLIENT_SETTINGS,
+      sidebarWorkingShelfEnabled: false,
+      boringSidebarEnabled: byProject,
+    });
+    const repo = project("t3code");
+    const open = threadShell(repo.id, 0);
+    const background = threadShell(repo.id, 1);
+    const running = {
+      ...background,
+      title: "Validate the sidebar",
+      hasRunningCommand: true,
+      taskProgress: { completed: 2, total: 4 },
+      runtime: {
+        status: "running" as const,
+        activeRunId: null,
+        providerInstanceId: background.providerInstanceId,
+        providerName: null,
+        lastError: null,
+        updatedAt: background.updatedAt,
+      },
+    };
+    vi.mocked(useProjects).mockReturnValue([repo]);
+    vi.mocked(useQuietThreadShells).mockReturnValue([open, running]);
+    vi.mocked(useThreadRouteTarget).mockReturnValue({
+      kind: "server",
+      threadRef: scopeThreadRef(open.environmentId, open.id),
+    });
+    vi.mocked(useHandleNewThread).mockReturnValue({
+      activeDraftThread: null,
+      activeThread: null,
+      defaultProjectRef: scopeProjectRef(repo.environmentId, repo.id),
+      defaultProjectFallbackReady: true,
+      handleNewThread: vi.fn(),
+      routeDraftId: null,
+      routeThreadRef: null,
+    });
+    using _progress = vi
+      .spyOn(commandProgress, "useCommandProgress")
+      .mockImplementation((ref, enabled) =>
+        enabled && ref?.threadId === background.id
+          ? [
+              {
+                itemId: TurnItemId.make("cmd"),
+                commandLabel: "vp test run",
+                completed: 24,
+                total: 48,
+              },
+            ]
+          : [],
+      );
+    const style = document.createElement("style");
+    style.textContent = appCss;
+    document.head.append(style);
+    stack.defer(() => style.remove());
+    const tree = () => (
+      <SidebarProvider>
+        <Sidebar routeReveal={{ observedKey: null, pendingKey: null }} />
+      </SidebarProvider>
+    );
+    await using screen = await render(tree());
+    await expect.element(screen.getByText("vp test run").first()).toBeVisible();
+    await expect.element(screen.getByText("24/48").first()).toBeVisible();
+    await expect.element(screen.getByText("2/4 tasks").first()).toBeVisible();
+    const card = screen
+      .getByText("vp test run")
+      .first()
+      .element()
+      .closest<HTMLElement>("[data-sidebar-row]")!;
+    card.style.width = "280px";
+    const cardBounds = card.getBoundingClientRect();
+    const counterBounds = screen.getByText("2/4 tasks").first().element().getBoundingClientRect();
+    expect(counterBounds.bottom).toBeLessThanOrEqual(cardBounds.bottom);
+    vi.mocked(useQuietThreadShells).mockReturnValue([
+      open,
+      {
+        ...running,
+        hasRunningCommand: false,
+        runtime: null,
+        taskProgress: { completed: 4, total: 4 },
+      },
+    ]);
+    await screen.rerender(tree());
+    await expect.element(screen.getByText("vp test run")).not.toBeInTheDocument();
+    await expect.element(screen.getByText("4/4 tasks").first()).toBeVisible();
+  });
+});
 
 describe("sidebar render isolation", () => {
   // regression: #33100 Cmd+J re-rendered every sidebar row, which took hundreds of ms with many threads

@@ -548,7 +548,12 @@ export function shouldPublishShellApplicationEvent(
     // Replay and the live tail overlap; keep known IDs so late events stay filtered.
     return true;
   }
-  if (event.type === "turn-item.updated" && turnItemCanChangeUserWait(event.payload)) {
+  if (
+    event.type === "turn-item.updated" &&
+    (turnItemCanChangeUserWait(event.payload) ||
+      event.payload.type === "command_execution" ||
+      event.payload.type === "todo_list")
+  ) {
     return true;
   }
   return !(

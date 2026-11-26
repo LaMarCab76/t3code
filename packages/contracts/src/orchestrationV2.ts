@@ -2462,6 +2462,10 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   latestUserMessageAt: Schema.NullOr(Schema.DateTimeUtc),
   /** Excludes wakes and agent messages that advance latestUserMessageAt through the user role. */
   latestUserAuthoredMessageAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
+  hasRunningCommand: Schema.optionalKey(Schema.Literal(true)),
+  taskProgress: Schema.optionalKey(
+    Schema.Struct({ completed: NonNegativeInt, total: PositiveInt }),
+  ),
   hasActionableProposedPlan: Schema.Boolean,
   pendingBackgroundTasks: Schema.optional(Schema.Array(OrchestrationV2PendingBackgroundTask)).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
@@ -4203,11 +4207,18 @@ export type OrchestrationV2SubscribeCommandProgressInput =
 
 /** A count a running command last printed, such as a test runner's `24/31` or a build's `42%`. */
 export const OrchestrationV2CommandProgress = Schema.Struct({
+  commandLabel: Schema.optionalKey(Schema.String),
   itemId: TurnItemId,
   completed: NonNegativeInt,
   total: PositiveInt,
 });
 export type OrchestrationV2CommandProgress = typeof OrchestrationV2CommandProgress.Type;
+
+export function formatCommandProgress(progress: OrchestrationV2CommandProgress): string {
+  return progress.total === 100
+    ? `${progress.completed}%`
+    : `${progress.completed}/${progress.total}`;
+}
 
 /** Unpersisted: every running command in the thread that printed a count, replaced whole on each frame. */
 export const OrchestrationV2CommandProgressFrame = Schema.Struct({

@@ -12074,6 +12074,7 @@
   "201317aac48d4d9f": "清除会话搜索",
   "bcda2ccaa871dc46": "在当前项目中新建会话：Shift+点击（{shortcut}）",
   "aa5c379423baace1": "在当前项目中新建会话：Shift+单击",
+  "a249fcbe7894e325": "任务 {done}/{total}",
   "9d9d32b401d2931a": "{count, plural, other {{count} 个终端进程正在运行}}",
   "ade06f6723949b39": "发生错误",
   "021fe65858278fe9": "暂缓会话",

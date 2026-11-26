@@ -4929,6 +4929,7 @@
   "11276ab6c58b7a25": "Opens the draft in the new task composer. Swipe left to discard.",
   "99950f3a28d425fa": "Sends when the environment reconnects. Opens the task for editing. Swipe left to delete.",
   "d71048f4fb9cf44a": "Waiting to sync",
+  "a249fcbe7894e325": "{total, plural, one {{done}/{total} task} other {{done}/{total} tasks}}",
   "0a260c7744afd0be": "Waiting",
   "ad78fae7d373cf21": "Working",
   "be451f475c514b37": "Dismiss Woke notification",

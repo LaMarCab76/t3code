@@ -12049,6 +12049,7 @@
   "201317aac48d4d9f": "Effacer la recherche de fils",
   "bcda2ccaa871dc46": "Nouveau fil dans le projet actuel : Shift+clic ({shortcut})",
   "aa5c379423baace1": "Nouveau fil dans le projet actuel : Shift+clic",
+  "a249fcbe7894e325": "{total, plural, one {{done}/{total} tâche} other {{done}/{total} tâches}}",
   "9d9d32b401d2931a": "{count, plural, one {{count} processus de terminal en cours} other {{count} processus de terminal en cours}}",
   "ade06f6723949b39": "Une erreur s’est produite",
   "021fe65858278fe9": "Reporter le fil",

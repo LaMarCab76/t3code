@@ -1,6 +1,7 @@
 import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import { asLaunchingThread } from "@t3tools/client-runtime/state/thread-inbox";
 import { ThreadHoverCard, ThreadHoverCardTrigger } from "../ThreadHoverCard";
+import { SidebarThreadProgress } from "./SidebarThreadProgress";
 import { ThreadTerminalStatusButton } from "../ThreadStatusIndicators";
 import { discardComposerDraft } from "../../lib/discardComposerDraft";
 import { formatWorktreePathForDisplay } from "../../worktreeCleanup";
@@ -62,6 +63,7 @@ import {
 } from "lucide-react";
 import {
   memo,
+  useId,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -731,6 +733,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     variant,
     variantAction,
   } = props;
+  const progressId = useId();
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
   const threadKey = scopedThreadKey(threadRef);
   const canOperateThread = useEnvironmentScope(thread.environmentId, AuthOrchestrationOperateScope);
@@ -743,6 +746,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     (threads) => threads.has(thread.id),
   );
   const { leaseLiveStatus, rowRef: leaseRowRef } = useSidebarRowSubscriptionLease(props.isActive);
+  const progressLines =
+    thread.taskProgress || (thread.hasRunningCommand && leaseLiveStatus) ? (
+      <SidebarThreadProgress id={progressId} thread={thread} live={leaseLiveStatus} />
+    ) : null;
   const { revealRef } = props;
   const rowRef = (row: HTMLElement | null) => {
     const stopReveal = row === null ? undefined : revealRef?.(row, threadKey);
@@ -1359,6 +1366,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               data-sidebar-row={threadKey}
               data-sidebar-parent={props.navigationParent}
               aria-label={accessibility.label}
+              aria-describedby={progressLines ? progressId : undefined}
               aria-current={accessibility.current}
               data-testid={inFolder ? "sidebar-row-folder" : "sidebar-row-slim"}
               aria-busy={isRegeneratingTitle || undefined}
@@ -1366,7 +1374,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 rowSurfaceClassName,
                 multiline
                   ? "flex flex-col justify-center px-2.5 py-1.5"
-                  : "flex h-9 items-center gap-2.5 px-2.5",
+                  : "flex flex-col justify-center px-2.5",
                 // Lines titles up with the folder name, past its chevron and icon.
                 inFolder && "ps-9",
               )}
@@ -1380,8 +1388,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             />
           }
         >
-          {/* `contents` keeps one-line rows a single flex row. */}
-          <div className={multiline ? "flex h-6 min-w-0 items-center gap-2.5" : "contents"}>
+          <div className={cn("flex min-w-0 items-center gap-2.5", multiline ? "h-6" : "h-9")}>
             {inFolder ? null : (
               <span
                 className={cn(
@@ -1543,6 +1550,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             )}
             {props.sweepAction !== null ? dragDestination : null}
           </div>
+          {progressLines}
           {multiline ? metaLine : null}
         </ThreadHoverCardTrigger>
       </li>
@@ -1573,6 +1581,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             data-sidebar-row={threadKey}
             data-sidebar-parent={props.navigationParent}
             aria-label={accessibility.label}
+            aria-describedby={progressLines ? progressId : undefined}
             aria-current={accessibility.current}
             data-testid="sidebar-row-card"
             aria-busy={isRegeneratingTitle || undefined}
@@ -1589,8 +1598,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       >
         <div
           className={cn(
-            "relative z-10 h-[4.875rem] px-(--sidebar-row-content-inset) py-(--sidebar-content-inset)",
-            metaLineEmpty && "h-auto",
+            "relative z-10 min-h-[4.875rem] px-(--sidebar-row-content-inset) py-(--sidebar-content-inset)",
+            metaLineEmpty && "min-h-0",
           )}
         >
           <div className="flex h-5 min-w-0 items-center gap-1.5">
@@ -1762,6 +1771,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             ) : null}
             {titleLineIcons}
           </div>
+          {progressLines}
           {metaLine}
         </div>
       </ThreadHoverCardTrigger>
@@ -1816,6 +1826,7 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
     projectDisplayName: props.projectDisplayName,
     isActive: props.isRouteActive,
   });
+  const progressId = useId();
   const threadRef = scopeThreadRef(thread.environmentId, thread.id);
   // Results only drag out as chat context; the row keeps its own listbox attributes.
   const { listeners: dragListeners, setNodeRef: setDragNodeRef } = useDraggable({
@@ -1824,6 +1835,10 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
   const { leaseLiveStatus, rowRef: leaseRowRef } = useSidebarRowSubscriptionLease(
     props.isHighlighted || props.isRouteActive,
   );
+  const progressLines =
+    thread.taskProgress || (thread.hasRunningCommand && leaseLiveStatus) ? (
+      <SidebarThreadProgress id={progressId} thread={thread} live={leaseLiveStatus} />
+    ) : null;
   const isRegeneratingTitle = thread.titleRegeneration != null;
   const rowRef = (row: HTMLElement | null) => {
     setDragNodeRef(row);
@@ -1913,7 +1928,9 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
             tabIndex={-1}
             aria-selected={props.isHighlighted}
             aria-current={accessibility.current}
-            aria-describedby={`${props.resultId}-pr`}
+            aria-describedby={
+              progressLines ? `${props.resultId}-pr ${progressId}` : `${props.resultId}-pr`
+            }
             aria-label={accessibility.label}
             {...dragListeners}
             onMouseMove={props.onHighlight}
@@ -1987,6 +2004,7 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
               <RelativeTimeLabel timestamp={resolveThreadActivityTimestamp(thread)} />
             </span>
           </span>
+          {progressLines}
           {props.searchMatch ? (
             <ThreadSearchMatchExcerpt
               match={{

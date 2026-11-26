@@ -1,9 +1,14 @@
+import { cn } from "~/lib/utils";
 import { useGT } from "gt-react";
-import type { OrchestrationV2CommandProgress } from "@t3tools/contracts";
+import { formatCommandProgress, type OrchestrationV2CommandProgress } from "@t3tools/contracts";
 
-import { formatCommandProgress } from "./useCommandProgress";
-
-export function CommandProgressMeter({ progress }: { progress: OrchestrationV2CommandProgress }) {
+export function CommandProgressMeter({
+  progress,
+  compact = false,
+}: {
+  progress: OrchestrationV2CommandProgress;
+  compact?: boolean;
+}) {
   const gt = useGT();
   return (
     <span
@@ -14,7 +19,12 @@ export function CommandProgressMeter({ progress }: { progress: OrchestrationV2Co
       aria-valuenow={progress.completed}
       className="flex shrink-0 items-center gap-2 text-xs tabular-nums text-muted-foreground"
     >
-      <span className="h-[3px] w-12 overflow-hidden rounded-full bg-foreground/10 sm:w-24">
+      <span
+        className={cn(
+          "h-[3px] overflow-hidden rounded-full bg-foreground/10",
+          compact ? "w-10" : "w-12 sm:w-24",
+        )}
+      >
         <span
           className="block h-full origin-left rounded-full bg-success transition-transform duration-300 ease-out motion-reduce:transition-none"
           style={{ transform: `scaleX(${progress.completed / progress.total})` }}

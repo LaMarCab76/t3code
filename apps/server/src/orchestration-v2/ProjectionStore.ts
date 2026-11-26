@@ -1306,6 +1306,9 @@ type ShellThreadRow = {
   readonly pending_link_request_payload_json: string | null;
   readonly latest_user_message_at: string | null;
   readonly latest_user_authored_message_at: string | null;
+  readonly has_running_command: number;
+  readonly task_total: number | null;
+  readonly task_completed: number;
   readonly has_actionable_proposed_plan: number;
 };
 
@@ -1885,6 +1888,45 @@ const linkCardStillAsks = (
   latestUserAuthoredMessageAt === null ||
   !DateTime.isGreaterThan(latestUserAuthoredMessageAt, item.startedAt ?? item.updatedAt);
 
+function latestTaskProgress(projection: OrchestrationV2ThreadProjection) {
+  const lists = projection.plans.filter(
+    (plan) => plan.kind === "todo_list" && plan.status !== "superseded",
+  );
+  if (!lists.length) return undefined;
+  const runs = new Map(
+    projection.runs
+      .filter((run) => run.status !== "rolled_back")
+      .map((run) => [run.id, run.ordinal]),
+  );
+  const items = new Map(
+    projection.turnItems
+      .filter((item) => item.type === "todo_list")
+      .map((item) => [item.planId, item]),
+  );
+  const latest = lists
+    .filter((plan) => (plan.runId === null ? items.has(plan.id) : runs.has(plan.runId)))
+    .sort((left, right) => {
+      const runOrder =
+        (right.runId === null ? -1 : runs.get(right.runId)!) -
+        (left.runId === null ? -1 : runs.get(left.runId)!);
+      if (runOrder) return runOrder;
+      const a = items.get(left.id);
+      const b = items.get(right.id);
+      if (left.runId === null && right.runId === null) {
+        const startOrder =
+          (b?.startedAt ? DateTime.toEpochMillis(b.startedAt) : -1) -
+          (a?.startedAt ? DateTime.toEpochMillis(a.startedAt) : -1);
+        if (startOrder) return startOrder;
+      }
+      return (b?.ordinal ?? -1) - (a?.ordinal ?? -1) || right.id.localeCompare(left.id);
+    })[0];
+  if (latest?.kind !== "todo_list" || latest.steps.length === 0) return undefined;
+  return {
+    completed: latest.steps.filter((step) => step.status === "completed").length,
+    total: latest.steps.length,
+  };
+}
+
 export function threadShellFromProjection(
   projection: OrchestrationV2ThreadProjection,
 ): OrchestrationV2ThreadShell {
@@ -1951,6 +1993,7 @@ export function threadShellFromProjection(
       pendingRuntimeRequest = waitingCard;
     }
   }
+  const taskProgress = latestTaskProgress(projection);
   const latestUserMessage = userMessages[0] ?? null;
   const pendingBackgroundTasks = derivePendingBackgroundWork({
     latestRun,
@@ -2026,6 +2069,14 @@ export function threadShellFromProjection(
     latestVisibleMessage: null,
     latestUserMessageAt: latestUserMessage?.updatedAt ?? null,
     latestUserAuthoredMessageAt,
+    ...(taskProgress && { taskProgress }),
+    ...(projection.turnItems.some(
+      (item) =>
+        item.type === "command_execution" &&
+        item.status === "running" &&
+        (item.runId === null ||
+          !projection.runs.some((run) => run.id === item.runId && run.status === "rolled_back")),
+    ) && { hasRunningCommand: true as const }),
     hasActionableProposedPlan: projection.plans.some(
       (plan) => plan.kind === "proposed_plan" && plan.status === "active",
     ),
@@ -2158,6 +2209,8 @@ type ShellThreadState = {
   readonly pendingRuntimeRequest: OrchestrationV2PendingRuntimeRequestSummary | null;
   readonly latestUserMessageAt: DateTime.Utc | null;
   readonly latestUserAuthoredMessageAt: DateTime.Utc | null;
+  readonly hasRunningCommand: boolean;
+  readonly taskProgress: OrchestrationV2ThreadShell["taskProgress"];
   readonly hasActionableProposedPlan: boolean;
   readonly pendingBackgroundTasks: OrchestrationV2ThreadShell["pendingBackgroundTasks"];
   readonly providerInstanceHistory: OrchestrationV2ThreadShell["providerInstanceHistory"];
@@ -2339,6 +2392,8 @@ function shellFromState(input: {
     latestVisibleMessage: null,
     latestUserMessageAt: input.state.latestUserMessageAt,
     latestUserAuthoredMessageAt: input.state.latestUserAuthoredMessageAt,
+    ...(input.state.hasRunningCommand && { hasRunningCommand: true as const }),
+    ...(input.state.taskProgress && { taskProgress: input.state.taskProgress }),
     hasActionableProposedPlan: input.state.hasActionableProposedPlan,
     pendingBackgroundTasks: input.state.pendingBackgroundTasks,
     providerInstanceHistory: input.state.providerInstanceHistory,
@@ -6091,32 +6146,33 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       "ProjectionStore.getLatestTodoList",
     )(
       function* (threadId) {
-        const owners = yield* latestTodoOwner(threadId);
-        if (owners[0] !== undefined)
-          return yield* getPlan(threadId, PlanId.make(owners[0].plan_id));
-        // Native children have provider turns and items but no orchestration run.
-        const runless = yield* sql<{ readonly plan_id: string }>`
-          SELECT plan.plan_id
-          FROM orchestration_v2_projection_plans AS plan
-          INNER JOIN orchestration_v2_projection_turn_items AS item
-            ON item.thread_id = plan.thread_id
-              AND json_extract(item.payload_json, '$.planId') = plan.plan_id
-          WHERE plan.thread_id = ${threadId} AND plan.run_id IS NULL
-            AND plan.kind = 'todo_list' AND plan.status <> 'superseded'
-            AND item.type = 'todo_list' AND item.run_id IS NULL
-          ORDER BY json_extract(item.payload_json, '$.startedAt') DESC,
-            item.ordinal DESC, plan.plan_id DESC
-          LIMIT 1
+        const [latest] = yield* sql<{ readonly plan_id: string | null }>`
+          SELECT ${latestTodoId(threadId)} AS plan_id
         `;
-        return runless[0] === undefined
-          ? undefined
-          : yield* getPlan(threadId, PlanId.make(runless[0].plan_id));
+        return latest?.plan_id ? yield* getPlan(threadId, PlanId.make(latest.plan_id)) : undefined;
       },
       (effect, threadId) =>
         sql.withTransaction(effect).pipe(Effect.mapError(controlReadError(threadId))),
     );
 
-    const latestTodoOwner = (threadId: ThreadId) => sql<{
+    const latestTodoId = (threadId: ThreadId | Statement.Fragment) => sql`COALESCE(
+        (SELECT plan_id FROM (${latestTodoOwner(threadId)})),
+        (
+          SELECT plan.plan_id
+          FROM orchestration_v2_projection_plans AS plan
+          INNER JOIN orchestration_v2_projection_turn_items AS todo_item
+            ON todo_item.thread_id = plan.thread_id
+              AND json_extract(todo_item.payload_json, '$.planId') = plan.plan_id
+          WHERE plan.thread_id = ${threadId} AND plan.run_id IS NULL
+            AND plan.kind = 'todo_list' AND plan.status <> 'superseded'
+            AND todo_item.type = 'todo_list' AND todo_item.run_id IS NULL
+          ORDER BY json_extract(todo_item.payload_json, '$.startedAt') DESC,
+            todo_item.ordinal DESC, plan.plan_id DESC
+          LIMIT 1
+        )
+      )`;
+
+    const latestTodoOwner = (threadId: ThreadId | Statement.Fragment) => sql<{
       readonly plan_id: string;
       readonly run_id: string;
       readonly provider_thread_id: string | null;
@@ -6141,14 +6197,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 ) THEN (
                   -- Plan UUIDs cannot order replacements within a run.
                   SELECT plan.plan_id
-                  FROM orchestration_v2_projection_turn_items AS item
+                  FROM orchestration_v2_projection_turn_items AS todo_item
                   CROSS JOIN orchestration_v2_projection_plans AS plan
-                    ON plan.plan_id = json_extract(item.payload_json, '$.planId')
-                  WHERE item.run_id = owner.run_id AND item.thread_id = ${threadId}
-                    AND item.type = 'todo_list'
+                    ON plan.plan_id = json_extract(todo_item.payload_json, '$.planId')
+                  WHERE todo_item.run_id = owner.run_id AND todo_item.thread_id = ${threadId}
+                    AND todo_item.type = 'todo_list'
                     AND plan.run_id = owner.run_id AND plan.thread_id = ${threadId}
                     AND plan.kind = 'todo_list' AND plan.status <> 'superseded'
-                  ORDER BY item.ordinal DESC
+                  ORDER BY todo_item.ordinal DESC
                   LIMIT 1
                 ) END, owner.plan_id) AS plan_id, owner.run_id, owner.provider_thread_id,
                 (
@@ -8560,9 +8616,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         worktreePath,
         threadIds,
         listedOnly = false,
+        includeProgress = true,
         includeDeleted = false,
       }: ShellSnapshotOptions & {
         readonly listedOnly?: boolean;
+        readonly includeProgress?: boolean;
         // A retained fork still shows the history of a deleted source run.
         readonly includeDeleted?: boolean;
       } = {},
@@ -8710,8 +8768,29 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 WHERE plan.thread_id = t.thread_id
                   AND plan.kind = 'proposed_plan'
                   AND plan.status = 'active'
-              ) AS has_actionable_proposed_plan
+              ) AS has_actionable_proposed_plan,
+              ${
+                includeProgress
+                  ? sql`EXISTS (
+                SELECT 1 FROM orchestration_v2_projection_turn_items command
+                WHERE command.thread_id = t.thread_id AND command.type = 'command_execution'
+                  AND command.status = 'running' AND NOT EXISTS (
+                    SELECT 1 FROM orchestration_v2_projection_runs owner WHERE owner.run_id = command.run_id
+                      AND owner.status = 'rolled_back'
+                  )
+              ) AS has_running_command,
+              json_array_length(todo.payload_json, '$.steps') AS task_total,
+              (SELECT COUNT(*) FROM json_each(todo.payload_json, '$.steps') AS step
+                WHERE json_extract(step.value, '$.status') = 'completed') AS task_completed`
+                  : sql`0 AS has_running_command, NULL AS task_total, 0 AS task_completed`
+              }
             FROM orchestration_v2_projection_threads t
+            ${
+              includeProgress
+                ? sql`LEFT JOIN orchestration_v2_projection_plans todo
+              ON todo.plan_id = ${latestTodoId(sql`t.thread_id`)}`
+                : sql``
+            }
             LEFT JOIN orchestration_v2_projection_runs active ON active.run_id = (
               SELECT r.run_id
               FROM orchestration_v2_projection_runs r
@@ -9387,6 +9466,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               ? null
               : DateTime.makeUnsafe(row.latest_user_message_at),
           latestUserAuthoredMessageAt,
+          hasRunningCommand: row.has_running_command === 1,
+          taskProgress: row.task_total
+            ? { completed: row.task_completed, total: row.task_total }
+            : undefined,
           hasActionableProposedPlan: row.has_actionable_proposed_plan === 1,
           pendingBackgroundTasks,
           providerInstanceHistory: providerInstanceHistoryForShell({
@@ -9587,10 +9670,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         const { threadRows, providerThreadRows, pendingTurnItemRows, sequenceRows } =
           yield* sql.withTransaction(
             Effect.gen(function* () {
-              const threadRows = yield* selectShellThreadRows(
-                threadId,
-                threadId === undefined ? { location: "active", listedOnly: true } : {},
-              );
+              const threadRows = yield* selectShellThreadRows(threadId, {
+                includeProgress: false,
+                ...(threadId === undefined && { location: "active", listedOnly: true }),
+              });
               const ids = threadRows.map((row) => ThreadId.make(row.thread_id));
               const providerThreadRows =
                 ids.length === 0 ? [] : yield* selectShellProviderThreadRows(ids);

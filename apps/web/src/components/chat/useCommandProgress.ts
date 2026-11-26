@@ -24,12 +24,6 @@ export function useCommandProgress(
   return data?.items ?? NO_PROGRESS;
 }
 
-export function formatCommandProgress(progress: OrchestrationV2CommandProgress): string {
-  return progress.total === 100
-    ? `${progress.completed}%`
-    : `${progress.completed}/${progress.total}`;
-}
-
 const COMMAND_LABEL_MAX_CHARS = 32;
 
 export function truncateCommandLabel(command: string): string {

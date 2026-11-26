@@ -12044,6 +12044,7 @@
   "201317aac48d4d9f": "Borrar búsqueda de hilos",
   "bcda2ccaa871dc46": "Nuevo hilo en el proyecto actual: Shift+clic ({shortcut})",
   "aa5c379423baace1": "Nuevo hilo en el proyecto actual: Shift+clic",
+  "a249fcbe7894e325": "{total, plural, one {{done}/{total} tarea} other {{done}/{total} tareas}}",
   "9d9d32b401d2931a": "{count, plural, one {{count} proceso de terminal en ejecución} other {{count} procesos de terminal en ejecución}}",
   "ade06f6723949b39": "Se produjo un error",
   "021fe65858278fe9": "Posponer hilo",

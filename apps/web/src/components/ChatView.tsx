@@ -88,6 +88,7 @@ import {
   type ScopedThreadRef,
   type ThreadId,
   ProviderInteractionMode,
+  formatCommandProgress,
   resolveIdleCompaction,
   RuntimeMode,
 } from "@t3tools/contracts";
@@ -339,11 +340,7 @@ import {
 } from "./chat/PanelLayoutControls";
 import type { ExpandedImagePreview } from "./chat/ExpandedImagePreview";
 import { ThreadDetailsPanel } from "./chat/ThreadDetailsPanel";
-import {
-  formatCommandProgress,
-  truncateCommandLabel,
-  useCommandProgress,
-} from "./chat/useCommandProgress";
+import { truncateCommandLabel, useCommandProgress } from "./chat/useCommandProgress";
 import { NoActiveThreadState } from "./NoActiveThreadState";
 import {
   offersWorkspaceModes,

@@ -45,6 +45,7 @@ const layerTestEventSink = EventSink.layer.pipe(
   Layer.provide(Layer.mergeAll(layerTestStores, layerTestDatabase)),
 );
 const layerTest = Layer.mergeAll(
+  layerTestStores,
   layerTestEventSink,
   IdAllocator.layer,
   CommandOutputHub.layer.pipe(Layer.provide(Layer.merge(layerTestEventSink, layerTestStores))),
@@ -322,18 +323,24 @@ layer("CommandOutputHub", (it) => {
       const hub = yield* CommandOutputHub.CommandOutputHub;
       const threadId = yield* seedThread;
       yield* writeCommandItem(threadId, { status: "running", output: "snapshot 12/20" });
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      assert.equal((yield* store.getThreadShell(threadId))?.hasRunningCommand, true);
       const frames = yield* Queue.unbounded<OrchestrationV2CommandProgressFrame>();
       yield* hub.subscribeProgress(threadId).pipe(
         Stream.runForEach((frame) => Queue.offer(frames, frame)),
         Effect.forkScoped,
       );
       assert.deepStrictEqual(yield* Queue.take(frames), {
-        items: [{ itemId: ITEM_ID, completed: 12, total: 20 }],
+        items: [
+          { itemId: ITEM_ID, commandLabel: "yes | head -n 1000000", completed: 12, total: 20 },
+        ],
       });
       yield* TestClock.adjust("1 second");
       yield* writeCommandItem(threadId, { status: "running", output: "snapshot 15/20" });
       assert.deepStrictEqual(yield* Queue.take(frames), {
-        items: [{ itemId: ITEM_ID, completed: 15, total: 20 }],
+        items: [
+          { itemId: ITEM_ID, commandLabel: "yes | head -n 1000000", completed: 15, total: 20 },
+        ],
       });
       yield* TestClock.adjust("1 second");
       yield* writeCommandItem(threadId, {
@@ -341,6 +348,7 @@ layer("CommandOutputHub", (it) => {
         output: "snapshot 20/20",
         exitCode: 0,
       });
+      assert.equal((yield* store.getThreadShell(threadId))?.hasRunningCommand, undefined);
       assert.deepStrictEqual(yield* Queue.take(frames), { items: [] });
     }),
   );
@@ -401,7 +409,9 @@ layer("CommandOutputHub", (it) => {
         Effect.forkScoped,
       );
       assert.deepEqual(yield* Queue.take(frames), {
-        items: [{ itemId: ITEM_ID, completed: 13, total: 20 }],
+        items: [
+          { itemId: ITEM_ID, commandLabel: "yes | head -n 1000000", completed: 13, total: 20 },
+        ],
       });
       yield* writeRun("rolled_back");
       yield* TestClock.adjust("1 second");

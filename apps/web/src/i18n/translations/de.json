@@ -12051,6 +12051,7 @@
   "201317aac48d4d9f": "Thread-Suche leeren",
   "bcda2ccaa871dc46": "Neuer Thread im aktuellen Projekt: Shift+Klick ({shortcut})",
   "aa5c379423baace1": "Neuer Thread im aktuellen Projekt: Shift+Klick",
+  "a249fcbe7894e325": "{total, plural, one {{done}/{total} Aufgabe} other {{done}/{total} Aufgaben}}",
   "9d9d32b401d2931a": "{count, plural, one {{count} Terminal-Prozess läuft} other {{count} Terminal-Prozesse laufen}}",
   "ade06f6723949b39": "Fehler aufgetreten",
   "021fe65858278fe9": "Thread zurückstellen",

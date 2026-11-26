@@ -12049,6 +12049,7 @@
   "201317aac48d4d9f": "Limpar pesquisa de threads",
   "bcda2ccaa871dc46": "Nova thread no projeto atual: Shift+clique ({shortcut})",
   "aa5c379423baace1": "Nova thread no projeto atual: Shift+clique",
+  "a249fcbe7894e325": "{total, plural, one {{done}/{total} tarefa} other {{done}/{total} tarefas}}",
   "9d9d32b401d2931a": "{count, plural, one {{count} processo de terminal em execução} other {{count} processos de terminal em execução}}",
   "ade06f6723949b39": "Ocorreu um erro",
   "021fe65858278fe9": "Adiar thread",

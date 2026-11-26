@@ -12057,6 +12057,7 @@
   "201317aac48d4d9f": "Rensa trådsökningen",
   "bcda2ccaa871dc46": "Ny tråd i aktuellt projekt: Shift+klick ({shortcut})",
   "aa5c379423baace1": "Ny tråd i aktuellt projekt: Shift+klick",
+  "a249fcbe7894e325": "{total, plural, one {{done}/{total} uppgift} other {{done}/{total} uppgifter}}",
   "9d9d32b401d2931a": "{count, plural, one {{count} terminalprocess körs} other {{count} terminalprocesser körs}}",
   "ade06f6723949b39": "Ett fel uppstod",
   "021fe65858278fe9": "Snooza tråd",

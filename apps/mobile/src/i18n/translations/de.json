@@ -4927,6 +4927,7 @@
   "11276ab6c58b7a25": "Öffnet den Entwurf im Eingabefeld für neue Aufgaben. Nach links wischen zum Verwerfen.",
   "99950f3a28d425fa": "Wird gesendet, sobald die Umgebung wieder verbunden ist. Öffnet die Aufgabe zum Bearbeiten. Nach links wischen zum Löschen.",
   "d71048f4fb9cf44a": "Wartet auf Synchronisierung",
+  "a249fcbe7894e325": "{total, plural, one {{done}/{total} Aufgabe} other {{done}/{total} Aufgaben}}",
   "0a260c7744afd0be": "Wartet",
   "ad78fae7d373cf21": "Arbeitet",
   "be451f475c514b37": "Aufgeweckt-Hinweis schließen",
