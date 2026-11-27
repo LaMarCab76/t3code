@@ -1,5 +1,6 @@
 import {
   USAGE_MERGE_COMPATIBLE_SINCE,
+  USAGE_CONTRACT_VERSION,
   type EnvironmentId,
   type UsageBucket,
   type UsageProviderKind,
@@ -23,6 +24,18 @@ export interface ProviderTotals {
   readonly sessions: number;
   readonly costShare: number;
   readonly tokenShare: number;
+}
+
+export function usagePieSlices<T extends { value: number }>(rows: readonly T[], total: number) {
+  let offset = 0;
+  return rows
+    .filter((row) => row.value > 0)
+    .map((row) => {
+      const start = offset,
+        fraction = row.value / total;
+      offset += fraction;
+      return { row, start, fraction };
+    });
 }
 
 export interface ModelTotals {
@@ -283,6 +296,29 @@ function ownedContribution(
     ),
     sessionsByProvider,
   };
+}
+
+export function ownedUsageCells(environments: readonly EnvironmentUsage[]) {
+  const current = environments.filter((e) =>
+    isCompatibleUsageContractVersion(e.summary.contractVersion, USAGE_CONTRACT_VERSION),
+  );
+  const key = sourceIdentity(current.flatMap((e) => e.summary.sources.map((s) => s.fingerprint)));
+  const claims = claimSources(current, key);
+  return current.flatMap((e) =>
+    ownedContribution(
+      e,
+      claims.ownerScanByFingerprint,
+      claims.supplementalBucketsByEnvironment.get(e.environmentId) ?? new Set(),
+      claims.sessionsByFingerprint,
+      key,
+    ).buckets.map((b) => ({
+      environmentId: e.environmentId,
+      day: b.day,
+      provider: b.provider,
+      model: b.model,
+      tokens: bucketTokens(b),
+    })),
+  );
 }
 
 function bucketTokens(bucket: UsageBucket): number {

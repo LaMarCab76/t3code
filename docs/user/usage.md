@@ -9,9 +9,17 @@ Track token usage, cache hit rates, estimated API-equivalent costs, and pooled s
 
 Usage aggregates history across Codex, Claude Code, Grok Build, OpenCode, Antigravity, Pi, Muse Code, and Cursor from your selected environments. Estimates reflect API-equivalent rates (not your subscription bill); **Premium** shows Fast/Ultrafast surcharge, and **Other** shows unsplit provider-reported costs.
 
-- **Retention**: Servers keep scanned usage history for **92 days** by default (preserving Claude history after Claude's 30-day cleanup). Change `usageHistoryRetentionDays` in `<t3-home>/userdata/settings.json` (e.g. `365` or `"unlimited"`; views show up to 90 days).
+- **History**: The usage report keeps recorded totals without an expiration date. Collection starts with history the providers can still supply. The underlying transcript scan cache keeps 92 days by default. Its `usageHistoryRetentionDays` setting is independent of the report archive.
 - **Custom data directories**: Honors `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GROK_HOME`, `PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR`, `OPENCODE_DATA_DIR`, `ANTIGRAVITY_DATA_DIR`, and `XDG_DATA_HOME` (Muse). Use absolute or `~/` paths. Set `T3CODE_HOST_ID` to pin a container's host identity.
 - **Exclusions**: Codex and Claude Code 2.0.63+ text-generation runs (titles, commits, PR text, review guides) and Grok turns without a saved completed-turn record are not included.
+
+## Historical reports and subscriptions
+
+Open **Usage → Usage report** and choose a period. **Last year** shows the trailing year. **Custom** accepts an inclusive date range, a number of days, or the entire recorded history. The two charts compare each provider’s share of tokens and cost. In **Summary**, switch a chart to **Cumulative** to stack the running total from each provider.
+
+Choose **Subscription → Monthly payments** in Summary or the report to enter the amount actually paid per provider and calendar month in USD. Choose the payment environment to use the same ledger from different clients. Payments stay on that environment and are available to sessions with permission to edit its settings. An empty amount is unknown. Zero records a free month. **Full payments** includes each affected provider-month once across machines. **Period cost** includes the fraction of the calendar month selected. Each day’s cost is allocated by the provider’s token usage across models and environments. Days with no recorded tokens stay unattributed.
+
+**Synchronization** shows where a copy was saved and when. Clients copy usage among connected environments they can maintain and read diagnostics from. A server with a full-access link can also pull its peer’s archive while no client is open. The latest saved copy remains available when its source is offline. A machine that disconnects before a copy completes can reconcile when it reconnects.
 
 ## Inspect one thread
 

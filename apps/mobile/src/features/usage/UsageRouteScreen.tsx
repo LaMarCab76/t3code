@@ -42,6 +42,7 @@ import { NativeWorkspaceTabActivityContext } from "../../native/v5-workspace-con
 import { useUsage, type EnvironmentUsageStatus } from "../../state/usage";
 import { SettingsSection } from "../settings/components/SettingsSection";
 import { usageAxisDayLabel, usageAxisHourLabel } from "./usageAxisLabels";
+import { MobileUsageReport, MobileUsageSync, CumulativeChart, Action, Field } from "./UsageReport";
 import { UsageDailyChart } from "./UsageDailyChart";
 import { toggleUsageEnvironment } from "./usageEnvironmentSelection";
 import { useRefreshLimits } from "./UsageLimitsSection";
@@ -49,9 +50,10 @@ import { UsageLimitsSection } from "./UsageLimitsPooled";
 import type { UsageChartMetric } from "./usageChartData";
 import { PROVIDER_LABEL, useProviderColors, useUsageMixColors } from "./usageProviders";
 
-type UsageView = UsageChartMetric | "limits";
+type UsageView = UsageChartMetric | "limits" | "subscription";
 const VIEW_OPTIONS = [
-  { value: "cost", label: msg("Cost", { $context: "usage view tab" }) },
+  { value: "cost", label: msg("API cost") },
+  { value: "subscription", label: msg("Subscription") },
   { value: "tokens", label: msg("Tokens", { $context: "usage view tab" }) },
   { value: "limits", label: msg("Limits", { $context: "usage view tab, subscription limits" }) },
 ] as const satisfies readonly { value: UsageView; label: string }[];
@@ -97,6 +99,9 @@ function UsageScreen(props: {
 }) {
   const gt = useGT();
   const m = useMessages();
+  const [section, setSection] = useState<"summary" | "report" | "sync">("summary");
+  const [custom, setCustom] = useState(false),
+    [draftDays, setDraftDays] = useState("37");
   const viewOptions = VIEW_OPTIONS.map((option) => ({ ...option, label: m(option.label) }));
   const windowOptions = WINDOW_OPTIONS.map((option) => ({
     ...option,
@@ -137,7 +142,7 @@ function UsageScreen(props: {
   const isFocused = useIsFocused();
   const limits = useRefreshLimits(
     selectedEnvironmentIds,
-    isFocused && view === "limits" && !headerOnly,
+    isFocused && section === "summary" && view === "limits" && !headerOnly,
   );
   const sourceMessages = usageSourceMessages(
     selectedEnvironments.flatMap((environment) => environment.summary?.sources ?? []),
@@ -163,7 +168,7 @@ function UsageScreen(props: {
 
   const [refreshingUsage, setRefreshingUsage] = useState(false);
   const refreshingRef = useRef(false);
-  const showingLimits = view === "limits";
+  const showingLimits = section === "summary" && view === "limits";
   const metric: UsageChartMetric = view === "tokens" ? "tokens" : "cost";
   const progress = usageProgress(
     selectedEnvironments,
@@ -174,6 +179,7 @@ function UsageScreen(props: {
     m,
   );
   const selectWindow = (days: number) => {
+    setCustom(false);
     setWindowSelection({
       days,
       window: makeWindow(days, undefined, days === 1 ? "hour" : "day"),
@@ -267,42 +273,91 @@ function UsageScreen(props: {
           }
         >
           <View className="w-full gap-6 self-center" style={{ maxWidth: MAX_CONTENT_WIDTH }}>
-            {wide ? (
-              <View className="flex-row items-center gap-3">
-                {showingLimits ? (
-                  <View className="flex-1" />
-                ) : (
+            <SegmentedControl
+              options={[
+                { value: "summary", label: gt("Summary") },
+                { value: "report", label: gt("Usage report") },
+                { value: "sync", label: gt("Synchronization") },
+              ]}
+              selected={section}
+              onSelect={setSection}
+            />
+            {section === "summary" &&
+              (wide ? (
+                <View className="flex-row items-center gap-3">
+                  {showingLimits ? (
+                    <View className="flex-1" />
+                  ) : (
+                    <SegmentedControl
+                      options={windowOptions}
+                      selected={windowDays}
+                      onSelect={selectWindow}
+                      size="compact"
+                      className="flex-1"
+                    />
+                  )}
                   <SegmentedControl
-                    options={windowOptions}
-                    selected={windowDays}
-                    onSelect={selectWindow}
+                    options={viewOptions}
+                    selected={view}
+                    onSelect={setView}
                     size="compact"
+                    role="tab"
                     className="flex-1"
                   />
-                )}
+                </View>
+              ) : (
                 <SegmentedControl
                   options={viewOptions}
                   selected={view}
                   onSelect={setView}
-                  size="compact"
                   role="tab"
-                  className="flex-1"
                 />
+              ))}
+            {section === "summary" && !showingLimits && (
+              <View className="gap-2">
+                {view === "subscription" && !wide && (
+                  <SegmentedControl
+                    options={windowOptions}
+                    selected={windowDays}
+                    onSelect={selectWindow}
+                  />
+                )}
+                <Action label={gt("Custom")} press={() => setCustom(!custom)} />
+                {custom && (
+                  <>
+                    <Field
+                      label={gt("Number of days")}
+                      numeric
+                      value={draftDays}
+                      change={setDraftDays}
+                    />
+                    <Action
+                      label={gt("Apply")}
+                      disabled={
+                        !/^\d+$/.test(draftDays) ||
+                        Number(draftDays) < 1 ||
+                        Number(draftDays) > 36525
+                      }
+                      press={() => selectWindow(Number(draftDays))}
+                    />
+                  </>
+                )}
               </View>
-            ) : (
-              <SegmentedControl
-                options={viewOptions}
-                selected={view}
-                onSelect={setView}
-                role="tab"
-              />
             )}
             <Animated.View
               key={showingLimits ? "limits" : "usage"}
               entering={FadeIn.duration(160).reduceMotion(ReduceMotion.System)}
               className="gap-6"
             >
-              {showingLimits ? (
+              {section === "sync" ? (
+                <MobileUsageSync environments={environments} />
+              ) : section === "report" || view === "subscription" ? (
+                <MobileUsageReport
+                  report={section === "report"}
+                  window={window}
+                  selection={selectedEnvironmentIds}
+                />
+              ) : showingLimits ? (
                 <UsageLimitsSection
                   now={limits.now}
                   failedLabels={limits.failedLabels}
@@ -468,10 +523,16 @@ function ChartCard(props: {
   const colors = useProviderColors();
   const locale = useLocale();
   const hasActivity = props.daily.some((period) => period.totalTokens > 0);
+  const gt = useGT();
+  const [mode, setMode] = useState<"interval" | "cumulative">("interval");
   const [fillHeight, setFillHeight] = useState(0);
   const height = props.fill ? Math.max(fillHeight, props.height) : props.height;
   const chart = hasActivity ? (
-    <UsageDailyChart days={props.days} daily={props.daily} metric={metric} height={height} />
+    mode === "cumulative" ? (
+      <CumulativeChart days={props.days} daily={props.daily} metric={metric} height={height} />
+    ) : (
+      <UsageDailyChart days={props.days} daily={props.daily} metric={metric} height={height} />
+    )
   ) : (
     <View style={{ height }} className="items-center justify-center">
       <Text className="text-base text-foreground-muted">
@@ -490,6 +551,14 @@ function ChartCard(props: {
         <UsageSummary merged={merged} metric={metric} />
       )}
 
+      <SegmentedControl
+        options={[
+          { value: "interval", label: props.isPast24Hours ? gt("Hourly") : gt("Daily") },
+          { value: "cumulative", label: gt("Cumulative") },
+        ]}
+        selected={mode}
+        onSelect={setMode}
+      />
       {props.fill ? (
         // Absolute so the measured slot can shrink again when the neighbour gets shorter.
         <View

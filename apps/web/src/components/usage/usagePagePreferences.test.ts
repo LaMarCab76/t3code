@@ -33,14 +33,13 @@ describe("Usage page preferences", () => {
   });
 
   // regression: #10189 an invalid saved usage selection was never replaced
-  it.each([
-    "not-json",
-    '{"metric":"unknown","windowDays":7}',
-    '{"metric":"cost","windowDays":365}',
-  ])("replaces invalid preferences on the next save: %s", (value) => {
-    values.set(key, value);
-    expect(readUsagePagePreferences()).toEqual({ metric: "limits", windowDays: 30 });
-    saveUsagePagePreferences({ metric: "tokens", windowDays: 7 });
-    expect(readUsagePagePreferences()).toEqual({ metric: "tokens", windowDays: 7 });
-  });
+  it.each(["not-json", '{"metric":"unknown","windowDays":7}', '{"metric":"cost","windowDays":0}'])(
+    "replaces invalid preferences on the next save: %s",
+    (value) => {
+      values.set(key, value);
+      expect(readUsagePagePreferences()).toEqual({ metric: "limits", windowDays: 30 });
+      saveUsagePagePreferences({ metric: "tokens", windowDays: 7 });
+      expect(readUsagePagePreferences()).toEqual({ metric: "tokens", windowDays: 7 });
+    },
+  );
 });

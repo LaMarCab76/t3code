@@ -30,6 +30,11 @@ describe("buildPeriodColumns", () => {
     ],
   ]);
 
+  it("stacks running totals for the entire selected period", () => {
+    const columns = buildPeriodColumns(days, byDay, "cost", true);
+    expect(columns.at(-1)?.total).toBe(47);
+    expect(columns.at(-1)?.bands.find((b) => b.provider === "claude")?.value).toBe(25);
+  });
   it("keeps band values absolute rather than cumulative", () => {
     const [first] = buildPeriodColumns(days, byDay, "cost");
 

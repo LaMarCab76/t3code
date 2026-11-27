@@ -73,6 +73,7 @@ export interface AggregateOptions {
   readonly rateModel?: (provider: UsageRecord["provider"], model: string) => string | undefined;
   readonly modelFilter?: UsageModelFilter;
   readonly resolution?: UsageResolution;
+  readonly archiveMinutes?: boolean;
   readonly sinceTimeMs?: number;
   readonly untilTimeMs?: number;
 }
@@ -121,7 +122,10 @@ export function resolveModelAliases(
 }
 
 /** Matches original IDs, so an alias cannot pull excluded usage into a kept model. */
-function keepsUsageRecord(filter: UsageModelFilter | undefined, record: UsageRecord): boolean {
+export function keepsUsageRecord(
+  filter: UsageModelFilter | undefined,
+  record: Pick<UsageRecord, "provider" | "model">,
+): boolean {
   if (filter === undefined) return true;
   const model = record.model.trim();
   const matches = (selector: UsageModelSelector) =>
@@ -321,7 +325,10 @@ export class UsageAggregator {
     const hourIndex =
       this.#hourlyWindow === null
         ? -1
-        : Math.floor((record.timestampMs - this.#hourlyWindow.sinceTimeMs) / HOUR_MS);
+        : Math.floor(
+            (record.timestampMs - this.#hourlyWindow.sinceTimeMs) /
+              (this.#options.archiveMinutes ? 60_000 : HOUR_MS),
+          );
     return this.#bucketFor(day, hourIndex, record.provider, record.model, source);
   }
 
@@ -401,7 +408,11 @@ export class UsageAggregator {
     }
     const window = this.#hourlyWindow;
     const hourStart =
-      window === null ? "" : new Date(window.sinceTimeMs + hourIndex * HOUR_MS).toISOString();
+      window === null
+        ? ""
+        : new Date(
+            window.sinceTimeMs + hourIndex * (this.#options.archiveMinutes ? 60_000 : HOUR_MS),
+          ).toISOString();
     const key = `${day}\u0000${hourStart}\u0000${provider}\u0000${model}\u0000${source}`;
     let bucket = this.#buckets.get(key);
     if (bucket === undefined) {
@@ -465,6 +476,7 @@ export class UsageAggregator {
         unpricedRecords: bucket.unpricedRecords,
         unpricedTokens: bucket.unpricedTokens,
         sessions: bucket.sessions.size,
+        ...(this.#options.archiveMinutes ? { archiveSessions: [...bucket.sessions] } : {}),
       });
     }
     buckets.sort(

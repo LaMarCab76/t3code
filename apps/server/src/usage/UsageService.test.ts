@@ -3888,6 +3888,13 @@ describe("UsageService", () => {
           const service = yield* UsageService.make;
           const first = yield* service.readSummary(window);
           assert.strictEqual(totalOutputTokens(first), 15);
+          const archived = yield* service.archiveSummary(window.sinceDay);
+          assert.strictEqual(totalOutputTokens(archived), 15);
+          assert.isTrue(
+            archived.buckets.some(
+              (bucket) => bucket.day < "2025-01-01" && bucket.hourStart !== undefined,
+            ),
+          );
           yield* service.awaitPersisted;
           yield* Effect.promise(() => Promise.all(files.map((file) => NodeFSP.rm(file.path))));
           const restarted = yield* UsageService.make;

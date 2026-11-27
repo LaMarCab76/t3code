@@ -13,6 +13,7 @@ import {
 import { formatRelativeHourShort } from "@t3tools/shared/usageFormatCopy";
 import { cn } from "~/lib/utils";
 import { PROVIDER_ORDER, PROVIDER_PRESENTATION } from "./usageProviders";
+import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { observeResize } from "~/lib/observeResize";
 
 const VIEW_WIDTH = 960;
@@ -24,6 +25,7 @@ const NONE_LOADING: ReadonlySet<UsageProviderKind> = new Set();
 export type UsageChartMetric = "tokens" | "cost";
 
 interface UsageProviderChartProps {
+  readonly intervalTitle?: string;
   readonly providers: readonly UsageProviderKind[];
   readonly loadingProviders?: ReadonlySet<UsageProviderKind>;
   readonly days: readonly string[];
@@ -64,13 +66,16 @@ export function buildPeriodColumns(
   periods: readonly string[],
   byPeriod: ReadonlyMap<string, DailyTotals | HourlyTotals>,
   metric: UsageChartMetric,
+  cumulative = false,
 ): readonly DayColumn[] {
+  const running = new Map<UsageProviderKind, number>();
   return periods.map((period) => {
     const entry = byPeriod.get(period);
-    const bands = PROVIDER_ORDER.map((provider) => ({
-      provider,
-      value: valueFor(entry, provider, metric),
-    }));
+    const bands = PROVIDER_ORDER.map((provider) => {
+      const value = (running.get(provider) ?? 0) + valueFor(entry, provider, metric);
+      if (cumulative) running.set(provider, value);
+      return { provider, value };
+    });
     return { bands, total: bands.reduce((sum, band) => sum + band.value, 0) };
   });
 }
@@ -175,10 +180,14 @@ const PLACEHOLDER_TICKS = Array.from({ length: TICK_COUNT + 1 }, (_, index) => i
 function chartScale(
   columns: readonly DayColumn[],
   loadingProviders: ReadonlySet<UsageProviderKind>,
+  cumulative: boolean,
 ) {
   // Layered series each start at zero; summing peaks would waste plot height.
   const peak = columns.reduce(
-    (max, column) => column.bands.reduce((inner, band) => Math.max(inner, band.value), max),
+    (max, column) =>
+      cumulative
+        ? Math.max(max, column.total)
+        : column.bands.reduce((inner, band) => Math.max(inner, band.value), max),
     0,
   );
   return peak === 0 && loadingProviders.size > 0
@@ -196,12 +205,30 @@ function buildChart(
   metric: UsageChartMetric,
   providers: readonly UsageProviderKind[],
   loadingProviders: ReadonlySet<UsageProviderKind>,
+  cumulative: boolean,
 ) {
-  const columns = buildPeriodColumns(periods, byPeriod, metric);
-  const scale = chartScale(columns, loadingProviders);
+  const columns = buildPeriodColumns(periods, byPeriod, metric, cumulative);
+  const scale = chartScale(columns, loadingProviders, cumulative);
   const stepX = periods.length < 2 ? 0 : VIEW_WIDTH / (periods.length - 1);
+  const bases = columns.map(() => 0);
   const paths = providers.map((provider) => {
     const slot = PROVIDER_ORDER.indexOf(provider);
+    if (cumulative) {
+      const lower = bases.map((v, i) => `${i * stepX},${valueToY(v, scale.max)}`);
+      const upper = columns.map((column, i) => {
+        const next = bases[i]! + (column.bands[slot]?.value ?? 0);
+        bases[i] = next;
+        return `${i * stepX},${valueToY(next, scale.max)}`;
+      });
+      const line = upper.length ? "M" + upper.join(" L") : "";
+      return {
+        provider,
+        loading: loadingProviders.has(provider),
+        total: bases.at(-1) ?? 0,
+        line,
+        area: line ? line + " L" + lower.reverse().join(" L") + " Z" : "",
+      };
+    }
     const line = curvePath(
       smoothCurve(
         columns.map((column, periodIndex) => ({
@@ -406,6 +433,7 @@ function UsageChartPlot({
 }
 
 export function UsageProviderChart({
+  intervalTitle,
   providers,
   loadingProviders = NONE_LOADING,
   days,
@@ -421,6 +449,7 @@ export function UsageProviderChart({
   const gt = useGT();
   const locale = useLocale();
   const m = useMessages();
+  const [cumulative, setCumulative] = useState(false);
   const periods = resolution === "hour" ? hours : days;
   const totals: readonly (DailyTotals | HourlyTotals)[] = resolution === "hour" ? hourly : daily;
   const byPeriod = new Map(
@@ -432,6 +461,7 @@ export function UsageProviderChart({
     metric,
     providers,
     loadingProviders,
+    cumulative,
   );
 
   const toY = (value: number) => valueToY(value, scale.max);
@@ -449,6 +479,28 @@ export function UsageProviderChart({
 
   return (
     <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-end gap-2">
+        {intervalTitle && (
+          <h2 className="me-auto text-sm font-medium">
+            {cumulative
+              ? metric === "tokens"
+                ? gt("Cumulative tokens")
+                : gt("Cumulative cost")
+              : intervalTitle}
+          </h2>
+        )}
+        <ToggleGroup
+          variant="segmented"
+          aria-label={gt("Chart mode")}
+          value={[cumulative ? "cumulative" : "interval"]}
+          onValueChange={([mode]) => {
+            if (mode) setCumulative(mode === "cumulative");
+          }}
+        >
+          <Toggle value="interval">{resolution === "hour" ? gt("Hourly") : gt("Daily")}</Toggle>
+          <Toggle value="cumulative">{gt("Cumulative")}</Toggle>
+        </ToggleGroup>
+      </div>
       <div className="flex gap-2">
         <div aria-hidden className="relative h-56 w-14 shrink-0">
           {scale.labeled
@@ -496,7 +548,7 @@ export function UsageProviderChart({
               d={area}
               className={seriesClassName(loading)}
               fill={PROVIDER_PRESENTATION[provider].color}
-              fillOpacity={0.12}
+              fillOpacity={cumulative ? 0.6 : 0.12}
             />
           ))}
           {paths.map(({ provider, loading, line }) => (

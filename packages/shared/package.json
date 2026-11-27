@@ -431,6 +431,10 @@
       "types": "./src/devProxy.ts",
       "import": "./src/devProxy.ts"
     },
+    "./usagePayments": {
+      "types": "./src/usagePayments.ts",
+      "import": "./src/usagePayments.ts"
+    },
     "./usageMerge": {
       "types": "./src/usageMerge.ts",
       "import": "./src/usageMerge.ts"

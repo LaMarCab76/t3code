@@ -33,7 +33,7 @@ const usageCommandOrder = new Map<KeybindingCommand, number>(
   ].map((command, index) => [command, index]),
 );
 
-const firstUsageCommand = METRIC_OPTIONS[0].command;
+const firstUsageCommand = "usage.cost";
 
 function compareCommands(
   left: KeybindingCommand,

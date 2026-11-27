@@ -268,6 +268,7 @@ import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import { commandFeatureUsage, featureUsage } from "./telemetry/FeatureUsage.ts";
 import type { TelemetryOwner } from "./telemetry/Identify.ts";
 import * as UsageService from "./usage/UsageService.ts";
+import { makeUsageArchive } from "./usage/UsageArchive.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
 import * as TriageService from "./triage/TriageService.ts";
 import * as PullRequestService from "./pullRequest/PullRequestService.ts";
@@ -1625,6 +1626,7 @@ export const layerWsRpc = (
           ),
         );
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
+      const usageArchive = makeUsageArchive(sql, usage, serverEnvironment);
       const backgroundPolicy = yield* BackgroundPolicy.BackgroundPolicy;
       const rpcClientIds = yield* Ref.make(new Set<RpcClientId>());
       yield* Effect.addFinalizer(() =>
@@ -2915,7 +2917,22 @@ export const layerWsRpc = (
           processResourceMonitor.readHistory(input),
         [WS_METHODS.serverGetResourceTelemetryHistory]: (input) =>
           resourceTelemetry.readHistory(input),
-        [WS_METHODS.serverGetUsageSummary]: (input) => usage.readSummary(input),
+        [WS_METHODS.usagePaymentsRead]: () => usageArchive.payments,
+        [WS_METHODS.usagePaymentsUpdate]: ({ payments }) => usageArchive.updatePayments(payments),
+        [WS_METHODS.usageArchiveStatus]: () => usageArchive.status,
+        [WS_METHODS.usageArchiveExport]: (input) => usageArchive.changes(input),
+        [WS_METHODS.usageArchiveImport]: (input) => usageArchive.receive(input),
+        [WS_METHODS.usageArchiveRead]: (input) => usageArchive.read(input),
+        [WS_METHODS.serverGetUsageSummary]: (input) =>
+          input.savedHistory
+            ? usageArchive
+                .read(input, true)
+                .pipe(
+                  Effect.flatMap(([own]) =>
+                    own ? Effect.succeed(own.summary) : usage.readSummary(input),
+                  ),
+                )
+            : usage.readSummary(input),
         [WS_METHODS.serverRefreshUsageRates]: (_input) => usage.refreshRates,
         [WS_METHODS.serverRetryResourceTelemetry]: (_input) => resourceTelemetry.retry,
         [WS_METHODS.serverCheckOtlpEndpoint]: (input) => otlpEndpointCheck.check(input),

@@ -1,6 +1,11 @@
 import * as Schema from "effect/Schema";
 
-import { ForwardCompatibleArray, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  EnvironmentId,
+  ForwardCompatibleArray,
+  NonNegativeInt,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 
 /** Bump for incompatible UsageSummary changes; skipped unknown array variants need no bump. */
 export const USAGE_CONTRACT_VERSION = 6 as const;
@@ -69,6 +74,7 @@ export const UsageBucket = Schema.Struct({
   /** Absent from older servers; merges then estimate it from the unpriced record share. */
   unpricedTokens: Schema.optional(NonNegativeInt),
   sessions: NonNegativeInt,
+  archiveSessions: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 export type UsageBucket = typeof UsageBucket.Type;
 
@@ -141,6 +147,7 @@ export const UsageSummaryInput = Schema.Struct({
   resolution: Schema.optional(UsageResolution),
   sinceTime: Schema.optional(TrimmedNonEmptyString),
   untilTime: Schema.optional(TrimmedNonEmptyString),
+  savedHistory: Schema.optionalKey(Schema.Boolean),
   awaitRefresh: Schema.optional(Schema.Boolean),
   /** Accept an immediate answer from the last scan; its sources are marked refreshing. */
   provisional: Schema.optional(Schema.Boolean),
@@ -163,6 +170,56 @@ export const UsageSummary = Schema.Struct({
 });
 export type UsageSummary = typeof UsageSummary.Type;
 
+const UsagePaymentKey = Schema.String.check(
+  Schema.isPattern(
+    /^\d{4}-(?:0[1-9]|1[0-2])\/(?:claude|codex|grok|cursor|opencode|antigravity|pi|muse)$/,
+  ),
+);
+const UsagePaymentCents = Schema.Int.check(
+  Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+);
+
+const UsagePayment = Schema.Struct({
+  cents: Schema.NullOr(UsagePaymentCents),
+  updatedAt: Schema.String.check(Schema.isPattern(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/)),
+});
+export type UsagePayment = typeof UsagePayment.Type;
+export const UsagePaymentBook = Schema.Record(UsagePaymentKey, UsagePayment);
+export const UsagePaymentPatch = Schema.Record(UsagePaymentKey, Schema.NullOr(UsagePaymentCents));
+export const UsageArchiveCopy = Schema.Struct({
+  environmentId: EnvironmentId,
+  label: TrimmedNonEmptyString,
+  summary: UsageSummary,
+});
+export type UsageArchiveCopy = typeof UsageArchiveCopy.Type;
+
+export const USAGE_ARCHIVE_PEER_PATH = "/api/peer-link/usage-archive" as const;
+export const UsageArchiveDay = Schema.Struct({
+  revision: Schema.optionalKey(NonNegativeInt),
+  day: UsageDay,
+  readAt: TrimmedNonEmptyString,
+  source: UsageSource,
+  buckets: Schema.Array(UsageBucket),
+  modelFilter: Schema.optionalKey(UsageModelFilter),
+});
+export type UsageArchiveDay = typeof UsageArchiveDay.Type;
+export const UsageArchivePage = Schema.Struct({
+  environmentId: EnvironmentId,
+  label: TrimmedNonEmptyString,
+  from: NonNegativeInt,
+  cursor: NonNegativeInt,
+  readAt: TrimmedNonEmptyString,
+  days: Schema.Array(UsageArchiveDay).check(Schema.isMaxLength(12)),
+  more: Schema.Boolean,
+});
+export type UsageArchivePage = typeof UsageArchivePage.Type;
+export const UsageArchiveState = Schema.Struct({
+  environmentId: EnvironmentId,
+  label: TrimmedNonEmptyString,
+  readAt: TrimmedNonEmptyString,
+  cursor: NonNegativeInt,
+  firstDay: Schema.optionalKey(UsageDay),
+});
 export class UsageReadError extends Schema.TaggedError<UsageReadError>()("UsageReadError", {
   reason: Schema.Literals(["scanFailed", "invalidWindow"]),
   detail: TrimmedNonEmptyString,

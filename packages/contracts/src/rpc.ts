@@ -45,7 +45,12 @@ import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import * as RpcMiddleware from "effect/rpc/RpcMiddleware";
-import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  EnvironmentId,
+  IsoDateTime,
+  NonNegativeInt,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 import { SecretSourceCheckResult } from "./settingsSecretValue.ts";
 import { SecretReference } from "./secretReference.ts";
 import {
@@ -413,7 +418,17 @@ import {
   ProviderConsumeResetCreditInput,
   ProviderConsumeResetCreditResult,
 } from "./providerUsageLimits.ts";
-import { UsagePricing, UsageReadError, UsageSummary, UsageSummaryInput } from "./usage.ts";
+import {
+  UsagePaymentPatch,
+  UsagePaymentBook,
+  UsageArchiveCopy,
+  UsageArchivePage,
+  UsageArchiveState,
+  UsagePricing,
+  UsageReadError,
+  UsageSummary,
+  UsageSummaryInput,
+} from "./usage.ts";
 import {
   StorageCleanupReport,
   DatabaseReclaimError,
@@ -640,6 +655,12 @@ export const WS_METHODS = {
   serverPrepareTriage: "server.prepareTriage",
   serverSignalProcess: "server.signalProcess",
   serverReportClientActivity: "server.reportClientActivity",
+  usagePaymentsRead: "usagePayments.read",
+  usagePaymentsUpdate: "usagePayments.update",
+  usageArchiveStatus: "usageArchive.status",
+  usageArchiveExport: "usageArchive.export",
+  usageArchiveImport: "usageArchive.import",
+  usageArchiveRead: "usageArchive.read",
   serverGetUsageSummary: "server.getUsageSummary",
   serverRefreshUsageRates: "server.refreshUsageRates",
 
@@ -1189,6 +1210,42 @@ const WsServerPrepareTriageRpc = Rpc.make(WS_METHODS.serverPrepareTriage, {
   payload: ServerPrepareTriageInput,
   success: ServerPrepareTriageResult,
   error: Schema.Union([ServerPrepareTriageError, EnvironmentAuthorizationError]),
+});
+
+const UsageArchiveErrors = Schema.Union([EnvironmentAuthorizationError, UsageReadError]);
+const WsUsagePaymentsRead = Rpc.make(WS_METHODS.usagePaymentsRead, {
+  payload: Schema.Struct({}),
+  success: UsagePaymentBook,
+  error: UsageArchiveErrors,
+});
+const WsUsagePaymentsUpdate = Rpc.make(WS_METHODS.usagePaymentsUpdate, {
+  payload: Schema.Struct({ payments: UsagePaymentPatch }),
+  success: Schema.Void,
+  error: UsageArchiveErrors,
+});
+const WsUsageArchiveStatus = Rpc.make(WS_METHODS.usageArchiveStatus, {
+  payload: Schema.Struct({}),
+  success: Schema.Array(UsageArchiveState),
+  error: UsageArchiveErrors,
+});
+const WsUsageArchiveExport = Rpc.make(WS_METHODS.usageArchiveExport, {
+  payload: Schema.Struct({
+    cursor: Schema.Int,
+    capture: Schema.Boolean,
+    origin: Schema.optionalKey(EnvironmentId),
+  }),
+  success: UsageArchivePage,
+  error: UsageArchiveErrors,
+});
+const WsUsageArchiveImport = Rpc.make(WS_METHODS.usageArchiveImport, {
+  payload: UsageArchivePage,
+  success: Schema.Int,
+  error: UsageArchiveErrors,
+});
+const WsUsageArchiveRead = Rpc.make(WS_METHODS.usageArchiveRead, {
+  payload: UsageSummaryInput,
+  success: Schema.Array(UsageArchiveCopy),
+  error: UsageArchiveErrors,
 });
 
 const WsServerGetUsageSummaryRpc = Rpc.make(WS_METHODS.serverGetUsageSummary, {
@@ -2595,6 +2652,12 @@ export const WsRpcGroup = RpcGroup.make(
   WsServerCheckOtlpEndpointRpc,
   WsServerListTextGeneratorModelsRpc,
   WsServerPrepareTriageRpc,
+  WsUsagePaymentsRead,
+  WsUsagePaymentsUpdate,
+  WsUsageArchiveStatus,
+  WsUsageArchiveExport,
+  WsUsageArchiveImport,
+  WsUsageArchiveRead,
   WsServerGetUsageSummaryRpc,
   WsServerRefreshUsageRatesRpc,
   WsServerSignalProcessRpc,

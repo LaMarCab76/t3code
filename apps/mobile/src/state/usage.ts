@@ -1,3 +1,5 @@
+import { withUsageCopies } from "@t3tools/client-runtime/state/usage-archive";
+import type { UsageArchiveCopy } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import {
   AuthDiagnosticsReadScope,
@@ -34,6 +36,7 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
     const input = JSON.parse(windowKey) as UsageSummaryInput;
     const presentations = get(environmentPresentations.presentationsAtom);
 
+    const copies: UsageArchiveCopy[] = [];
     const statuses: EnvironmentUsageStatus[] = [];
     for (const [environmentId, presentation] of presentations) {
       const sessionResult = get(environmentSession.sessionStateAtom(environmentId));
@@ -55,11 +58,24 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
         });
         continue;
       }
+      if (
+        presentation.connection.phase === "connected" &&
+        presentation.serverConfig?.environment.capabilities.usageArchive
+      ) {
+        const saved = get(serverEnvironment.archiveRead({ environmentId, input }));
+        copies.push(
+          ...AsyncResult.getOrElse(saved, () => []).filter(
+            (copy) => copy.environmentId !== environmentId,
+          ),
+        );
+      }
       const result = get(
         serverEnvironment.usageSummary({
           environmentId,
           input: usageSummaryInput(
-            input,
+            input.savedHistory && !presentation.serverConfig?.environment.capabilities.usageArchive
+              ? { ...input, savedHistory: false }
+              : input,
             get(serverEnvironment.usageModelFilterAtom(environmentId)),
           ),
         }),
@@ -75,7 +91,15 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
         summary,
       });
     }
-    return statuses;
+    return withUsageCopies(statuses, copies, (copy) => ({
+      environmentId: copy.environmentId,
+      label: copy.label,
+      isPending: false,
+      isConnected: false,
+      canReadDiagnostics: true,
+      error: null,
+      summary: copy.summary,
+    }));
   }).pipe(Atom.withLabel(`mobile-usage:window:${windowKey}`)),
 );
 
@@ -112,6 +136,7 @@ export function useUsage(
   const windowKey = useMemo(
     () =>
       JSON.stringify({
+        savedHistory: input.savedHistory,
         sinceDay: input.sinceDay,
         untilDay: input.untilDay,
         timeZone: input.timeZone,
@@ -120,6 +145,7 @@ export function useUsage(
         untilTime: input.untilTime,
       }),
     [
+      input.savedHistory,
       input.sinceDay,
       input.untilDay,
       input.timeZone,

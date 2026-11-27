@@ -363,6 +363,10 @@
       "types": "./src/state/runtime.ts",
       "default": "./src/state/runtime.ts"
     },
+    "./state/usage-archive": {
+      "types": "./src/state/usageArchive.ts",
+      "default": "./src/state/usageArchive.ts"
+    },
     "./state/usage": {
       "types": "./src/state/usage.ts",
       "default": "./src/state/usage.ts"

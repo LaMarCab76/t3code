@@ -1,3 +1,6 @@
+import { usagePeriod } from "@t3tools/shared/usagePayments";
+import { Input } from "../ui/input";
+import { UsageReport, UsageSyncStatus } from "./UsageReport";
 import { ChatGptUsageButton } from "../settings/ChatGptUsageButton";
 import { usesChatGptSharing } from "@t3tools/shared/usageLimits";
 import { RefreshIcon } from "~/components/ui/refresh-icon";
@@ -91,7 +94,7 @@ import {
   tokenTypeSegments,
 } from "./usageBreakdown";
 import {
-  METRIC_OPTIONS,
+  DISPLAY_METRIC_OPTIONS as METRIC_OPTIONS,
   WINDOW_OPTIONS,
   resolveUsageShortcut,
   type UsageMetric,
@@ -113,7 +116,7 @@ function isUsageMetric(value: string | null | undefined): value is UsageMetric {
 }
 
 function isUsageWindowDays(value: number): value is UsagePagePreferences["windowDays"] {
-  return WINDOW_OPTIONS.some((option) => option.days === value);
+  return Number.isInteger(value) && value >= 1 && value <= 36525;
 }
 
 const providerLabel = (provider: UsageProviderKind) => PROVIDER_PRESENTATION[provider].label;
@@ -176,7 +179,17 @@ function UsageModelDialogHost({
 }
 
 export function UsagePage() {
+  const [section, setSection] = useState<"summary" | "report" | "sync">("summary");
+  const [reportWindow, setReportWindow] = useState(() => usagePeriod("year"));
   const [preferences, setPreferences] = useState(readUsagePagePreferences);
+  const [customDays, setCustomDays] = useState(
+    String(
+      WINDOW_OPTIONS.some((o) => o.days === preferences.windowDays) ? 37 : preferences.windowDays,
+    ),
+  );
+  const [customOpen, setCustomOpen] = useState(
+    !WINDOW_OPTIONS.some((o) => o.days === preferences.windowDays),
+  );
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const hour12 = usePrimarySettings((settings) => resolveHour12(settings.timestampFormat));
   const gt = useGT();
@@ -185,6 +198,7 @@ export function UsagePage() {
   const shortcutTitle = (
     option: (typeof METRIC_OPTIONS)[number] | (typeof WINDOW_OPTIONS)[number],
   ) => {
+    if (option.command === null) return m(option.label);
     const shortcut = shortcutLabelForCommand(keybindings, option.command, {
       context: { usagePageOpen: true },
     });
@@ -201,7 +215,7 @@ export function UsagePage() {
     ),
   }));
   const metric = preferences.metric;
-  const showingLimits = metric === "limits";
+  const showingLimits = section === "summary" && metric === "limits";
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [limitsNow, setLimitsNow] = useState(() => Date.now());
   const refreshingRef = useRef(false);
@@ -210,7 +224,10 @@ export function UsagePage() {
   const [selectedEnvironmentIds, setSelectedEnvironmentIds] =
     useState<ReadonlySet<EnvironmentId> | null>(null);
   const hiddenProviders = new Set(preferences.hiddenProviders);
-  const { days: windowDays, window } = windowSelection;
+  const { days: windowDays } = windowSelection;
+  const range = section === "report" ? reportWindow : windowSelection.window;
+  const archived = section === "report" || metric === "subscription";
+  const window = archived ? { ...range, savedHistory: true } : range;
   const isPast24Hours = windowDays === 1;
   const {
     merged: answeredUsage,
@@ -242,7 +259,8 @@ export function UsagePage() {
     setPreferences(nextPreferences);
     saveUsagePagePreferences(nextPreferences);
   };
-  const selectWindow = (days: number) => {
+  const selectWindow = (days: number, custom = false) => {
+    setCustomOpen(custom);
     if (!isUsageWindowDays(days)) return;
     updatePreferences({ windowDays: days });
     setWindowSelection({
@@ -290,6 +308,7 @@ export function UsagePage() {
       modalActionsRef.current?.close();
       return;
     }
+    if (section !== "summary" || !command) return;
     const metricOption = METRIC_OPTIONS.find((option) => option.command === command);
     const periodOption = WINDOW_OPTIONS.find((option) => option.command === command);
     if (!metricOption && !periodOption) return;
@@ -408,114 +427,128 @@ export function UsagePage() {
           />
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
-      {!showingLimits ? (
+      {section === "summary" && !showingLimits ? (
         <span className="hidden min-w-0 truncate text-xs text-muted-foreground @7xl/usage-header:block">
           {windowLabel}
         </span>
       ) : null}
-      <div className="ms-auto hidden shrink-0 items-center justify-end gap-2 @4xl/usage-header:flex">
-        {/* Limits are always current, so they have no period. The period sits before the metric
+      {section === "summary" && (
+        <div className="ms-auto hidden shrink-0 items-center justify-end gap-2 @4xl/usage-header:flex">
+          {/* Limits are always current, so they have no period. The period sits before the metric
             tabs so dropping it never moves them. */}
-        {showingLimits ? null : (
+          {showingLimits ? null : (
+            <ToggleGroup
+              aria-label={gt("Usage period")}
+              variant="segmented"
+              value={[customOpen ? "custom" : String(windowDays)]}
+              onValueChange={(next) => {
+                const value = next[0];
+                if (value === "custom") setCustomOpen(true);
+                else if (value) selectWindow(Number(value));
+              }}
+            >
+              {WINDOW_OPTIONS.map((option) => (
+                <Toggle key={option.days} value={String(option.days)} title={shortcutTitle(option)}>
+                  {m(option.label)}
+                </Toggle>
+              ))}
+              <Toggle value="custom">{gt("Custom")}</Toggle>
+            </ToggleGroup>
+          )}
           <ToggleGroup
-            aria-label={gt("Usage period")}
+            aria-label={gt("Usage metric")}
             variant="segmented"
-            value={[String(windowDays)]}
+            value={[metric]}
             onValueChange={(next) => {
               const value = next[0];
-              if (value) selectWindow(Number(value));
+              if (isUsageMetric(value)) selectMetric(value);
             }}
           >
-            {WINDOW_OPTIONS.map((option) => (
-              <Toggle key={option.days} value={String(option.days)} title={shortcutTitle(option)}>
+            {METRIC_OPTIONS.map((option) => (
+              <Toggle key={option.value} value={option.value} title={shortcutTitle(option)}>
                 {m(option.label)}
               </Toggle>
             ))}
           </ToggleGroup>
-        )}
-        <ToggleGroup
-          aria-label={gt("Usage metric")}
-          variant="segmented"
-          value={[metric]}
-          onValueChange={(next) => {
-            const value = next[0];
-            if (isUsageMetric(value)) selectMetric(value);
-          }}
-        >
-          {METRIC_OPTIONS.map((option) => (
-            <Toggle key={option.value} value={option.value} title={shortcutTitle(option)}>
-              {m(option.label)}
-            </Toggle>
-          ))}
-        </ToggleGroup>
-        <Button
-          onClick={refreshWindow}
-          aria-label={showingLimits ? gt("Refresh limits") : gt("Refresh usage")}
-          aria-busy={isRefreshing}
-          disabled={isRefreshing || (!showingLimits && !canReadDiagnostics)}
-          size="icon-sm"
-          variant="ghost"
-        >
-          <RefreshIcon size="sm" refreshing={isRefreshing} />
-        </Button>
-      </div>
-      <div className="ms-auto flex shrink-0 items-center justify-end gap-1 @4xl/usage-header:hidden">
-        {showingLimits ? null : (
-          <Select value={String(windowDays)} onValueChange={(value) => selectWindow(Number(value))}>
+          <Button
+            onClick={refreshWindow}
+            aria-label={showingLimits ? gt("Refresh limits") : gt("Refresh usage")}
+            aria-busy={isRefreshing}
+            disabled={isRefreshing || (!showingLimits && !canReadDiagnostics)}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <RefreshIcon size="sm" refreshing={isRefreshing} />
+          </Button>
+        </div>
+      )}
+      {section === "summary" && (
+        <div className="ms-auto flex shrink-0 items-center justify-end gap-1 @4xl/usage-header:hidden">
+          {showingLimits ? null : (
+            <Select
+              value={customOpen ? "custom" : String(windowDays)}
+              onValueChange={(value) =>
+                value === "custom" ? setCustomOpen(true) : selectWindow(Number(value))
+              }
+            >
+              <SelectTrigger
+                aria-label={gt("Usage period")}
+                size="compact"
+                variant="ghost"
+                className="w-auto min-w-0"
+              >
+                <SelectValue>
+                  {customOpen ? gt("Custom") : windowOptionLabel && m(windowOptionLabel)}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end" alignItemWithTrigger={false}>
+                {WINDOW_OPTIONS.map((option) => (
+                  <SelectItem
+                    key={option.days}
+                    value={String(option.days)}
+                    title={shortcutTitle(option)}
+                  >
+                    {m(option.label)}
+                  </SelectItem>
+                ))}
+                <SelectItem value="custom">{gt("Custom")}</SelectItem>
+              </SelectPopup>
+            </Select>
+          )}
+          <Select
+            value={metric}
+            onValueChange={(value) => {
+              if (isUsageMetric(value)) selectMetric(value);
+            }}
+          >
             <SelectTrigger
-              aria-label={gt("Usage period")}
+              aria-label={gt("Usage metric")}
               size="compact"
               variant="ghost"
               className="w-auto min-w-0"
             >
-              <SelectValue>{windowOptionLabel && m(windowOptionLabel)}</SelectValue>
+              <SelectValue>{metricOptionLabel && m(metricOptionLabel)}</SelectValue>
             </SelectTrigger>
             <SelectPopup align="end" alignItemWithTrigger={false}>
-              {WINDOW_OPTIONS.map((option) => (
-                <SelectItem
-                  key={option.days}
-                  value={String(option.days)}
-                  title={shortcutTitle(option)}
-                >
+              {METRIC_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value} title={shortcutTitle(option)}>
                   {m(option.label)}
                 </SelectItem>
               ))}
             </SelectPopup>
           </Select>
-        )}
-        <Select
-          value={metric}
-          onValueChange={(value) => {
-            if (isUsageMetric(value)) selectMetric(value);
-          }}
-        >
-          <SelectTrigger
-            aria-label={gt("Usage metric")}
-            size="compact"
+          <Button
+            onClick={refreshWindow}
+            aria-label={showingLimits ? gt("Refresh limits") : gt("Refresh usage")}
+            aria-busy={isRefreshing}
+            disabled={isRefreshing || (!showingLimits && !canReadDiagnostics)}
+            size="icon-sm"
             variant="ghost"
-            className="w-auto min-w-0"
           >
-            <SelectValue>{metricOptionLabel && m(metricOptionLabel)}</SelectValue>
-          </SelectTrigger>
-          <SelectPopup align="end" alignItemWithTrigger={false}>
-            {METRIC_OPTIONS.map((option) => (
-              <SelectItem key={option.value} value={option.value} title={shortcutTitle(option)}>
-                {m(option.label)}
-              </SelectItem>
-            ))}
-          </SelectPopup>
-        </Select>
-        <Button
-          onClick={refreshWindow}
-          aria-label={showingLimits ? gt("Refresh limits") : gt("Refresh usage")}
-          aria-busy={isRefreshing}
-          disabled={isRefreshing || (!showingLimits && !canReadDiagnostics)}
-          size="icon-sm"
-          variant="ghost"
-        >
-          <RefreshIcon size="sm" refreshing={isRefreshing} />
-        </Button>
-      </div>
+            <RefreshIcon size="sm" refreshing={isRefreshing} />
+          </Button>
+        </div>
+      )}
     </div>
   );
 
@@ -529,7 +562,57 @@ export function UsagePage() {
 
         <ScrollArea className="min-h-0 flex-1" observeContent>
           <WorkspacePageContainer width="wide">
-            {selectedEnvironments.length === 0 ? (
+            <ToggleGroup
+              variant="segmented"
+              aria-label={gt("Usage sections")}
+              value={[section]}
+              onValueChange={([value]) => {
+                if (value === "summary" || value === "report" || value === "sync")
+                  setSection(value);
+              }}
+            >
+              <Toggle value="summary">{gt("Summary")}</Toggle>
+              <Toggle value="report">{gt("Usage report")}</Toggle>
+              <Toggle value="sync">{gt("Synchronization")}</Toggle>
+            </ToggleGroup>
+            {section === "summary" && !showingLimits && customOpen && (
+              <form
+                className="flex items-end gap-2"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (isUsageWindowDays(Number(customDays))) selectWindow(Number(customDays), true);
+                }}
+              >
+                <label>
+                  {gt("Number of days")}
+                  <Input
+                    nativeInput
+                    type="number"
+                    min="1"
+                    max="36525"
+                    value={customDays}
+                    onChange={(e) => setCustomDays(e.target.value)}
+                  />
+                </label>
+                <Button type="submit">{gt("Apply")}</Button>
+              </form>
+            )}
+            {section === "sync" ? (
+              <UsageSyncStatus environments={environments} />
+            ) : section === "report" || metric === "subscription" ? (
+              <UsageReport
+                key={section}
+                report={section === "report"}
+                window={window}
+                setWindow={setReportWindow}
+                environments={environments}
+                selection={selectedEnvironmentIds}
+                hidden={hiddenProviders}
+                merged={merged}
+                ready={shown !== null && JSON.stringify(shown.window) === JSON.stringify(window)}
+                hour12={hour12}
+              />
+            ) : selectedEnvironments.length === 0 ? (
               <p className="text-sm text-muted-foreground">
                 {environments.length === 0
                   ? showingLimits
@@ -809,16 +892,16 @@ function UsageOverview({
         </div>
 
         <div className="flex min-w-0 flex-col gap-3">
-          <h2 className="text-sm font-medium text-foreground">
-            {shownHourly
-              ? metric === "tokens"
-                ? gt("Hourly processed tokens")
-                : gt("Hourly cost")
-              : metric === "tokens"
-                ? gt("Daily processed tokens")
-                : gt("Daily cost")}
-          </h2>
           <UsageProviderChart
+            intervalTitle={
+              shownHourly
+                ? metric === "tokens"
+                  ? gt("Hourly processed tokens")
+                  : gt("Hourly cost")
+                : metric === "tokens"
+                  ? gt("Daily processed tokens")
+                  : gt("Daily cost")
+            }
             providers={activeProviders}
             loadingProviders={chartLoadingProviders}
             days={days}
@@ -1265,7 +1348,9 @@ function UsageEnvironmentFilter({
                   )
                 ? gt("Update required")
                 : !environment.isConnected
-                  ? gt("Connecting…")
+                  ? environment.summary
+                    ? gt("Saved copy")
+                    : gt("Connecting…")
                   : progress.phase === "loading"
                     ? gt("Scanning…")
                     : progress.phase === "stale"

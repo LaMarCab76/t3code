@@ -954,6 +954,7 @@ export function recordFetchedWorkspaceSnapshot(
   );
 }
 
+export const archiveRevision = Atom.family((_id: EnvironmentId) => Atom.make(0));
 export function createServerEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<
     EnvironmentRegistry.EnvironmentRegistry | Persistence.EnvironmentCacheStore | R,
@@ -1514,6 +1515,20 @@ export function createServerEnvironmentAtoms<R, E>(
     readonly environmentId: EnvironmentId;
     readonly input: EnvironmentRpcInput<typeof WS_METHODS.subscribeServerLifecycle>;
   }) => welcomeFamily(target.environmentId);
+  const archiveReceipts = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "usage:archive-receipts",
+    tag: WS_METHODS.usageArchiveStatus,
+    staleTimeMs: 5000,
+    refreshIntervalMs: 30_000,
+    refreshTrigger: ({ environmentId }) => archiveRevision(environmentId),
+  });
+  const archiveChanges = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make((get) =>
+      AsyncResult.getOrElse(get(archiveReceipts({ environmentId, input: {} })), () => [])
+        .map((row) => row.environmentId + "/" + row.readAt + "/" + row.cursor)
+        .join("|"),
+    ),
+  );
   const updateSettings = createEnvironmentRpcCommand(runtime, {
     label: "environment-data:server:update-settings",
     tag: WS_METHODS.serverUpdateSettings,
@@ -1695,11 +1710,40 @@ export function createServerEnvironmentAtoms<R, E>(
     // long enough that switching windows or re-rendering does not rescan. With
     // nothing to show yet, the server's last scan answers first, then a plain
     // read, then a read that waits for slow sources.
+    payments: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "usage:payments",
+      tag: WS_METHODS.usagePaymentsRead,
+      staleTimeMs: 5000,
+    }),
+    setPayments: createEnvironmentRpcCommand(runtime, {
+      label: "usage:set-payments",
+      tag: WS_METHODS.usagePaymentsUpdate,
+    }),
+    archiveStatus: createEnvironmentRpcCommand(runtime, {
+      label: "usage:archive-status",
+      tag: WS_METHODS.usageArchiveStatus,
+    }),
+    exportArchive: createEnvironmentRpcCommand(runtime, {
+      label: "usage:archive-export",
+      tag: WS_METHODS.usageArchiveExport,
+    }),
+    importArchive: createEnvironmentRpcCommand(runtime, {
+      label: "usage:archive-import",
+      tag: WS_METHODS.usageArchiveImport,
+    }),
+    archiveRead: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "usage:archive-read",
+      tag: WS_METHODS.usageArchiveRead,
+      staleTimeMs: 5_000,
+      refreshTrigger: ({ environmentId }) => archiveChanges(environmentId),
+    }),
+    archiveReceipts,
     usageSummary: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:server:usage-summary",
       tag: WS_METHODS.serverGetUsageSummary,
       staleTimeMs: 60_000,
-      refreshTrigger: ({ environmentId }) => usageScanSettingsAtom(environmentId),
+      refreshTrigger: ({ environmentId, input }) =>
+        input.savedHistory ? archiveChanges(environmentId) : usageScanSettingsAtom(environmentId),
       execute: (input, emit, previous) => {
         const settled = (summary: UsageSummary) =>
           !summary.sources.some((source) => source.refreshing === true);

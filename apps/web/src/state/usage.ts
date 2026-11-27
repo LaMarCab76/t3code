@@ -1,3 +1,5 @@
+import { withUsageCopies } from "@t3tools/client-runtime/state/usage-archive";
+import type { UsageArchiveCopy } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import {
   AuthDiagnosticsReadScope,
@@ -36,6 +38,7 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
     const input = JSON.parse(windowKey) as UsageSummaryInput;
     const presentations = get(environmentPresentations.presentationsAtom);
 
+    const copies: UsageArchiveCopy[] = [];
     const statuses: EnvironmentUsageStatus[] = [];
     for (const [environmentId, presentation] of presentations) {
       const isConnected = presentation.connection.phase === "connected";
@@ -55,11 +58,24 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
         });
         continue;
       }
+      if (
+        presentation.connection.phase === "connected" &&
+        presentation.serverConfig?.environment.capabilities.usageArchive
+      ) {
+        const saved = get(serverEnvironment.archiveRead({ environmentId, input }));
+        copies.push(
+          ...AsyncResult.getOrElse(saved, () => []).filter(
+            (copy) => copy.environmentId !== environmentId,
+          ),
+        );
+      }
       const result = get(
         serverEnvironment.usageSummary({
           environmentId,
           input: usageSummaryInput(
-            input,
+            input.savedHistory && !presentation.serverConfig?.environment.capabilities.usageArchive
+              ? { ...input, savedHistory: false }
+              : input,
             get(serverEnvironment.usageModelFilterAtom(environmentId)),
           ),
         }),
@@ -76,7 +92,15 @@ const usageByWindowAtom = Atom.family((windowKey: string) =>
         summary,
       });
     }
-    return statuses;
+    return withUsageCopies(statuses, copies, (copy) => ({
+      environmentId: copy.environmentId,
+      label: copy.label,
+      isPending: false,
+      isConnected: false,
+      canReadDiagnostics: true,
+      error: null,
+      summary: copy.summary,
+    }));
   }).pipe(Atom.withLabel(`web-usage:window:${windowKey}`)),
 );
 
@@ -160,6 +184,7 @@ export function useUsage(
   hiddenProviders: ReadonlySet<UsageProviderKind> = NO_HIDDEN_PROVIDERS,
 ): UsageView {
   const windowKey = JSON.stringify({
+    savedHistory: input.savedHistory,
     sinceDay: input.sinceDay,
     untilDay: input.untilDay,
     timeZone: input.timeZone,
@@ -209,6 +234,7 @@ export function useUsage(
 
   const [lastAnswered, setLastAnswered] = useState<
     | (NonNullable<UsageView["shown"]> & {
+        readonly key: string;
         readonly selection: typeof selectedEnvironmentIds;
         readonly hidden: typeof hiddenProviders;
       })
@@ -217,11 +243,12 @@ export function useUsage(
   if (
     answeredCount > 0 &&
     (lastAnswered?.merged !== merged ||
-      lastAnswered.window !== input ||
+      lastAnswered.key !== windowKey ||
       lastAnswered.selection !== selectedEnvironmentIds ||
       lastAnswered.hidden !== hiddenProviders)
   ) {
     setLastAnswered({
+      key: windowKey,
       window: input,
       merged,
       selection: selectedEnvironmentIds,

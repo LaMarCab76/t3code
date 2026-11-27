@@ -9,6 +9,7 @@ import {
   type UsageSummary,
   type UsageSummaryInput,
   UsageReadError,
+  UsageDay,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Cause from "effect/Cause";
@@ -166,6 +167,9 @@ const decodeCachedSources = Schema.decodeUnknownOption(
 export class UsageService extends Context.Service<
   UsageService,
   {
+    readonly archiveSummary: (
+      sinceDay: UsageSummaryInput["sinceDay"],
+    ) => Effect.Effect<UsageSummary, UsageReadError>;
     readonly readSummary: (input: UsageSummaryInput) => Effect.Effect<UsageSummary, UsageReadError>;
     readonly refreshRates: Effect.Effect<UsagePricing>;
     readonly priceTurnRecords: (
@@ -837,6 +841,7 @@ export const make = Effect.gen(function* () {
     input: UsageSummaryInput,
     settings: ServerSettingsValue,
     provisional: boolean,
+    archiveMinutes = false,
   ) {
     if (input.sinceDay > input.untilDay) {
       return yield* new UsageReadError({
@@ -860,7 +865,7 @@ export const make = Effect.gen(function* () {
       const sinceTimeMs = DateTime.toEpochMillis(sinceTime.value);
       const untilTimeMs = DateTime.toEpochMillis(untilTime.value);
       const durationMs = untilTimeMs - sinceTimeMs;
-      if (durationMs <= 0 || durationMs > MAX_HOURLY_WINDOW_MS) {
+      if (durationMs <= 0 || (!archiveMinutes && durationMs > MAX_HOURLY_WINDOW_MS)) {
         return yield* new UsageReadError({
           reason: "invalidWindow",
           detail: "Hourly usage window must be greater than zero and at most 24 hours",
@@ -887,6 +892,7 @@ export const make = Effect.gen(function* () {
         ? 0
         : Math.max(0, startedAtMs - settings.usageHistoryRetentionDays * 24 * 60 * 60 * 1000);
 
+    const scanCutoffMs = archiveMinutes ? 0 : retentionCutoffMs;
     const inWindow = usageTimestampFilter({ ...input, ...hourlyWindow });
     const windowEndMs =
       hourlyWindow?.untilTimeMs ??
@@ -894,7 +900,7 @@ export const make = Effect.gen(function* () {
 
     const awaitRefresh = input.awaitRefresh === true;
     const collect = Effect.gen(function* () {
-      const resolved = yield* resolveTranscriptDirs(settings, retentionCutoffMs, awaitRefresh).pipe(
+      const resolved = yield* resolveTranscriptDirs(settings, scanCutoffMs, awaitRefresh).pipe(
         Effect.provideContext(readerContext),
       );
       // A window no complete scan has read would show partial totals, so every directory must cover it.
@@ -909,14 +915,7 @@ export const make = Effect.gen(function* () {
       const [, scanned] = yield* Effect.all(
         [
           fromMemory ? loadSavedRates : provisional ? ensureRates(false) : Effect.void,
-          collectDirs(
-            resolved,
-            windowStartMs,
-            settings,
-            retentionCutoffMs,
-            awaitRefresh,
-            fromMemory,
-          ),
+          collectDirs(resolved, windowStartMs, settings, scanCutoffMs, awaitRefresh, fromMemory),
         ],
         { concurrency: 2 },
       );
@@ -932,7 +931,7 @@ export const make = Effect.gen(function* () {
     const sources: UsageSource[] = [];
 
     // Deleted transcripts' saved usage still aggregates and deduplicates normally.
-    const retainedSinceMs = Math.max(windowStartMs, retentionCutoffMs);
+    const retainedSinceMs = Math.max(windowStartMs, scanCutoffMs);
     // Saved paths are files below a scanned root, so their folder decides; folders repeat thousands of times.
     const withinDir = (dir: string) => {
       const foldersWithin = new Map<string, boolean>();
@@ -1025,6 +1024,7 @@ export const make = Effect.gen(function* () {
       timeZone: input.timeZone,
       sinceDay: input.sinceDay,
       untilDay: input.untilDay,
+      archiveMinutes,
       resolution: input.resolution ?? "day",
       ...hourlyWindow,
       rates,
@@ -1240,15 +1240,10 @@ export const make = Effect.gen(function* () {
       input.modelFilter ?? null,
     ]);
 
-  const readSummary = Effect.fn("UsageService.readSummary")(function* (
-    requested: UsageSummaryInput,
+  const sharedScan = Effect.fn("UsageService.sharedScan")(function* (
+    key: string,
+    scan: Effect.Effect<UsageSummary, UsageReadError>,
   ) {
-    const { modelFilter: requestedFilter, ...unfiltered } = requested;
-    const modelFilter = canonicalModelFilter(requestedFilter);
-    const input = modelFilter === undefined ? unfiltered : { ...unfiltered, modelFilter };
-    const settings = yield* readSettings;
-    const provisional = input.provisional === true && input.awaitRefresh !== true;
-    const key = scanKey(input, settings, provisional);
     const deferred = yield* Effect.uninterruptible(
       Effect.gen(function* () {
         const existing = inflightScans.get(key);
@@ -1259,7 +1254,7 @@ export const make = Effect.gen(function* () {
         inflightScans.set(key, created);
         // Detach so caller departure cannot cancel shared scans; finished scans warm the cache.
         // Register writes before releasing waiters, but start writing after delivering their summary.
-        yield* readWindow(input, settings, provisional).pipe(
+        yield* scan.pipe(
           Effect.onExit((exit) =>
             Effect.sync(() => inflightScans.delete(key)).pipe(
               Effect.andThen(Exit.isSuccess(exit) ? schedulePersist : Effect.void),
@@ -1272,6 +1267,18 @@ export const make = Effect.gen(function* () {
       }),
     );
     return yield* Deferred.await(deferred);
+  });
+
+  const readSummary = Effect.fn("UsageService.readSummary")(function* (
+    requested: UsageSummaryInput,
+  ) {
+    const { modelFilter: requestedFilter, ...unfiltered } = requested;
+    const modelFilter = canonicalModelFilter(requestedFilter);
+    const input = modelFilter === undefined ? unfiltered : { ...unfiltered, modelFilter };
+    const settings = yield* readSettings;
+    const provisional = input.provisional === true && input.awaitRefresh !== true;
+    const key = scanKey(input, settings, provisional);
+    return yield* sharedScan(key, readWindow(input, settings, provisional));
   });
 
   const priceTurnRecords = Effect.fn("UsageService.priceTurnRecords")(function* (
@@ -1287,7 +1294,32 @@ export const make = Effect.gen(function* () {
       return priceTurnUsage(rates, { ...record, model }, overrides);
     });
   });
-  return { readSummary, refreshRates, priceTurnRecords, awaitPersisted } as const;
+  const archiveSummary = Effect.fn("UsageService.archiveSummary")(function* (
+    sinceDay: UsageSummaryInput["sinceDay"],
+  ) {
+    const now = yield* Clock.currentTimeMillis;
+    const until = DateTime.formatIso(DateTime.makeUnsafe(now + 1));
+    const settings = yield* readSettings;
+    return yield* sharedScan(
+      encodeUsageRecordKey(["archive", sinceDay, settings]),
+      scanSummary(
+        {
+          sinceDay,
+          untilDay: UsageDay.make(until.slice(0, 10)),
+          timeZone: "UTC",
+          resolution: "hour",
+          sinceTime: sinceDay + "T00:00:00Z",
+          untilTime: until,
+          awaitRefresh: true,
+          ...(settings.usageModelFilter ? { modelFilter: settings.usageModelFilter } : {}),
+        },
+        settings,
+        false,
+        true,
+      ).pipe(Effect.map((result) => result.summary)),
+    );
+  });
+  return { readSummary, archiveSummary, refreshRates, priceTurnRecords, awaitPersisted } as const;
 });
 
 export const layer = Layer.effect(UsageService, make);
