@@ -1410,10 +1410,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       {command ? (
         <View className="flex-row items-center gap-1.5">
           <SymbolView name="terminal" size={12} />
-          <Text
-            numberOfLines={1}
-            className={cn("min-w-0 flex-1 font-mono text-xs", progressTint)}
-          >
+          <Text numberOfLines={1} className={cn("min-w-0 flex-1 font-mono text-xs", progressTint)}>
             {command.commandLabel}
           </Text>
           <Progress className="w-10" value={command.completed / command.total} />
