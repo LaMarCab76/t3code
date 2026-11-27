@@ -64,12 +64,12 @@ function Payments({ month: initialMonth, close }: { month: string; close: () => 
       Object.assign(patch, change);
     }
     setBusy(true);
-    try {
-      if (destination && (await usagePayments.save(destination, patch))) close();
-      else setError(gt("Some payments could not be saved. Reconnect and try again."));
-    } finally {
-      setBusy(false);
-    }
+    const saved = destination
+      ? await usagePayments.save(destination, patch).catch(() => false)
+      : false;
+    setBusy(false);
+    if (saved) close();
+    else setError(gt("Some payments could not be saved. Reconnect and try again."));
   };
   return (
     <Dialog

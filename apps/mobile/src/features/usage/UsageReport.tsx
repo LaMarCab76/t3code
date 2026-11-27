@@ -143,12 +143,12 @@ function PaymentEditor({ month: initial, close }: { month: string; close: () => 
       Object.assign(patch, changes);
     }
     setBusy(true);
-    try {
-      if (destination && (await usagePayments.save(destination, patch))) close();
-      else setError(true);
-    } finally {
-      setBusy(false);
-    }
+    const saved = destination
+      ? await usagePayments.save(destination, patch).catch(() => false)
+      : false;
+    setBusy(false);
+    if (saved) close();
+    else setError(true);
   };
   return (
     <View className="gap-3">
