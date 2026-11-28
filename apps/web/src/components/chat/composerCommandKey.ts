@@ -40,6 +40,7 @@ import type { Dispatch, RefObject, SetStateAction } from "react";
  * Returns the editor's key handler; it reads the inputs captured by the render that built it.
  */
 export function composerCommandKeyHandler(input: {
+  readonly manualSendOnly: boolean;
   readonly keybindings: ChatComposerProps["keybindings"];
   readonly getShortcutContext: ChatComposerProps["getShortcutContext"];
   readonly sendShortcut: ChatComposerProps["settings"]["sendShortcut"];
@@ -226,6 +227,7 @@ export function composerCommandKeyHandler(input: {
       keybindings,
       context: getShortcutContext(event.target),
       isSoftwareKeyboardOpen,
+      manualSendOnly: input.manualSendOnly,
       isDraftThread: routeKind === "draft",
       isRunning: phase === "running" || phase === "connecting",
       sendShortcut,
@@ -282,6 +284,7 @@ export function composerCommandKeyHandler(input: {
       return applyPromptReplacement(0, 0, acceptedSuggestion);
     }
     if ((key === "ArrowUp" || key === "ArrowDown") && submissionIntent === null) {
+      if (input.manualSendOnly) return false;
       return navigatePromptHistory(key === "ArrowUp" ? "backward" : "forward", event);
     }
     if (submissionIntent) {

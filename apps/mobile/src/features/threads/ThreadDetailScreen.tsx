@@ -217,6 +217,7 @@ import { useThreadTurnSubagents } from "./ThreadAgentsSheet";
 import { ComposerQueuedEditBanner } from "./ComposerQueuedEdit";
 import { useThreadQueuedCount } from "./ThreadQueueControl";
 import { ThreadGuestShareBar } from "./ThreadGuestShareBar";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ThreadSideChatsRow } from "./ThreadSideChatsRow";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
 import { resolveThreadFeedSubmissionAnchor } from "./thread-feed-scroll-position";
@@ -403,7 +404,10 @@ const NO_RUN_STOP_ATOM = Atom.make<RunStopPresentation | null>(null).pipe(
 
 // Anchors, the submitted message, follow state and pending scrolls belong to
 // one thread, so the body remounts when the thread changes.
-export function ThreadDetailScreen(props: ThreadDetailScreenProps) {
+type PromptPresentation = Pick<ThreadComposerProps, "onExpandPrompt" | "onClosePrompt"> & {
+  readonly fullscreenPrompt: boolean;
+};
+export function ThreadDetailScreen(props: ThreadDetailScreenProps & PromptPresentation) {
   const [statusRequests, setStatusRequests] = useState<
     Record<string, BackgroundWorkStopRequest | undefined>
   >({});
@@ -418,12 +422,13 @@ export function ThreadDetailScreen(props: ThreadDetailScreenProps) {
 }
 
 function ThreadDetailBody(
-  props: ThreadDetailScreenProps & {
-    statusRequests: Record<string, BackgroundWorkStopRequest | undefined>;
-    setStatusRequests: React.Dispatch<
-      React.SetStateAction<Record<string, BackgroundWorkStopRequest | undefined>>
-    >;
-  },
+  props: ThreadDetailScreenProps &
+    PromptPresentation & {
+      statusRequests: Record<string, BackgroundWorkStopRequest | undefined>;
+      setStatusRequests: React.Dispatch<
+        React.SetStateAction<Record<string, BackgroundWorkStopRequest | undefined>>
+      >;
+    },
 ) {
   const gt = useGT();
   const messages = useMessages();
@@ -515,6 +520,8 @@ function ThreadDetailBody(
   const nativeMetrics = usesNativeWorkspaceColumns ? columnMetrics : screenMetrics;
   const controlInsets = deriveBottomControlInsets(nativeMetrics);
   const selectedThreadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
+  const { fullscreenPrompt } = props;
+  const safeArea = useSafeAreaInsets();
   const childThreadInputs = useChildThreadInputs({
     environmentId: props.environmentId,
     threadId: props.selectedThread.id,
@@ -1516,6 +1523,7 @@ function ThreadDetailBody(
       <ThreadStreamHaptics threadRef={props.selectedThreadDetailRef} />
       {!usesNativeWorkspaceColumns ? <NativeLayoutObserver onChange={setScreenMetrics} /> : null}
       {props.draftMode ? (
+        !fullscreenPrompt &&
         props.draftMode.content(
           navigationHeaderHeight,
           liveKeyboardHeight + estimatedOverlayHeight + 24,
@@ -1524,6 +1532,9 @@ function ThreadDetailBody(
       ) : showContent ? (
         <View
           style={{ flex: 1 }}
+          accessibilityElementsHidden={fullscreenPrompt}
+          importantForAccessibility={fullscreenPrompt ? "no-hide-descendants" : "auto"}
+          pointerEvents={fullscreenPrompt ? "none" : "auto"}
           onTouchStart={handleFeedTouchStart}
           onTouchMove={handleFeedTouchMove}
           onTouchEnd={handleFeedTouchEnd}
@@ -1613,7 +1624,7 @@ function ThreadDetailBody(
         <View className="flex-1" />
       )}
 
-      {showContent ? (
+      {showContent && !fullscreenPrompt ? (
         <ThreadBrowserFloat
           key={selectedThreadKey}
           environmentId={props.environmentId}
@@ -1624,9 +1635,10 @@ function ThreadDetailBody(
         />
       ) : null}
 
+      {fullscreenPrompt && <View pointerEvents="none" className="absolute inset-0 bg-screen" />}
       {showContent ? (
         <KeyboardStickyView
-          enabled={keyboardStickyEnabled}
+          enabled={keyboardStickyEnabled && !fullscreenPrompt}
           pointerEvents="box-none"
           style={
             questionInFlow
@@ -1650,28 +1662,36 @@ function ThreadDetailBody(
             <Animated.View
               pointerEvents="box-none"
               style={
-                questionInFlow
-                  ? (columnComposerWidthStyle ?? (isSplitLayout ? composerWidthStyle : undefined))
-                  : columnComposerWidthStyle
-                    ? [
-                        {
-                          position: "absolute",
-                          bottom: controlInsets.bottom,
-                          left: controlInsets.left,
-                          paddingTop: FLOATING_WORKING_CONTROL_COVERAGE,
-                        },
-                        columnComposerWidthStyle,
-                      ]
-                    : [
-                        {
-                          position: "absolute",
-                          bottom: controlInsets.bottom,
-                          left: controlInsets.left,
-                          right: controlInsets.right,
-                          paddingTop: FLOATING_WORKING_CONTROL_COVERAGE,
-                        },
-                        composerWidthStyle,
-                      ]
+                fullscreenPrompt
+                  ? {
+                      position: "absolute",
+                      left: 0,
+                      right: 0,
+                      top: safeArea.top,
+                      bottom: liveKeyboardHeight,
+                    }
+                  : questionInFlow
+                    ? (columnComposerWidthStyle ?? (isSplitLayout ? composerWidthStyle : undefined))
+                    : columnComposerWidthStyle
+                      ? [
+                          {
+                            position: "absolute",
+                            bottom: controlInsets.bottom,
+                            left: controlInsets.left,
+                            paddingTop: FLOATING_WORKING_CONTROL_COVERAGE,
+                          },
+                          columnComposerWidthStyle,
+                        ]
+                      : [
+                          {
+                            position: "absolute",
+                            bottom: controlInsets.bottom,
+                            left: controlInsets.left,
+                            right: controlInsets.right,
+                            paddingTop: FLOATING_WORKING_CONTROL_COVERAGE,
+                          },
+                          composerWidthStyle,
+                        ]
               }
             >
               {/* Android clips accessibility bounds to the parent, so the floating control's
@@ -1682,8 +1702,14 @@ function ThreadDetailBody(
               {/* No paddingTop here: the overlay's measured height becomes the
                 list's bottom inset, so any padding above the pill/composer
                 pushes the resting content floor up by the same amount. */}
-              <View onLayout={handleComposerOverlayLayout} className="w-full">
-                <View className="w-full self-center" style={{ maxWidth: contentMaxWidth }}>
+              <View
+                onLayout={fullscreenPrompt ? undefined : handleComposerOverlayLayout}
+                className={fullscreenPrompt ? "w-full flex-1 bg-screen" : "w-full"}
+              >
+                <View
+                  className="w-full self-center"
+                  style={fullscreenPrompt ? { display: "none" } : { maxWidth: contentMaxWidth }}
+                >
                   <FloatingWorkingControl
                     colorScheme={isDarkMode ? "dark" : "light"}
                     status={floatingStatus}
@@ -1891,7 +1917,15 @@ function ThreadDetailBody(
                   </ComposerPanels>
                 </View>
 
-                <View style={composerSlotHidden ? { display: "none" } : undefined}>
+                <View
+                  style={
+                    composerSlotHidden
+                      ? { display: "none" }
+                      : fullscreenPrompt
+                        ? { flex: 1 }
+                        : undefined
+                  }
+                >
                   {isProviderSubagent ? (
                     <View
                       className="self-center px-3 pt-1.5"
@@ -1935,6 +1969,10 @@ function ThreadDetailBody(
                   ) : (
                     <>
                       <ThreadComposer
+                        fullscreen={fullscreenPrompt}
+                        onExpandPrompt={props.onExpandPrompt}
+                        onClosePrompt={props.onClosePrompt}
+                        editorError={composerError}
                         isDraft={Boolean(props.draftMode)}
                         canOperateThread={props.canOperateThread}
                         reportedModelSelection={reportedModelSelection}
@@ -2006,7 +2044,9 @@ function ThreadDetailBody(
                                 onRemoveExistingAttachment: props.onRemoveQueuedEditAttachment,
                               }
                         }
-                        bottomInset={composerBottomInset}
+                        bottomInset={
+                          fullscreenPrompt && liveKeyboardHeight > 0 ? 0 : composerBottomInset
+                        }
                         onChangeDraftMessage={props.onChangeDraftMessage}
                         onPickDraftMedia={props.onPickDraftMedia}
                         onPickDraftFiles={props.onPickDraftFiles}

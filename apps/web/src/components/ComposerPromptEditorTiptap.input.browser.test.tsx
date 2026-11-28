@@ -23,7 +23,7 @@ import { redoDepth, undoDepth } from "@tiptap/pm/history";
 import { NodeSelection } from "@tiptap/pm/state";
 import { createElement, createRef, useEffect, useState } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { cdp, userEvent } from "vite-plus/test/browser";
+import { cdp, page, userEvent } from "vite-plus/test/browser";
 
 import "~/index.css";
 import { act, fakeTimers, render } from "../../test/render";
@@ -71,8 +71,10 @@ function Composer({
   editorRef = createRef<ComposerPromptEditorHandle>(),
   placeholder = "",
   placeholderSuffix,
+  fullscreen,
 }: {
   value: string;
+  fullscreen?: ComposerPromptEditorProps["fullscreen"];
   richTextEnabled: boolean;
   skills: ReadonlyArray<ServerProviderSkill>;
   onChange?: ComposerPromptEditorProps["onChange"] | undefined;
@@ -88,6 +90,7 @@ function Composer({
   return (
     <ComposerPromptEditor
       editorRef={editorRef}
+      fullscreen={fullscreen}
       value={prompt.value}
       cursor={prompt.cursor}
       richTextEnabled={richTextEnabled}
@@ -1550,3 +1553,35 @@ it("lets a one-line placeholder's button take clicks and passes the rest to the 
   await userEvent.click(screen.getByRole("button", { name: "Tab" }));
   expect(onClick).toHaveBeenCalledOnce();
 });
+
+it.each([true, false])(
+  "keeps the selection and undo history when moving between prompt views (rich=%s)",
+  async (richTextEnabled) => {
+    const editorRef = createRef<ComposerPromptEditorHandle>();
+    const base = { value: "first line", richTextEnabled, skills: [], editorRef };
+    const controls = {
+      onClose: vi.fn(),
+      onSend: vi.fn(),
+      disabled: false,
+      error: null,
+      attach: null,
+      preview: null,
+      suggestions: null,
+      attachments: [],
+    };
+    await using screen = await render(<Composer {...base} />);
+    const editor = await vi.waitFor(() => editorIn(screen.container));
+    await act(() => {
+      editor.commands.setTextSelection({ from: 1, to: 6 });
+    });
+    await screen.rerender(<Composer {...base} fullscreen={controls} />);
+    await userEvent.click(page.getByRole("button", { name: "Bold" }));
+    expect(editorRef.current?.readSnapshot().value).toBe("**first** line");
+    await screen.rerender(<Composer {...base} />);
+    expect(editorIn(screen.container)).toBe(editor);
+    await act(() => {
+      editor.commands.undo();
+    });
+    expect(editorRef.current?.readSnapshot().value).toBe("first line");
+  },
+);

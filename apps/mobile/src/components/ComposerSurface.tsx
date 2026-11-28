@@ -44,7 +44,12 @@ const EXPANDED_EDITOR_INSET = 14;
 // Room under the expanded editor for the toolbar row.
 const EXPANDED_EDITOR_BOTTOM = 52;
 
-export function useCompactComposerEditor(text: ScaledTextRole, value: string, animate: boolean) {
+export function useCompactComposerEditor(
+  text: ScaledTextRole,
+  value: string,
+  animate: boolean,
+  fullscreen = false,
+) {
   const [contentSize, setContentSize] = useState({ width: 0, height: 0 });
   const [compactWidth, setCompactWidth] = useState(0);
   const contentHeight = contentSize.height;
@@ -77,7 +82,10 @@ export function useCompactComposerEditor(text: ScaledTextRole, value: string, an
         })
       : target;
   });
-  const editorStyle = useAnimatedStyle(() => {
+  const editorStyle = useAnimatedStyle<ViewStyle>(() => {
+    // Reanimated keeps its last native height and offsets when an animated style is detached.
+    if (fullscreen)
+      return { position: "absolute", height: "100%", top: 0, left: 16, right: 16, opacity: 1 };
     const compactInsets = compactEditorInsets({
       slotX: editorX.value,
       slotWidth: editorWidth.value,
@@ -173,6 +181,7 @@ export function ComposerSurface(props: {
   readonly children: ReactNode;
   readonly style: ViewStyle;
   readonly animateLayout?: boolean;
+  readonly fill?: boolean;
 }) {
   const colors = useUniwindTheme();
   const targetBorderRadius =
@@ -202,6 +211,7 @@ export function ComposerSurface(props: {
       layout={layoutTransition}
       style={[
         animatedShapeStyle,
+        props.fill ? { flex: 1 } : undefined,
         {
           overflow: "hidden",
         },

@@ -49,7 +49,7 @@ import {
   parseInlineMarkdown,
   RICH_TEXT_DELIMITERS,
   type RichTextMark,
-} from "~/composer-rich-text";
+} from "@t3tools/client-runtime/inline-markdown";
 import { collectInlineContextIds } from "~/lib/composerContextReferences";
 import { composerMathRanges } from "@t3tools/shared/composerInlineTokens";
 import { markdownMathRanges } from "~/markdown/wordsHast";

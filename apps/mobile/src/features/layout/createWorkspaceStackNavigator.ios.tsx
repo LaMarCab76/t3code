@@ -223,7 +223,7 @@ function WorkspaceColumns(
     nativeInspectorWidth,
     setNativeInspectorWidth,
   } = useAdaptiveWorkspaceLayout();
-  const { panes, sidebarByOrientation } = useWorkspacePaneState();
+  const { panes, sidebarByOrientation, columnsHidden } = useWorkspacePaneState();
   const deviceType = useDeviceType();
   const inspectorWidth = nativeInspectorWidth;
   const resizeStartWidth = useRef(inspectorWidth);
@@ -378,7 +378,7 @@ function WorkspaceColumns(
         else if (nativeEvent.nextDisplayMode === "secondaryOnly") setPrimarySidebarVisible(false);
       }}
       displayModeButtonVisibility="never"
-      presentsWithGesture
+      presentsWithGesture={!columnsHidden}
       showInspector={inspector.visible}
       onInspectorHide={hideInspector}
       columnMetrics={{

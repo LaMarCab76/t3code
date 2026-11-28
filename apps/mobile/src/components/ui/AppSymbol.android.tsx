@@ -48,6 +48,7 @@ import IconTicket from "@tabler/icons-react-native/IconTicket";
 import IconClock from "@tabler/icons-react-native/IconClock";
 import IconClipboard from "@tabler/icons-react-native/IconClipboard";
 import IconCode from "@tabler/icons-react-native/IconCode";
+import IconPaperclip from "@tabler/icons-react-native/IconPaperclip";
 import IconCopy from "@tabler/icons-react-native/IconCopy";
 import IconDatabase from "@tabler/icons-react-native/IconDatabase";
 import IconDeviceDesktop from "@tabler/icons-react-native/IconDeviceDesktop";
@@ -207,6 +208,7 @@ const ANDROID_ICON_BY_SF_SYMBOL = {
   "chevron.up": IconChevronUp,
   desktopcomputer: IconDeviceDesktop,
   doc: IconFileText,
+  paperclip: IconPaperclip,
   "doc.on.doc": IconCopy,
   "doc.text": IconFileText,
   "file.diff": IconFileDiff,

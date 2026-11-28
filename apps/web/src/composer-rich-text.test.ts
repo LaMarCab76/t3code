@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { inlineMarkdownUnitMarks, parseInlineMarkdown } from "./composer-rich-text";
+import {
+  inlineMarkdownUnitMarks,
+  parseInlineMarkdown,
+} from "@t3tools/client-runtime/inline-markdown";
 
 describe("composer rich text markdown", () => {
   it("preserves unmatched markers, escaped markers, and identifiers", () => {

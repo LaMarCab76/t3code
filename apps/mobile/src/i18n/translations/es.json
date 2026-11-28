@@ -5762,5 +5762,12 @@
   "15d475e1a7b50de7": "Suscripción por modelo",
   "e5e910d149aa89cb": "Sin uso atribuible",
   "c2f5d2b75a76a15f": "Reporte de uso",
-  "716277242c2a18b1": "Sincronización"
+  "716277242c2a18b1": "Sincronización",
+  "e5a8622dd425e9b7": "Título {level}",
+  "e17bae3a53e3c4b3": "Negrita",
+  "87c4a6e8013172f4": "Cursiva",
+  "d4fcd754ccfc6d14": "Adjuntos ({count})",
+  "18b26aee6f7efd6c": "Cerrar el editor del prompt",
+  "6ca8ed7d5554191b": "Editar prompt en pantalla completa",
+  "a11b64718a056671": "Editar prompt"
 }

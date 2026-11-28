@@ -5768,5 +5768,12 @@
   "15d475e1a7b50de7": "Prenumeration per modell",
   "e5e910d149aa89cb": "Ingen fördelningsbar användning",
   "c2f5d2b75a76a15f": "Användningsrapport",
-  "716277242c2a18b1": "Synkronisering"
+  "716277242c2a18b1": "Synkronisering",
+  "e5a8622dd425e9b7": "Rubrik {level}",
+  "e17bae3a53e3c4b3": "Fetstil",
+  "87c4a6e8013172f4": "Kursiv",
+  "d4fcd754ccfc6d14": "Bilagor ({count})",
+  "18b26aee6f7efd6c": "Stäng promptredigeraren",
+  "6ca8ed7d5554191b": "Redigera prompten i helskärm",
+  "a11b64718a056671": "Redigera prompt"
 }

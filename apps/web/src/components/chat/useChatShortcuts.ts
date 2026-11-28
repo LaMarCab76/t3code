@@ -62,7 +62,10 @@ export function useChatShortcuts(input: ChatShortcutsInput) {
   const embedded = input.embedded === true;
   const composerElement = embedded ? (input.composerElement ?? null) : null;
   const handleShortcut = useEffectEvent((event: KeyboardEvent) => {
-    if (event.target instanceof Element && event.target.closest("[data-keybinding-capture]")) {
+    if (
+      event.target instanceof Element &&
+      event.target.closest("[data-keybinding-capture], [data-fullscreen-prompt]")
+    ) {
       return;
     }
     const { keybindings } = input;

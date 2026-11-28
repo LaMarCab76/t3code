@@ -455,6 +455,7 @@ export function useComposerSend(input: ComposerSendInput) {
           promptRef.current = "";
           composerRef.current?.resetCursorState();
         }
+        return true;
       }
       return;
     }
@@ -740,7 +741,7 @@ export function useComposerSend(input: ComposerSendInput) {
           promptRef.current = prompt;
           composerRef.current?.resetCursorState({ prompt });
         }
-        return;
+        return startedOk;
       }
       // Answering a question, the composer shows the answer, which lives apart from this draft.
       if (startedOk && currentRouteThreadKeyRef.current === routeThreadKey) {
@@ -750,7 +751,7 @@ export function useComposerSend(input: ComposerSendInput) {
         }
         composerRef.current?.resetCursorState();
       }
-      return;
+      return startedOk;
     }
     if (answeringQuestion) {
       if (directAnnotation) {
@@ -848,7 +849,7 @@ export function useComposerSend(input: ComposerSendInput) {
       }
       // Edit mode repurposes the composer: sending saves the queued message
       // in place instead of dispatching a new turn.
-      await queuedRunEdit.saveEdit(
+      return queuedRunEdit.saveEdit(
         {
           modelSelection: ctxSelectedModelSelection,
           prompt: promptForSend,
@@ -864,7 +865,6 @@ export function useComposerSend(input: ComposerSendInput) {
         setThreadError,
         { dispatchMode, submissionIntent },
       );
-      return;
     }
     const {
       trimmedPrompt: trimmed,
@@ -941,7 +941,7 @@ export function useComposerSend(input: ComposerSendInput) {
         feedbackUploadsInFlightRef.current.delete(routeThreadKey);
       });
 
-      return;
+      return true;
     }
     const composerHoldsOnlyText =
       composerImages.length === 0 &&
@@ -1338,7 +1338,7 @@ export function useComposerSend(input: ComposerSendInput) {
           clearComposerDraftContent(composerDraftTarget);
           composerRef.current?.resetCursorState();
         }
-        return;
+        return sent;
       }
       const declined =
         !changedBeforeDecline &&
@@ -1406,7 +1406,7 @@ export function useComposerSend(input: ComposerSendInput) {
       draftTarget: composerDraftTarget,
     });
     if (multipleModelSelections !== null) {
-      await sendToMultipleModels({
+      return sendToMultipleModels({
         threadId: threadIdForSend,
         project: activeProject,
         branch: activeThreadBranch!,
@@ -1421,7 +1421,6 @@ export function useComposerSend(input: ComposerSendInput) {
         isCurrentSend: () => composerSendGenerationRef.current === sendGeneration,
         draftChangedDuringPreparation,
       });
-      return;
     }
     const optimisticAttachments = optimisticMessageAttachments(composerAttachmentsSnapshot);
     if (!shouldQueueBehindActiveRun) {
@@ -1795,6 +1794,7 @@ export function useComposerSend(input: ComposerSendInput) {
       );
       if (!sendQueuesBehindSetup && isCurrentRouteThread()) resetLocalDispatch();
     }
+    return turnStartSucceeded;
   };
 
   const onSendLatest = useStableCallback(onSend);

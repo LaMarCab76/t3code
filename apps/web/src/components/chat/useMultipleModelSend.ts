@@ -312,5 +312,6 @@ export function useMultipleModelSend(input: MultipleModelSendInput) {
       if (currentRouteThreadKeyRef.current === routeThreadKey && isCurrentSend())
         resetLocalDispatch();
     }
+    return startedCount > 0 && failedSelections.length === 0;
   };
 }

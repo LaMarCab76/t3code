@@ -13198,5 +13198,14 @@
   "cb6de87f903e9a67": "API cost",
   "b1081d87d2a8abad": "Subscription",
   "bceeb4ee1e0f513b": "Scanning provider transcripts…",
-  "9441bd7cb624a2f5": "API cost by provider"
+  "9441bd7cb624a2f5": "API cost by provider",
+  "6ca8ed7d5554191b": "Edit prompt in full screen",
+  "d4fcd754ccfc6d14": "Attachments ({count})",
+  "18b26aee6f7efd6c": "Close prompt editor",
+  "e5a8622dd425e9b7": "Heading {level}",
+  "e17bae3a53e3c4b3": "Bold",
+  "87c4a6e8013172f4": "Italic",
+  "a11b64718a056671": "Edit prompt",
+  "bf66f2a6e7907771": "Attachments",
+  "25087c85b597e3f4": "Enter for a new line"
 }

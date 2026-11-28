@@ -13,6 +13,7 @@ import {
 
 /** The workspace's actions; their identities never change. */
 export interface AdaptiveWorkspaceActions {
+  readonly hideWorkspaceColumns: () => () => void;
   readonly startNewTask: () => void;
   /** Use `useSelectWorkspaceDetail`, which also works outside the layout. */
   readonly selectDetail?: (detail: WorkspaceDetail, sheet?: WorkspaceDetailSheet) => void;
@@ -48,6 +49,7 @@ interface AdaptiveWorkspaceLayoutValue extends AdaptiveWorkspaceActions {
 
 /** Changes as panes toggle and the keyboard comes and goes; read it only where that shows. */
 interface WorkspacePaneStateValue {
+  readonly columnsHidden: boolean;
   readonly panes: WorkspacePaneLayout;
   readonly fileInspector: FileInspectorPaneLayout;
   readonly primarySidebarSearchQuery: string;
@@ -76,6 +78,7 @@ const compactFileInspector = deriveFileInspectorPaneLayout({
 });
 export const AdaptiveWorkspaceContext = createContext<AdaptiveWorkspaceLayoutValue>({
   layout: compactLayout,
+  hideWorkspaceColumns: () => () => undefined,
   startNewTask: () => undefined,
   registerWorkspaceInspector: () => () => undefined,
   setPrimarySidebarSearchQuery: () => undefined,
@@ -90,6 +93,7 @@ export const AdaptiveWorkspaceContext = createContext<AdaptiveWorkspaceLayoutVal
   setNativeInspectorWidth: () => undefined,
 });
 export const WorkspacePaneStateContext = createContext<WorkspacePaneStateValue>({
+  columnsHidden: false,
   panes: compactPanes,
   fileInspector: compactFileInspector,
   primarySidebarSearchQuery: "",

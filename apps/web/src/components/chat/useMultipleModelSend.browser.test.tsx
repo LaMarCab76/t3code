@@ -20,7 +20,7 @@ it.each(["starts", "fails preparation"] as const)(
     const routeThreadKey = scopedThreadKey(target);
     const activeRoute = { current: routeThreadKey };
     const attachments = Promise.withResolvers<[]>();
-    let submission: Promise<void> | undefined;
+    let submission: Promise<boolean> | undefined;
     const createdAt = "2026-11-01T00:00:00.000Z";
 
     function Probe() {

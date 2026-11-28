@@ -70,7 +70,14 @@ function literalUnderscoreRuns(text: string): Set<number> {
 
 // Pieces keep source offsets, so callers can map parsed text back onto the
 // characters it came from; parsing only drops delimiters.
-function parseInlineMarkdownPieces(text: string): SourcePiece[] {
+interface DelimitedStyle {
+  mark: RichTextMark;
+  delimiter: string;
+  from: number;
+  to: number;
+}
+
+function parseInlineMarkdownPieces(text: string, delimiters?: DelimitedStyle[]): SourcePiece[] {
   const literalRuns = literalUnderscoreRuns(text);
   const root: SourcePiece[] = [];
   const stack: { delimiter: string; mark: RichTextMark; start: number; pieces: SourcePiece[] }[] =
@@ -141,6 +148,7 @@ function parseInlineMarkdownPieces(text: string): SourcePiece[] {
         index + top.delimiter.length <= end
       ) {
         stack.pop();
+        delimiters?.push({ mark: top.mark, delimiter: top.delimiter, from: top.start, to: index });
         for (const piece of top.pieces) push(piece.start, piece.end, [top.mark, ...piece.marks]);
         index += top.delimiter.length;
       } else if (canOpen && (char !== "~" || end - index >= 2)) {
@@ -191,4 +199,10 @@ export function inlineMarkdownUnitMarks(text: string): Array<RichTextMark[] | nu
     result.fill(marks, start, end);
   }
   return result;
+}
+
+export function inlineMarkdownDelimiters(text: string): DelimitedStyle[] {
+  const delimiters: DelimitedStyle[] = [];
+  parseInlineMarkdownPieces(text, delimiters);
+  return delimiters;
 }

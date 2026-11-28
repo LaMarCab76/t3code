@@ -28,7 +28,7 @@ import { StackActions, useFocusEffect, useNavigation } from "@react-navigation/n
 import { msg, T, useGT, useMessages } from "gt-react-native";
 import type { ReactNode } from "react";
 import { useEffect, useEffectEvent, useRef, useState, type RefObject } from "react";
-import { Keyboard, Platform, View } from "react-native";
+import { BackHandler, Keyboard, Platform, Pressable, View } from "react-native";
 import { composerImageGallery } from "../../lib/composerImageGallery";
 import { filePreviewGallery } from "../../lib/filePreviewGallery";
 import { FilePreviewModal, type FilePreviewSource } from "../../components/ui/FilePreviewModal";
@@ -43,6 +43,7 @@ import { themeColorWithAlpha } from "../../lib/mobileTheme";
 import { armAgentAwarenessLiveActivityForLocalWork } from "../agent-awareness/remoteRegistration";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import {
+  captureComposerDraftInsertion,
   getComposerDraftSnapshot,
   setComposerDraftText,
   composerContextImportsAtom,
@@ -59,6 +60,9 @@ import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { AppText as Text } from "../../components/ui/AppText";
+import { FullscreenComposerAttachments } from "./FullscreenComposerAttachments";
+import { editPromptFormat } from "@t3tools/client-runtime/prompt-format";
+import { PromptFormatToolbar } from "./PromptFormatToolbar";
 import { ComposerAttachmentButton } from "./ComposerAttachmentButton";
 import {
   ComposerAttachmentStrip,
@@ -135,6 +139,10 @@ export const THREAD_COMPOSER_BOTTOM_GUTTER = COMPOSER_BOTTOM_GUTTER;
 const NO_MACHINES: ReadonlyArray<ComposerEnvironmentCandidate> = [];
 
 export interface ThreadComposerProps {
+  readonly fullscreen: boolean;
+  readonly editorError: string | null;
+  readonly onExpandPrompt: (() => void) | undefined;
+  readonly onClosePrompt: () => void;
   readonly isDraft?: boolean;
   readonly canOperateThread: boolean;
   readonly placeholder: string;
@@ -268,6 +276,18 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
   const bodyText = useComposerTextRole();
   const fallbackInputRef = useRef<ComposerEditorHandle>(null);
   const inputRef = props.editorRef ?? fallbackInputRef;
+  const { fullscreen, onClosePrompt } = props;
+  const [showFiles, setShowFiles] = useState(false);
+  if (!fullscreen && showFiles) setShowFiles(false);
+  useFocusEffect(() => {
+    if (!fullscreen) return;
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (showFiles) setShowFiles(false);
+      else onClosePrompt();
+      return true;
+    });
+    return () => subscription.remove();
+  });
   const [isFocused, setIsFocused] = useState(false);
   const pendingPastedTextAttachmentCountRef = useRef(0);
   const pendingNativeImagePasteCountRef = useRef(0);
@@ -476,9 +496,11 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
     bodyText,
     draftMessage,
     Platform.OS === "ios" && isFocused,
+    fullscreen,
   );
   const showsCompactDictation = isVoiceInputPresented;
   const isToolbarVisible = isVoiceInputPresented;
+  const attachmentCount = draftAttachments.length + (queuedEdit?.existingAttachments.length ?? 0);
   const hasEditingAttachments =
     (queuedEdit !== null && queuedEdit.existingAttachments.length > 0) ||
     stripAttachments.length > 0 ||
@@ -584,6 +606,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
       return;
     }
     if (sent.value === null) return;
+    if (fullscreen) onClosePrompt();
     // Arm after send so preference reads and native Activity startup do not delay tap-frame feedback.
     armAgentAwarenessLiveActivityForLocalWork({
       environmentId: props.environmentId,
@@ -729,10 +752,38 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
       />
     ) : null;
 
+  const expandButton = props.onExpandPrompt && !isSubmissionLocked && (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={gt("Edit prompt in full screen")}
+      onPress={() => {
+        props.onExpandPrompt?.();
+        inputRef.current?.focus();
+      }}
+      className="size-[44px] items-center justify-center"
+    >
+      <SymbolView
+        name="arrow.up.left.and.arrow.down.right"
+        size={16}
+        tintColorClassName="accent-foreground-muted"
+      />
+    </Pressable>
+  );
+  const attachButton = (
+    <ComposerAttachmentButton
+      size={usesLargeControls ? "large" : "regular"}
+      disabled={isSubmissionLocked}
+      supportsFiles={props.serverConfig !== null}
+      onPickMedia={props.onPickDraftMedia}
+      onPickFiles={props.onPickDraftFiles}
+    />
+  );
   return (
     <Animated.View
-      onLayout={(event) => props.onHeightChange?.(event.nativeEvent.layout.height)}
-      className="px-[12px]"
+      onLayout={
+        fullscreen ? undefined : (event) => props.onHeightChange?.(event.nativeEvent.layout.height)
+      }
+      className={fullscreen ? "flex-1 bg-screen" : "px-[12px]"}
       style={{
         paddingTop: 6,
         paddingBottom: (props.bottomInset ?? 0) + THREAD_COMPOSER_BOTTOM_GUTTER,
@@ -750,10 +801,10 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
         pointerEvents="none"
       />
       <Animated.View
-        className="relative w-full self-center"
-        style={{ maxWidth: props.contentMaxWidth }}
+        className={fullscreen ? "relative w-full flex-1" : "relative w-full self-center"}
+        style={fullscreen ? undefined : { maxWidth: props.contentMaxWidth }}
       >
-        {props.draftControls}
+        {!fullscreen && props.draftControls}
         {!isSubmissionLocked &&
         composerMenu.trigger &&
         (composerMenu.items.length > 0 || composerMenu.trigger.kind === "pull-request") ? (
@@ -799,8 +850,10 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
 
         <ComposerSurface
           animateLayout={false}
+          fill={fullscreen}
           style={{
-            borderRadius: usesLargeControls ? 31 : 27,
+            ...(fullscreen && { flex: 1 }),
+            borderRadius: fullscreen ? 0 : usesLargeControls ? 31 : 27,
             borderCurve: "circular",
             overflow: "hidden",
             paddingVertical: surfacePaddingVertical,
@@ -810,7 +863,52 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
             error={voiceInput.state.phase === "error" ? voiceInput.state.error : null}
             onDismiss={voiceInput.cancel}
           />
-          {isExpanded ? editingAttachments : null}
+          {fullscreen && (
+            <View className="flex-row items-center border-b border-border px-2">
+              <Text className="flex-1 px-2 font-t3-semibold text-foreground">
+                <T>Edit prompt</T>
+              </Text>
+              {attachmentCount > 0 && (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityState={{ expanded: showFiles }}
+                  accessibilityLabel={gt("Attachments ({count})", { count: attachmentCount })}
+                  onPress={() => setShowFiles(!showFiles)}
+                  className="h-[44px] min-w-[44px] flex-row items-center justify-center gap-1"
+                >
+                  <SymbolView name="paperclip" size={16} tintColorClassName="accent-foreground" />
+                  <Text className="text-xs text-foreground">{attachmentCount}</Text>
+                </Pressable>
+              )}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={gt("Close prompt editor")}
+                onPress={() => {
+                  onClosePrompt();
+                  inputRef.current?.focus();
+                }}
+                className="size-[44px] items-center justify-center"
+              >
+                <SymbolView name="xmark" size={18} tintColorClassName="accent-foreground" />
+              </Pressable>
+            </View>
+          )}
+          {!fullscreen && isExpanded ? editingAttachments : null}
+          {fullscreen && showFiles && attachmentCount > 0 && (
+            <FullscreenComposerAttachments
+              environmentId={props.environmentId}
+              attachments={draftAttachments}
+              queued={queuedEdit?.existingAttachments ?? []}
+              onPreview={onPressPreview}
+              onVideo={onPressVideo}
+              onDocument={openDraftDocument}
+            />
+          )}
+          {fullscreen && props.editorError && (
+            <Text accessibilityRole="alert" className="px-4 py-2 text-danger">
+              {props.editorError}
+            </Text>
+          )}
           {attachmentBlockReason !== null ? (
             <View className="flex-row items-center gap-1.5 px-4 py-1.5">
               <SymbolView
@@ -828,44 +926,46 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
             </View>
           ) : null}
           <View
+            className={fullscreen ? "flex-1" : undefined}
             onLayout={(event) => {
+              if (fullscreen) return;
               compactEditor.onRowLayout(event);
               setCompactRowWidth(event.nativeEvent.layout.width);
             }}
           >
             <ComposerDictationDraftContent
-              className="flex-row items-end"
+              className={fullscreen ? "flex-1" : "flex-row items-end"}
               compact
               hidden={showsCompactDictation}
             >
-              <ComposerAttachmentButton
-                size={usesLargeControls ? "large" : "regular"}
-                disabled={isSubmissionLocked}
-                supportsFiles={props.serverConfig !== null}
-                onPickMedia={props.onPickDraftMedia}
-                onPickFiles={props.onPickDraftFiles}
-              />
+              {!fullscreen && attachButton}
               <Animated.View
                 className="min-w-0 flex-1"
-                onLayout={compactEditor.onEditorLayout}
-                style={[
-                  {
-                    minWidth:
-                      compactEditor.isExpanded ||
-                      stripAttachments.length > 0 ||
-                      compactControl !== null
-                        ? 0
-                        : INLINE_EDITOR_MIN_WIDTH,
-                  },
-                  compactEditor.containerStyle,
-                  compactEditor.isExpanded ? { flex: 0, width: 0 } : undefined,
-                ]}
+                onLayout={fullscreen ? undefined : compactEditor.onEditorLayout}
+                style={
+                  fullscreen
+                    ? { display: "none" }
+                    : [
+                        {
+                          minWidth:
+                            compactEditor.isExpanded ||
+                            stripAttachments.length > 0 ||
+                            compactControl !== null
+                              ? 0
+                              : INLINE_EDITOR_MIN_WIDTH,
+                        },
+                        compactEditor.containerStyle,
+                        compactEditor.isExpanded ? { flex: 0, width: 0 } : undefined,
+                      ]
+                }
               ></Animated.View>
               {/* TalkBack orders siblings by position; outside this row the editor reads after Send. */}
               <Animated.View
                 style={[
                   compactEditor.editorStyle,
-                  // iOS destroys a view under display: none; the editor would lose its focus and caret.
+                  !fullscreen && compactEditor.isExpanded && expandButton
+                    ? { paddingEnd: 34 }
+                    : undefined,
                   Platform.OS === "android" && showsCompactDictation
                     ? { display: "none" }
                     : undefined,
@@ -892,7 +992,7 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                     }
                   }}
                   onOpenAttachment={openDraftDocument}
-                  chipsInert={!isExpanded}
+                  chipsInert={!fullscreen && !isExpanded}
                   onInertChipPress={() => inputRef.current?.focus()}
                   ref={inputRef}
                   multiline
@@ -987,27 +1087,32 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                   placeholder={props.placeholder}
                   onFocus={handleFocus}
                   onBlur={handleBlur}
-                  onSubmit={(alternate) =>
-                    void handleSend(
-                      alternate && sendPresentation.alternate !== null
-                        ? sendPresentation.alternate
-                        : undefined,
-                    )
-                  }
+                  {...(fullscreen
+                    ? { enterBehavior: "newline" as const }
+                    : {
+                        onSubmit: (alternate: boolean) =>
+                          void handleSend(
+                            alternate && sendPresentation.alternate !== null
+                              ? sendPresentation.alternate
+                              : undefined,
+                          ),
+                      })}
                   submitTitle={sendPresentation.label}
                   alternateSubmitTitle={
                     sendPresentation.alternate === null
                       ? sendPresentation.label
                       : FOLLOW_UP_ACTION_LABEL[sendPresentation.alternate]
                   }
-                  {...compactEditor.editorProps}
+                  {...(fullscreen
+                    ? { scrollEnabled: true, style: { flex: 1 }, contentInsetVertical: 12 }
+                    : compactEditor.editorProps)}
                   textStyle={{
                     ...bodyText,
                     color: foregroundColor,
                   }}
                 />
               </Animated.View>
-              {!isExpanded && stripAttachments.length > 0 ? (
+              {!fullscreen && !isExpanded && stripAttachments.length > 0 ? (
                 <View className="h-[44px] shrink-0 flex-row items-center gap-1 pl-1">
                   {stripAttachments.slice(0, compactAttachmentLimit).map((attachment) => (
                     <ComposerAttachmentThumbnail
@@ -1033,7 +1138,11 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
               <View
                 className="min-w-0 shrink flex-row items-center"
                 style={
-                  compactEditor.isExpanded ? { flex: 1, justifyContent: "flex-end" } : undefined
+                  fullscreen
+                    ? { display: "none" }
+                    : compactEditor.isExpanded
+                      ? { flex: 1, justifyContent: "flex-end" }
+                      : undefined
                 }
               >
                 <Animated.View
@@ -1078,8 +1187,44 @@ export const ThreadComposer = function ThreadComposer(props: ThreadComposerProps
                     onSend={handleSend}
                   />
                 )}
+                {!compactEditor.isExpanded && expandButton}
               </View>
             </ComposerDictationDraftContent>
+            {!fullscreen && compactEditor.isExpanded && expandButton && (
+              <View className="absolute end-0 top-0">{expandButton}</View>
+            )}
+            {fullscreen && (
+              <View className="flex-row items-center gap-1 border-t border-border px-2">
+                {attachButton}
+                <PromptFormatToolbar
+                  value={draftMessage}
+                  selection={composerMenu.selection}
+                  disabled={isSubmissionLocked}
+                  onApply={async (format) => {
+                    const input = inputRef.current;
+                    if (!input) return;
+                    const generation = readResetGeneration();
+                    await input.flushPendingInput();
+                    if (inputRef.current !== input || readResetGeneration() !== generation) return;
+                    const draft = captureComposerDraftInsertion(composerDraftKey);
+                    const edit = editPromptFormat(draft.text, draft, format);
+                    let next = draft.text;
+                    for (const { from, to, text } of edit.edits)
+                      next = next.slice(0, from) + text + next.slice(to);
+                    onChangeDraftMessage(next);
+                    composerMenu.onSelectionChange(edit.selection);
+                    input.setSelection(edit.selection);
+                    input.focus();
+                  }}
+                />
+                <SendActionButton
+                  accessibilityLabel={sendBlockedReason ?? sendLabel}
+                  presentation={sendPresentation}
+                  disabled={!canSend}
+                  onSend={handleSend}
+                />
+              </View>
+            )}
           </View>
           <Animated.View
             accessibilityElementsHidden={!isToolbarVisible}

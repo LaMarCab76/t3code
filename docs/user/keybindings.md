@@ -21,7 +21,7 @@ To free a default shortcut, choose **Unassign** from its row menu (**Reset to de
 | Pick workspace mode         | `mod+shift+x`     | `mod+shift+l` reuses the previous worktree directly.               |
 | Pick Git branch             | `mod+shift+g`     |                                                                    |
 
-Configure whether `Enter` sends or requires `mod+Enter` in **Settings → Chat → Send shortcut** (`Shift+Enter` always inserts a newline).
+Configure whether `Enter` sends or requires `mod+Enter` in **Settings → Chat → Send shortcut** (`Shift+Enter` always inserts a newline). In the [full-screen prompt editor](./composer.md#writing-a-longer-prompt), Enter inserts a line and the Send button submits the prompt.
 
 In the model picker, use `Left`/`Shift+Tab` to move to the provider list, `Right` to return to search or move into effort levels, and `Up`/`Down`/`Enter` to select.
 

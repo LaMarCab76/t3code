@@ -120,7 +120,7 @@ function DialogPopup({
   showCloseButton?: boolean;
   closeButtonSize?: ButtonSize;
   bottomStickOnMobile?: boolean;
-  variant?: "default" | "media";
+  variant?: "default" | "media" | "fullscreen";
   mediaControlsPlacement?: "inside" | "outside";
 }) {
   const gt = useGT();
@@ -130,10 +130,14 @@ function DialogPopup({
     render: (
       <DialogPrimitive.Popup
         className={cn(
-          variant === "media" ? DIALOG_MEDIA_POPUP_CLASS : DIALOG_POPUP_CLASS,
+          variant === "fullscreen"
+            ? "flex h-full min-h-0 w-full flex-col bg-background outline-none"
+            : variant === "media"
+              ? DIALOG_MEDIA_POPUP_CLASS
+              : DIALOG_POPUP_CLASS,
           "row-start-2 text-popover-foreground",
           variant === "default" && "max-h-full max-w-lg",
-          bottomStickOnMobile && DIALOG_MOBILE_SHEET_CLASS,
+          bottomStickOnMobile && variant !== "fullscreen" && DIALOG_MOBILE_SHEET_CLASS,
           className,
         )}
         data-slot="dialog-popup"
@@ -159,10 +163,17 @@ function DialogPopup({
   return (
     <DialogPortal>
       {/* Media opens from inside other overlays (a composer chip, a popover), so it sits above them. */}
-      <DialogBackdrop className={variant === "media" ? "z-[60]" : undefined} variant={variant} />
+      <DialogBackdrop
+        className={variant === "media" ? "z-[60]" : undefined}
+        variant={variant === "media" ? "media" : "default"}
+      />
       <DialogViewport
         className={cn(
-          bottomStickOnMobile && "max-sm:grid-rows-[1fr_auto] max-sm:p-0 max-sm:pt-12",
+          bottomStickOnMobile &&
+            variant !== "fullscreen" &&
+            "max-sm:grid-rows-[1fr_auto] max-sm:p-0 max-sm:pt-12",
+          variant === "fullscreen" &&
+            "grid-rows-[0_minmax(0,1fr)] p-0 pt-(--native-titlebar-height) pb-[env(safe-area-inset-bottom)] bg-background",
           variant === "media" &&
             "z-[60] grid-rows-1 place-items-center px-4 max-[8rem]:px-0 pb-6 pt-[calc(var(--media-dialog-titlebar-height,0px)+1.5rem)] [-webkit-app-region:no-drag]",
           variant === "media" &&
@@ -170,9 +181,11 @@ function DialogPopup({
             "pt-[min(calc(var(--media-dialog-titlebar-height,0px)+1.5rem),50dvh)]",
         )}
         style={
-          variant === "media"
-            ? ({ "--media-dialog-titlebar-height": `${nativeTitlebarHeight}px` } as CSSProperties)
-            : undefined
+          variant === "fullscreen"
+            ? { paddingTop: nativeTitlebarHeight }
+            : variant === "media"
+              ? ({ "--media-dialog-titlebar-height": `${nativeTitlebarHeight}px` } as CSSProperties)
+              : undefined
         }
       >
         {popup}
@@ -223,10 +236,18 @@ function DialogFooter({
   );
 }
 
-function DialogTitle({ className, ...props }: DialogPrimitive.Title.Props) {
+function DialogTitle({
+  className,
+  size = "default",
+  ...props
+}: DialogPrimitive.Title.Props & { size?: "default" | "sm" }) {
   return (
     <DialogPrimitive.Title
-      className={cn("wrap-anywhere font-semibold text-xl leading-snug", className)}
+      className={cn(
+        "wrap-anywhere font-semibold leading-snug",
+        size === "sm" ? "text-sm" : "text-xl",
+        className,
+      )}
       data-slot="dialog-title"
       {...props}
     />

@@ -220,6 +220,7 @@ function useStableActions(actions: Required<AdaptiveWorkspaceActions>): Adaptive
     latest.current = actions;
   });
   const [stable] = useState((): AdaptiveWorkspaceActions => ({
+    hideWorkspaceColumns: () => latest.current.hideWorkspaceColumns(),
     startNewTask: () => latest.current.startNewTask(),
     selectDetail: (detail, sheet) => latest.current.selectDetail(detail, sheet),
     registerWorkspaceInspector: (content, routeKey, revealKey) =>
@@ -274,7 +275,14 @@ function AdaptiveWorkspaceLayoutContent(
   },
 ) {
   const gt = useGT();
-  const floatingTabsEnabled = useAndroidFloatingTabs();
+  const [columnsHiddenBy, setColumnsHiddenBy] = useState<symbol | null>(null);
+  const hideWorkspaceColumns = () => {
+    const owner = Symbol();
+    setColumnsHiddenBy(owner);
+    return () => setColumnsHiddenBy((current) => (current === owner ? null : current));
+  };
+  const columnsHidden = columnsHiddenBy !== null;
+  const floatingTabsEnabled = useAndroidFloatingTabs() && !columnsHidden;
   const projectGroupingMode = props.projectGroupingMode;
   const nativeWorkspace = use(NativeWorkspaceModeContext);
   const usesPresentationHost = use(WorkspacePresentationHostContext);
@@ -343,13 +351,14 @@ function AdaptiveWorkspaceLayoutContent(
     nativeWorkspace,
     usesSplitView: baseLayout.usesSplitView,
   });
-  const showPrimarySidebar = !workspacePage && (primarySidebarPinned || preferredSidebarVisible);
+  const showPrimarySidebar =
+    !columnsHidden && !workspacePage && (primarySidebarPinned || preferredSidebarVisible);
   // Medium windows float the sidebar over a page; beside a list it keeps its room.
   const sidebarFloats =
     baseLayout.variant === "medium" &&
     (nativeWorkspace || (!primarySidebarPinned && !workspacePage));
   const shouldRenderNavigationRail =
-    Platform.OS === "android" && baseLayout.usesSplitView && !floatingTabsEnabled;
+    Platform.OS === "android" && !columnsHidden && baseLayout.usesSplitView && !floatingTabsEnabled;
   const enabledTabs = useEnabledNavigationTabs();
   const { scale, fabSize } = useAndroidControlSizing();
   const floatingTabs = floatingTabsMetrics(enabledTabs.length + 1, scale, fabSize);
@@ -429,13 +438,14 @@ function AdaptiveWorkspaceLayoutContent(
         primarySidebarPreferredVisible: showPrimarySidebar,
         // Only a column a screen fills makes room, so a stale preference can't hide the sidebar.
         auxiliaryPanePreferredVisible:
-          !workspacePage && inspectorActive && fileInspectorPreferredVisible,
+          !columnsHidden && !workspacePage && inspectorActive && fileInspectorPreferredVisible,
         auxiliaryPanePreferredWidth: fileInspectorPreferredWidth ?? undefined,
         nativeInspectorWidth,
       }),
     [
       nativeInspectorWidth,
       horizontalSafeArea,
+      columnsHidden,
       fileInspectorPreferredVisible,
       fileInspectorPreferredWidth,
       inspectorActive,
@@ -485,6 +495,7 @@ function AdaptiveWorkspaceLayoutContent(
     setWorkspaceInspector((current) => (current !== null && !current.active ? null : current));
   };
   const setPrimarySidebarVisible = (visible: boolean) => {
+    if (columnsHidden) return;
     if (layout.variant === "medium") {
       setOverlaySidebar((current) => ({ ...current, visible }));
     } else {
@@ -937,7 +948,7 @@ function AdaptiveWorkspaceLayoutContent(
 
   // Rotating flips the overlay; until the new size reaches JS, predict the reset above.
   const sidebarOverRotates =
-    nativeWorkspace && nativeMetrics?.hasHinge === true && layout.usesSplitView;
+    !columnsHidden && nativeWorkspace && nativeMetrics?.hasHinge === true && layout.usesSplitView;
   // The current orientation's panes already account for an inspector that needs the sidebar's room.
   const sidebarInLandscape =
     baseLayout.variant === "medium"
@@ -953,6 +964,7 @@ function AdaptiveWorkspaceLayoutContent(
   );
 
   const actions = useStableActions({
+    hideWorkspaceColumns,
     startNewTask: handleStartNewTask,
     selectDetail: handleSelectDetail,
     registerWorkspaceInspector,
@@ -974,13 +986,21 @@ function AdaptiveWorkspaceLayoutContent(
   const sidebarToggleable = layout.usesSplitView && !primarySidebarPinned && !workspacePage;
   const paneState = useMemo(
     () => ({
+      columnsHidden,
       panes,
       fileInspector,
       primarySidebarSearchQuery,
       sidebarToggleable,
       sidebarByOrientation,
     }),
-    [panes, fileInspector, primarySidebarSearchQuery, sidebarToggleable, sidebarByOrientation],
+    [
+      columnsHidden,
+      panes,
+      fileInspector,
+      primarySidebarSearchQuery,
+      sidebarToggleable,
+      sidebarByOrientation,
+    ],
   );
 
   const inspectorSheet = (

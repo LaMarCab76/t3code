@@ -35,6 +35,8 @@
       "types": "./src/savedViews.ts",
       "default": "./src/savedViews.ts"
     },
+    "./inline-markdown": "./src/inlineMarkdown.ts",
+    "./prompt-format": "./src/promptFormat.ts",
     "./composerThreadItems": {
       "types": "./src/composerThreadItems.ts",
       "default": "./src/composerThreadItems.ts"

@@ -13,6 +13,8 @@ const screen = vi.hoisted(() => ({
 vi.mock("react-native", () => ({
   View: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
+vi.mock("@react-navigation/native", () => ({ useFocusEffect: () => undefined }));
+vi.mock("../../native/StackHeader", () => ({ NativeStackScreenOptions: () => null }));
 vi.mock("../../components/ui/ScreenContent", () => ({
   ScreenContent: ({ children }: { children: ReactNode }) => children,
 }));
@@ -34,6 +36,7 @@ function Controller(props: {
     <ThreadScreenBinding
       header={<h1>{props.title}</h1>}
       {...({
+        environmentId: "env",
         selectedThread: { environmentId: "env", id: props.threadId ?? "a" },
         selectedThreadFeed: props.feed,
         onSendMessage: props.onSendMessage,

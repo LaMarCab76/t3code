@@ -257,7 +257,7 @@ import { observeResize } from "~/lib/observeResize";
 const isEnvironmentRequestInvalidError = Schema.is(EnvironmentRequestInvalidError);
 import { toastManager } from "../ui/toast";
 import { m as resolveMessage } from "../../i18n/messages";
-import { BuildingIcon, PlayIcon, ReplyIcon } from "lucide-react";
+import { BuildingIcon, Maximize2Icon, PlayIcon, ReplyIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
 import { assistantCitationLabel } from "@t3tools/shared/assistantCitations";
 import { assistantCitationNavigation } from "../../lib/assistantCitationNavigation";
@@ -415,6 +415,7 @@ export interface ChatComposerProps {
   canResume: boolean;
   isRevertingCheckpoint?: boolean;
   sendDisabledReason: string | null;
+  threadError?: string | null;
   isPreparingWorktree: boolean;
   canSteer: boolean;
   bannerItems: readonly ComposerBannerStackItem[];
@@ -489,7 +490,7 @@ export interface ChatComposerProps {
     e?: { preventDefault: () => void },
     dispatchMode?: ComposerDispatchMode,
     submissionIntent?: ComposerSubmissionIntent,
-  ) => void;
+  ) => void | Promise<boolean | void>;
   captureDetachedSend?: () => (
     e?: { preventDefault: () => void },
     dispatchMode?: ComposerDispatchMode,
@@ -1129,6 +1130,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const [isComposerModelPickerOpen, setIsComposerModelPickerOpen] = useState(false);
   const isMobileViewport = useMediaQuery("max-sm");
   const isSoftwareKeyboardOpen = useSoftwareKeyboardOpen();
+  const [fullscreenSession, setFullscreenSession] = useState<symbol | null>(null);
+  const canExpandPrompt =
+    !activePendingProgress && !activePendingApproval && !projectSelectionRequired;
+  const fullscreen = canExpandPrompt && fullscreenSession !== null;
   const [isComposerFocused, setIsComposerFocused] = useState(false);
   const [composerSubmissionError, setComposerSubmissionError] = useState<string | null>(null);
   const [providerInputSubmissionError, setProviderInputSubmissionError] = useState<string | null>(
@@ -1141,6 +1146,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   // so collapsing would leave the surface empty and squashed beneath it.
   const isComposerCollapsedMobile =
     isMobileViewport &&
+    !fullscreen &&
     !forceExpandedOnMobile &&
     !isComposerFocused &&
     !hasMultilinePrompt &&
@@ -1641,9 +1647,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   ]);
 
   const composerSessionKey = `${draftId ?? ""}:${activeThreadId ?? ""}:${isLiteralPendingAnswer}`;
+  if (!canExpandPrompt && fullscreenSession !== null) setFullscreenSession(null);
   const [shownComposerSessionKey, setShownComposerSessionKey] = useState(composerSessionKey);
   if (shownComposerSessionKey !== composerSessionKey) {
     setShownComposerSessionKey(composerSessionKey);
+    setFullscreenSession(null);
     setComposerHighlightedItemId(null);
     setComposerHighlightedSearchKey(null);
     setComposerSubmissionError(null);
@@ -2433,7 +2441,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       event,
       onSend: (sendEvent) => {
         providerInputRejectedRef.current = false;
-        onSend(
+        const sent = onSend(
           sendEvent,
           dispatchMode ??
             resolveComposerDispatchMode({
@@ -2444,6 +2452,17 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
             }),
           submissionIntent,
         );
+        if (fullscreenSession && sent) {
+          void sent.then((accepted) => {
+            if (
+              accepted &&
+              !composerDraftHasUserContent(
+                useComposerDraftStore.getState().getComposerDraft(composerDraftTarget),
+              )
+            )
+              setFullscreenSession((current) => (current === fullscreenSession ? null : current));
+          });
+        }
         return !providerInputRejectedRef.current;
       },
     });
@@ -2462,7 +2481,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       submitComposerStable(undefined, mode, intent, options);
   }, [submitComposerStable]);
   useDictationSubmissionShortcut({
-    enabled: voiceInputActive && !speechInput.preparing,
+    enabled: !fullscreen && voiceInputActive && !speechInput.preparing,
     formRef: composerFormRef,
     onKeyDown: (event) => {
       const intent = composerSubmissionIntentForKey({
@@ -2507,6 +2526,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   };
   const handleSubmitMessageStable = useStableCallback(handleSubmitMessage);
   const submitCitationAndSend = () => {
+    if (fullscreen) return false;
     return submitComposer(
       undefined,
       resolveComposerDispatchMode({
@@ -2594,6 +2614,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       return true;
     }
     return composerCommandKeyHandler({
+      manualSendOnly: fullscreen,
       keybindings,
       getShortcutContext,
       sendShortcut: settings.sendShortcut,
@@ -3667,10 +3688,108 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
   const composerAttachButton = showComposerAttachAction ? (
     <ComposerAttachButton onOpenPicker={() => composerAttachInputRef.current?.click()} />
   ) : null;
+  const suggestionMenu = composerSuggestionsVisible ? (
+    <ComposerCommandMenu
+      listId={composerSuggestionListId}
+      items={composerMenuItems}
+      resolvedTheme={resolvedTheme}
+      isLoading={isComposerMenuLoading}
+      triggerKind={composerTriggerKind}
+      emptyStateText={composerMenuEmptyState}
+      activeItemId={activeComposerMenuItem?.id ?? null}
+      onHighlightedItemChange={onComposerMenuItemHighlightedStable}
+      onSelect={onSelectComposerItemStable}
+    />
+  ) : null;
+  const queuedPreview =
+    fullscreen && previewFileId
+      ? activeEditingQueuedAttachments?.find(({ attachment }) => attachment.id === previewFileId)
+          ?.attachment
+      : null;
+  const fileForPreview =
+    previewFile ??
+    (queuedPreview && isQueuedFileAttachment(queuedPreview)
+      ? {
+          ...queuedPreview,
+          file: null,
+          uploadedAttachmentId: queuedPreview.id,
+          uploadEnvironmentId: environmentId,
+        }
+      : null);
+  const filePreview = fileForPreview ? (
+    <ComposerFilePreviewDialog
+      file={fileForPreview}
+      onRemove={previewFile ? removeComposerFileFromDraft : onRemoveEditingQueuedAttachment}
+      onPreviewFileIdChange={setPreviewFileId}
+    />
+  ) : null;
+  const expandPrompt = canExpandPrompt ? (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-sm"
+      aria-label={gt("Edit prompt in full screen")}
+      title={gt("Edit prompt in full screen")}
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={() => setFullscreenSession(Symbol())}
+    >
+      <Maximize2Icon />
+    </Button>
+  ) : null;
+  const fullscreenControls = fullscreen
+    ? {
+        onClose: () => setFullscreenSession(null),
+        onSend: handleSubmitMessageStable,
+        disabled:
+          !canOperateThread ||
+          isSendBusy ||
+          isPreparingWorktree ||
+          composerSendHeld ||
+          submissionBlocked ||
+          !hasMessageToSend ||
+          primaryActionEnvironmentUnavailable,
+        error:
+          providerInputSubmissionError ??
+          composerSubmissionError ??
+          primaryActionSendDisabledReason ??
+          props.threadError ??
+          null,
+        attachments: [
+          ...preparingComposerImages
+            .filter((pending) => !composerImages.some((image) => image.id === pending.id))
+            .map(({ id, name }) => ({ id, name })),
+          ...composerImages.map((image) => ({
+            id: image.id,
+            name: image.name,
+            previewUrl: image.previewUrl,
+            open: () => composerContextActions.expandImage(image.id),
+          })),
+          ...composerFiles.map((file) => ({
+            id: file.id,
+            name: file.name,
+            open: () => composerContextActions.openFile(file.id),
+          })),
+          ...(activeEditingQueuedAttachments ?? []).map(({ attachment, url }) => ({
+            id: attachment.id,
+            name: attachment.name,
+            previewUrl: isQueuedImageAttachment(attachment) ? (url ?? undefined) : undefined,
+            open: () =>
+              isQueuedImageAttachment(attachment)
+                ? composerContextActions.expandImage(attachment.id)
+                : setPreviewFileId(attachment.id),
+          })),
+        ],
+        attach: composerAttachButton,
+        preview: filePreview,
+        suggestions: suggestionMenu ? (
+          <div className="max-h-40 overflow-y-auto">{suggestionMenu}</div>
+        ) : null,
+      }
+    : undefined;
   return (
     <form
       ref={composerFormRef}
-      onSubmit={submitComposerStable}
+      onSubmit={fullscreen ? (event) => event.preventDefault() : submitComposerStable}
       onKeyDown={(event) => {
         if (
           event.key === "Escape" &&
@@ -3817,6 +3936,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     gt("Ask anything...")
                   )}
                 </button>
+                {expandPrompt}
                 {collapsedComposerImagePreviews}
                 <CollapsedComposerStopAction
                   key={`${environmentId}:${activeThreadId ?? "new"}`}
@@ -3885,6 +4005,9 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                 isComposerCollapsedMobile && "hidden",
               )}
             >
+              {!isComposerCollapsedMobile && expandPrompt && (
+                <div className="absolute end-1.5 top-1.5 z-10">{expandPrompt}</div>
+              )}
               {isStashMenuOpen && !composerMenuOpen && (
                 <ComposerCommandMenuLayer anchor={composerMenuAnchor} canOverflowTop>
                   <ComposerStashMenu
@@ -3916,20 +4039,10 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   : ""}
               </div>
               <DeferredComposerCommandMenuLayer
-                open={composerSuggestionsVisible}
+                open={!fullscreen && composerSuggestionsVisible}
                 anchor={composerMenuAnchor}
               >
-                <ComposerCommandMenu
-                  listId={composerSuggestionListId}
-                  items={composerMenuItems}
-                  resolvedTheme={resolvedTheme}
-                  isLoading={isComposerMenuLoading}
-                  triggerKind={composerTriggerKind}
-                  emptyStateText={composerMenuEmptyState}
-                  activeItemId={activeComposerMenuItem?.id ?? null}
-                  onHighlightedItemChange={onComposerMenuItemHighlightedStable}
-                  onSelect={onSelectComposerItemStable}
-                />
+                {suggestionMenu}
               </DeferredComposerCommandMenuLayer>
 
               {!isComposerCollapsedMobile &&
@@ -3951,13 +4064,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                   composerSendHeld && "opacity-65",
                 )}
               >
-                {previewFile ? (
-                  <ComposerFilePreviewDialog
-                    file={previewFile}
-                    onRemove={removeComposerFileFromDraft}
-                    onPreviewFileIdChange={setPreviewFileId}
-                  />
-                ) : null}
+                {!fullscreen && filePreview}
                 <ComposerContextActionsContext value={composerContextActions}>
                   <ComposerPromptEditor
                     draftKey={composerDraftTargetKey}
@@ -3977,6 +4084,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                         : undefined
                     }
                     editorRef={composerEditorRef}
+                    fullscreen={fullscreenControls}
+                    containerClassName={canExpandPrompt && !fullscreen ? "pe-7" : ""}
                     richTextEnabled={settings.composerRichTextEnabled}
                     literalText={isLiteralPendingAnswer}
                     isPathQueryActive={isPathQueryActiveStable}
@@ -3989,7 +4098,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
                     className={cn(showMobilePendingAnswerActions && "max-sm:pb-12")}
                     onChange={onPromptChangeStable}
                     onCommandKeyDown={onComposerCommandKeyStable}
-                    onPageScrollKeyDown={onPageScrollKeyDown}
+                    {...(!fullscreen && { onPageScrollKeyDown })}
                     onPageScrollKeyUp={onPageScrollKeyUp}
                     onPageScrollRelease={onPageScrollRelease}
                     onCitationSubmitAndSend={submitCitationAndSendStable}

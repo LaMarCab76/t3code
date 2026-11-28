@@ -5762,5 +5762,12 @@
   "15d475e1a7b50de7": "Assinatura por modelo",
   "e5e910d149aa89cb": "Sem uso atribuível",
   "c2f5d2b75a76a15f": "Relatório de uso",
-  "716277242c2a18b1": "Sincronização"
+  "716277242c2a18b1": "Sincronização",
+  "e5a8622dd425e9b7": "Título {level}",
+  "e17bae3a53e3c4b3": "Negrito",
+  "87c4a6e8013172f4": "Itálico",
+  "d4fcd754ccfc6d14": "Anexos ({count})",
+  "18b26aee6f7efd6c": "Fechar editor de prompt",
+  "6ca8ed7d5554191b": "Editar prompt em tela cheia",
+  "a11b64718a056671": "Editar prompt"
 }

@@ -4015,6 +4015,7 @@ export default function ChatView(props: ChatViewProps) {
                                 onPageScrollKeyUp={onComposerPageScrollKeyUpStable}
                                 onPageScrollRelease={onComposerPageScrollReleaseStable}
                                 onCompactContext={onComposerCompactContextStable}
+                                threadError={visibleThreadError}
                                 onSend={onComposerSendStable}
                                 captureDetachedSend={captureDetachedSend}
                                 onResume={onComposerResumeStable}

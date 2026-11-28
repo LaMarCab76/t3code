@@ -71,13 +71,15 @@ export function composerSubmissionIntentForKey(input: {
   context: Partial<ShortcutMatchContext>;
   platform?: string;
   isSoftwareKeyboardOpen: boolean;
+  manualSendOnly?: boolean;
   isDraftThread: boolean;
   isRunning?: boolean;
   sendShortcut?: ClientSettings["sendShortcut"];
   prompt?: string;
 }): ComposerSubmissionIntent | null {
   const { event } = input;
-  if (event.isComposing || event.keyCode === 229 || event.repeat) return null;
+  if (input.manualSendOnly || event.isComposing || event.keyCode === 229 || event.repeat)
+    return null;
   if (input.isSoftwareKeyboardOpen && event.key === "Enter" && !event.metaKey && !event.ctrlKey)
     return null;
   const command = resolveShortcutCommand(event, input.keybindings, {

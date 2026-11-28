@@ -105,6 +105,20 @@ describe("composerSubmissionIntentForKey", () => {
   };
   const enter = { key: "Enter", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false };
 
+  it.each([{}, { ctrlKey: true }, { ctrlKey: true, altKey: true }])(
+    "leaves Enter to the full-screen editor for %j",
+    (modifiers) => {
+      expect(
+        composerSubmissionIntentForKey({
+          ...input,
+          manualSendOnly: true,
+          isRunning: true,
+          event: { ...enter, ...modifiers },
+        }),
+      ).toBeNull();
+    },
+  );
+
   it.each([
     ["enter", "one line", false, "foreground"],
     ["enter", "two\nlines", false, "foreground"],

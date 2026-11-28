@@ -13195,5 +13195,14 @@
   "cb6de87f903e9a67": "API-kostnad",
   "b1081d87d2a8abad": "Prenumeration",
   "bceeb4ee1e0f513b": "Läser leverantörernas användningsloggar…",
-  "9441bd7cb624a2f5": "API-kostnad per leverantör"
+  "9441bd7cb624a2f5": "API-kostnad per leverantör",
+  "6ca8ed7d5554191b": "Redigera prompten i helskärm",
+  "d4fcd754ccfc6d14": "Bilagor ({count})",
+  "18b26aee6f7efd6c": "Stäng promptredigeraren",
+  "e5a8622dd425e9b7": "Rubrik {level}",
+  "e17bae3a53e3c4b3": "Fetstil",
+  "87c4a6e8013172f4": "Kursiv",
+  "a11b64718a056671": "Redigera prompt",
+  "bf66f2a6e7907771": "Bilagor",
+  "25087c85b597e3f4": "Retur för ny rad"
 }

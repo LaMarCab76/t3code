@@ -5762,5 +5762,12 @@
   "15d475e1a7b50de7": "Abonnement par modèle",
   "e5e910d149aa89cb": "Aucune utilisation attribuable",
   "c2f5d2b75a76a15f": "Rapport d’utilisation",
-  "716277242c2a18b1": "Synchronisation"
+  "716277242c2a18b1": "Synchronisation",
+  "e5a8622dd425e9b7": "Titre {level}",
+  "e17bae3a53e3c4b3": "Gras",
+  "87c4a6e8013172f4": "Italique",
+  "d4fcd754ccfc6d14": "Pièces jointes ({count})",
+  "18b26aee6f7efd6c": "Fermer l’éditeur de prompt",
+  "6ca8ed7d5554191b": "Modifier le prompt en plein écran",
+  "a11b64718a056671": "Modifier le prompt"
 }

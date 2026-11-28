@@ -8,6 +8,10 @@ import {
 } from "react";
 import { View } from "react-native";
 
+import { useFocusEffect } from "@react-navigation/native";
+import { useAdaptiveWorkspaceLayout } from "../layout/adaptive-workspace-context";
+import { scopedThreadKey } from "../../lib/scopedEntities";
+import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ThreadDetailScreen, type ThreadDetailScreenProps } from "./ThreadDetailScreen";
 
@@ -114,14 +118,35 @@ const ThreadScreenContext = createContext<ReturnType<typeof createThreadScreenSt
 function ThreadScreenOutlet() {
   const store = useContext(ThreadScreenContext)!;
   const content = useSyncExternalStore(store.subscribe, store.getSnapshot);
+  const [owner, setOwner] = useState<string | null>(null);
+  const screenProps = content && "props" in content ? content.props : null;
+  const key = screenProps
+    ? scopedThreadKey(screenProps.environmentId, screenProps.selectedThread.id)
+    : null;
+  const canExpand =
+    key !== null && !screenProps?.activePendingUserInput && !screenProps?.activePendingApproval;
+  const fullscreen = canExpand && owner === key;
+  const { hideWorkspaceColumns } = useAdaptiveWorkspaceLayout();
+  useFocusEffect(() => {
+    if (fullscreen) return hideWorkspaceColumns();
+  });
+  if (owner !== null && !fullscreen) setOwner(null);
   if (content === null) return null;
-  const screenProps = "props" in content ? content.props : null;
   const fallback = "fallback" in content ? content.fallback : null;
   return (
     <>
-      {content.header}
+      {fullscreen ? <NativeStackScreenOptions options={{ headerShown: false }} /> : content.header}
       <ScreenContent surface="canvas">
-        {screenProps === null ? fallback : <ThreadDetailScreen {...screenProps} />}
+        {screenProps === null ? (
+          fallback
+        ) : (
+          <ThreadDetailScreen
+            {...screenProps}
+            fullscreenPrompt={fullscreen}
+            onExpandPrompt={canExpand ? () => setOwner(key) : undefined}
+            onClosePrompt={() => setOwner((current) => (current === key ? null : current))}
+          />
+        )}
       </ScreenContent>
     </>
   );

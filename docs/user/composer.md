@@ -7,6 +7,12 @@ Use the composer to send prompts, attach files, reference threads or pull reques
 - **Message length**: Up to 120,000 characters.
 - **Large pastes**: Pasting 32 KiB+ of text (or any paste that would exceed the message limit) turns it into a text-file attachment so it doesn't bloat the prompt. Use `Cmd+Shift+V` (Apple) or `Ctrl+Shift+V` (Windows/Linux) to paste inline instead.
 
+## Writing a longer prompt
+
+Select **Edit prompt in full screen** in the composer. Enter adds a line. The toolbar applies headings, bold, and italics to your draft. When you have attachments, select the attachment count beside the close button to open an image or document.
+
+Select **Send** when you are ready. To keep editing in the chat, close the editor. Your draft and attachments stay together, and your usual send shortcut works again.
+
 ## Formatting
 
 The composer renders Markdown live as you type and reveals raw markers when your cursor enters styled text. The agent receives the exact Markdown you typed.

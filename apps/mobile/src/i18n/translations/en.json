@@ -5770,5 +5770,12 @@
   "15d475e1a7b50de7": "Subscription by model",
   "e5e910d149aa89cb": "No attributable usage",
   "c2f5d2b75a76a15f": "Usage report",
-  "716277242c2a18b1": "Synchronization"
+  "716277242c2a18b1": "Synchronization",
+  "e5a8622dd425e9b7": "Heading {level}",
+  "e17bae3a53e3c4b3": "Bold",
+  "87c4a6e8013172f4": "Italic",
+  "d4fcd754ccfc6d14": "Attachments ({count})",
+  "18b26aee6f7efd6c": "Close prompt editor",
+  "6ca8ed7d5554191b": "Edit prompt in full screen",
+  "a11b64718a056671": "Edit prompt"
 }

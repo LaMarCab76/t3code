@@ -556,6 +556,7 @@ export function useQueuedRunEdit(input: {
     if (submission?.submissionIntent === "alternate" && submission.dispatchMode === "steer") {
       await steerSavedRun(editing);
     }
+    return true;
   };
 
   return {

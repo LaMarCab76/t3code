@@ -56,6 +56,10 @@ import {
   type ReactNode,
   type RefObject,
 } from "react";
+import {
+  FullscreenPromptEditor,
+  type FullscreenPromptControls,
+} from "./chat/FullscreenPromptEditor";
 import { EditorContent, useEditor } from "@tiptap/react";
 
 import {
@@ -71,7 +75,7 @@ import {
   collapseShownMarkdownSource,
   ComposerMarkdownSourceExtension,
 } from "~/composer-markdown-source";
-import { MARKDOWN_SOURCE_MARK } from "~/composer-rich-text";
+import { MARKDOWN_SOURCE_MARK } from "@t3tools/client-runtime/inline-markdown";
 import {
   collectComposerPromptInlineTokens,
   selectionTouchesMentionBoundary,
@@ -179,6 +183,7 @@ export interface ComposerPromptEditorProps {
   value: string;
   cursor: number;
   richTextEnabled?: boolean;
+  fullscreen?: FullscreenPromptControls | undefined;
   literalText?: boolean;
   contextRecords: ComposerDraftContextRecords;
   buildContextClipboardFragment?:
@@ -1176,6 +1181,7 @@ function ComposerPromptEditorTiptapInner(
   const editorAttributes = {
     class: cn(
       "composer-tiptap -m-1 block max-h-52 min-h-[calc(2lh+--spacing(2))] overflow-y-auto p-1 whitespace-pre-wrap wrap-break-word bg-transparent leading-relaxed text-foreground focus:outline-none",
+      props.fullscreen && "m-0 min-h-full max-h-none overflow-visible",
       className,
     ),
     "data-testid": "composer-editor",
@@ -2067,72 +2073,82 @@ function ComposerPromptEditorTiptapInner(
     }
   };
 
+  const field = (
+    <div
+      className={cn(
+        "relative grid grid-cols-[minmax(0,1fr)] font-(family-name:--font-composer,var(--font-sans)) text-(length:--font-size-prompt,var(--text-sm)) max-sm:pointer-coarse:text-(length:--font-size-prompt-touch)",
+        props.fullscreen && "flex-1",
+        containerClassName,
+      )}
+    >
+      <EditorContent
+        editor={editor}
+        className="col-start-1 row-start-1"
+        onKeyDown={(event) => {
+          if (
+            event.key === "Control" ||
+            event.key === "Meta" ||
+            event.key === "Alt" ||
+            event.key === "Shift"
+          ) {
+            onPageScrollRelease?.();
+          }
+          if (event.key !== "PageUp" && event.key !== "PageDown") return;
+          const target = event.currentTarget.querySelector(
+            '[data-testid="composer-editor"]',
+          ) as HTMLElement | null;
+          if (!target) return;
+          const pageScrollKey = getTimelinePageScrollKey({
+            altKey: event.altKey,
+            clientHeight: target.clientHeight,
+            ctrlKey: event.ctrlKey,
+            defaultPrevented: event.defaultPrevented,
+            isComposing: event.nativeEvent.isComposing,
+            key: event.key,
+            keyCode: event.keyCode,
+            metaKey: event.metaKey,
+            scrollHeight: target.scrollHeight,
+            scrollTop: target.scrollTop,
+            shiftKey: event.shiftKey,
+          });
+          if (!pageScrollKey) {
+            onPageScrollRelease?.();
+            return;
+          }
+          if (!onPageScrollKeyDown) return;
+          event.preventDefault();
+          onPageScrollKeyDown(pageScrollKey);
+        }}
+        onKeyUp={(event) => onPageScrollKeyUp?.(event.key)}
+        onBlur={onPageScrollRelease}
+        onPasteCapture={onClipboardPasteCaptureStable}
+        onCopyCapture={(event) => handleCopyCut(event, false)}
+        onCutCapture={(event) => handleCopyCut(event, true)}
+      />
+      {isEmpty && contextRecords.size === 0 && placeholder ? (
+        <div
+          className={cn(
+            "pointer-events-none relative col-start-1 row-start-1 leading-relaxed text-placeholder",
+            placeholderClassName,
+          )}
+        >
+          {placeholder}
+          {placeholderSuffix}
+        </div>
+      ) : null}
+    </div>
+  );
   return (
     <RichComposerSkillsContext value={skills}>
       <ComposerContextRecordsContext value={contextRecords}>
         <ComposerCitationCommentContext value={citationCommentActions}>
-          <div
-            className={cn(
-              "relative grid grid-cols-[minmax(0,1fr)] font-(family-name:--font-composer,var(--font-sans)) text-(length:--font-size-prompt,var(--text-sm)) max-sm:pointer-coarse:text-(length:--font-size-prompt-touch)",
-              containerClassName,
-            )}
-          >
-            <EditorContent
-              editor={editor}
-              className="col-start-1 row-start-1"
-              onKeyDown={(event) => {
-                if (
-                  event.key === "Control" ||
-                  event.key === "Meta" ||
-                  event.key === "Alt" ||
-                  event.key === "Shift"
-                ) {
-                  onPageScrollRelease?.();
-                }
-                if (event.key !== "PageUp" && event.key !== "PageDown") return;
-                const target = event.currentTarget.querySelector(
-                  '[data-testid="composer-editor"]',
-                ) as HTMLElement | null;
-                if (!target) return;
-                const pageScrollKey = getTimelinePageScrollKey({
-                  altKey: event.altKey,
-                  clientHeight: target.clientHeight,
-                  ctrlKey: event.ctrlKey,
-                  defaultPrevented: event.defaultPrevented,
-                  isComposing: event.nativeEvent.isComposing,
-                  key: event.key,
-                  keyCode: event.keyCode,
-                  metaKey: event.metaKey,
-                  scrollHeight: target.scrollHeight,
-                  scrollTop: target.scrollTop,
-                  shiftKey: event.shiftKey,
-                });
-                if (!pageScrollKey) {
-                  onPageScrollRelease?.();
-                  return;
-                }
-                if (!onPageScrollKeyDown) return;
-                event.preventDefault();
-                onPageScrollKeyDown(pageScrollKey);
-              }}
-              onKeyUp={(event) => onPageScrollKeyUp?.(event.key)}
-              onBlur={onPageScrollRelease}
-              onPasteCapture={onClipboardPasteCaptureStable}
-              onCopyCapture={(event) => handleCopyCut(event, false)}
-              onCutCapture={(event) => handleCopyCut(event, true)}
-            />
-            {isEmpty && contextRecords.size === 0 && placeholder ? (
-              <div
-                className={cn(
-                  "pointer-events-none relative col-start-1 row-start-1 leading-relaxed text-placeholder",
-                  placeholderClassName,
-                )}
-              >
-                {placeholder}
-                {placeholderSuffix}
-              </div>
-            ) : null}
-          </div>
+          {props.fullscreen && editor ? (
+            <FullscreenPromptEditor editor={editor} controls={props.fullscreen} rich={richText}>
+              {field}
+            </FullscreenPromptEditor>
+          ) : (
+            field
+          )}
         </ComposerCitationCommentContext>
       </ComposerContextRecordsContext>
     </RichComposerSkillsContext>

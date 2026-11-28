@@ -155,7 +155,8 @@ export function WorkspaceNativeTabs(props: {
   const deviceType = useDeviceType();
   const compactTabs = useCompactWorkspaceTabs();
   const { layout } = useAdaptiveWorkspaceLayout();
-  const { panes } = useWorkspacePaneState();
+  const { panes, columnsHidden } = useWorkspacePaneState();
+  const hidden = columnsHidden || props.hidden;
   // The tabs belong to the sidebar; over a page with the sidebar hidden they'd cover the composer.
   const hiddenWithSidebar =
     deviceType === "pad" &&
@@ -201,7 +202,7 @@ export function WorkspaceNativeTabs(props: {
       <WorkspaceColumnMetricsContext value={sharedColumnMetrics}>
         <Tabs.Host
           navStateRequest={request}
-          tabBarHidden={props.hidden || !systemTabBar}
+          tabBarHidden={hidden || !systemTabBar}
           ios={{
             tabBarControllerMode: "tabBar",
             tabBarMinimizeBehavior: "never",
@@ -276,7 +277,7 @@ export function WorkspaceNativeTabs(props: {
         compactTabs ||
         (layout.variant === "medium" &&
           !workspaceUsesColumns(selectedTab, workspace.settingsOpen))) &&
-      !props.hidden &&
+      !hidden &&
       !props.tabsInSidebarColumn &&
       !hiddenWithSidebar ? (
         <WorkspaceTabDock placement="window" />
